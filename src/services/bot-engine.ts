@@ -1,9 +1,7 @@
 /**
  * Bot Engine — Strategy logic for all 5 automated bots.
- * Each bot exports an `evaluate` function that returns
- * { shouldTrade, contractType, barrier?, reason }.
- *
- * CRITICAL: digit 0 is NEVER ignored. All comparisons use strict operators.
+ * DEFENSIVE: digit 0 is NEVER ignored. All comparisons use strict numeric operators.
+ * MARTINGALE: LOSS → multiply, WIN → reset (STANDARD martingale).
  */
 
 import { getLastDigit } from './analysis';
@@ -30,6 +28,7 @@ export interface BotConfig {
 export function hasConsecutiveRepeat(digits: number[], times: number): boolean {
   if (digits.length < times) return false;
   const tail = digits.slice(-times);
+  // digit 0 is valid — strict equality
   return tail.every(d => d === tail[0]);
 }
 
@@ -45,14 +44,25 @@ export function tickMomentum(prices: number[], window: number = 5): { rising: nu
   return { rising, falling };
 }
 
-/** Compute digit frequency from array of digits */
+/**
+ * Compute digit frequency from array of digits.
+ * Explicitly iterates 0-9. Digit 0 is always counted.
+ */
 export function digitFrequency(digits: number[]): number[] {
-  const freq = new Array(10).fill(0);
-  digits.forEach(d => { freq[d]++; });
+  const freq = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // explicit 10 slots
+  for (let i = 0; i < digits.length; i++) {
+    const d = digits[i];
+    if (d !== undefined && d !== null && !Number.isNaN(d) && d >= 0 && d <= 9) {
+      freq[d]++;
+      if (d === 0) {
+        console.log('[digitFrequency] Digit 0 counted. Current freq[0]:', freq[0]);
+      }
+    }
+  }
   return freq;
 }
 
-/** Detect if spread is choppy (tick changes alternate direction frequently) */
+/** Detect if spread is choppy */
 export function isChoppy(prices: number[], window: number = 10): boolean {
   if (prices.length < window) return false;
   const slice = prices.slice(-window);
@@ -65,32 +75,24 @@ export function isChoppy(prices: number[], window: number = 10): boolean {
   return changes / (window - 2) > 0.7;
 }
 
-/** AI Confidence Score (0-100) based on multiple factors */
-export function calculateConfidence(
-  digits: number[],
-  consecutiveLosses: number,
-): number {
+/** AI Confidence Score (0-100) */
+export function calculateConfidence(digits: number[], consecutiveLosses: number): number {
   if (digits.length < 10) return 0;
 
   const freq = digitFrequency(digits);
   const len = digits.length;
   const pcts = freq.map(f => (f / len) * 100);
 
-  // Factor 1: Digit imbalance (max deviation from 10%)
   const maxDeviation = Math.max(...pcts.map(p => Math.abs(p - 10)));
-  const imbalanceScore = Math.min(maxDeviation * 3, 40); // 0-40
+  const imbalanceScore = Math.min(maxDeviation * 3, 40);
 
-  // Factor 2: Frequency deviation (standard deviation of percentages)
   const mean = 10;
   const variance = pcts.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / 10;
   const stdDev = Math.sqrt(variance);
-  const deviationScore = Math.min(stdDev * 5, 30); // 0-30
+  const deviationScore = Math.min(stdDev * 5, 30);
 
-  // Factor 3: Recent loss streak penalty
   const lossPenalty = Math.min(consecutiveLosses * 10, 30);
-
-  // Factor 4: Sample size bonus
-  const sampleBonus = Math.min(len / 5, 20); // 0-20
+  const sampleBonus = Math.min(len / 5, 20);
 
   const score = Math.max(0, Math.min(100, imbalanceScore + deviationScore + sampleBonus - lossPenalty));
   return Math.round(score);
@@ -101,19 +103,17 @@ export function calculateConfidence(
 export function evaluateOver2(digits: number[], prices: number[]): BotDecision {
   if (digits.length < 3) return { shouldTrade: false, contractType: '', reason: 'Need 3+ digits' };
 
-  // Safety: don't trade if same digit repeats 4 times
   if (hasConsecutiveRepeat(digits, 4)) {
     return { shouldTrade: false, contractType: '', reason: 'Safety: 4x consecutive repeat' };
   }
 
   const last3 = digits.slice(-3);
-  const allBelow3 = last3.every(d => d < 3); // digits 0, 1, 2
+  const allBelow3 = last3.every(d => d >= 0 && d <= 2); // 0, 1, 2
 
   const len = digits.length;
-  const underCount = digits.filter(d => d < 3).length;
+  const underCount = digits.filter(d => d >= 0 && d <= 2).length;
   const underPct = (underCount / len) * 100;
 
-  // Digit 0 frequency spike
   const freq = digitFrequency(digits);
   const zeroPct = (freq[0] / len) * 100;
   const zeroSpike = zeroPct > 12;
@@ -123,17 +123,16 @@ export function evaluateOver2(digits: number[], prices: number[]): BotDecision {
       shouldTrade: true,
       contractType: 'DIGITOVER',
       barrier: '2',
-      reason: `Last 3 below 3, Under%=${underPct.toFixed(1)}, 0-spike=${zeroPct.toFixed(1)}%`,
+      reason: `Last 3 ≤ 2, Under%=${underPct.toFixed(1)}, 0-spike=${zeroPct.toFixed(1)}%`,
     };
   }
 
-  // Relaxed entry: just last 3 below 3 + under > 52%
   if (allBelow3 && underPct > 52) {
     return {
       shouldTrade: true,
       contractType: 'DIGITOVER',
       barrier: '2',
-      reason: `Last 3 below 3, Under%=${underPct.toFixed(1)}%`,
+      reason: `Last 3 ≤ 2, Under%=${underPct.toFixed(1)}%`,
     };
   }
 
@@ -146,10 +145,10 @@ export function evaluateUnder6(digits: number[], prices: number[]): BotDecision 
   if (digits.length < 3) return { shouldTrade: false, contractType: '', reason: 'Need 3+ digits' };
 
   const last3 = digits.slice(-3);
-  const allAbove6 = last3.every(d => d > 6); // digits 7, 8, 9
+  const allAbove6 = last3.every(d => d >= 7 && d <= 9);
 
   const len = digits.length;
-  const overCount = digits.filter(d => d > 6).length;
+  const overCount = digits.filter(d => d >= 7).length;
   const overPct = (overCount / len) * 100;
 
   if (allAbove6 && overPct > 52) {
@@ -157,7 +156,7 @@ export function evaluateUnder6(digits: number[], prices: number[]): BotDecision 
       shouldTrade: true,
       contractType: 'DIGITUNDER',
       barrier: '6',
-      reason: `Last 3 above 6, Over%=${overPct.toFixed(1)}%`,
+      reason: `Last 3 ≥ 7, Over%=${overPct.toFixed(1)}%`,
     };
   }
 
@@ -171,11 +170,11 @@ export function evaluateEvenOdd(digits: number[]): BotDecision {
 
   const analysisDigits = digits.slice(-100);
   const len = analysisDigits.length;
+  // 0 is EVEN (0 % 2 === 0)
   const evenCount = analysisDigits.filter(d => d % 2 === 0).length;
   const evenPct = (evenCount / len) * 100;
   const oddPct = 100 - evenPct;
 
-  // Wait for sequence confirmation: 4 consecutive same parity before entering opposite
   const last4 = digits.slice(-4);
   const last4AllEven = last4.every(d => d % 2 === 0);
   const last4AllOdd = last4.every(d => d % 2 !== 0);
@@ -208,11 +207,9 @@ export function evaluateMatchesDiffers(digits: number[]): BotDecision {
   const len = digits.length;
   const pcts = freq.map(f => (f / len) * 100);
 
-  // Find dominant digit
   const maxPct = Math.max(...pcts);
   const dominantDigit = pcts.indexOf(maxPct);
 
-  // Don't trade if digit repeats 3 times consecutively
   if (hasConsecutiveRepeat(digits, 3)) {
     return { shouldTrade: false, contractType: '', reason: 'Safety: 3x consecutive repeat' };
   }
@@ -243,7 +240,7 @@ export function evaluateRiseFall(prices: number[]): BotDecision {
   if (rising >= 4) {
     return {
       shouldTrade: true,
-      contractType: 'CALL', // Rise = CALL in Deriv API
+      contractType: 'CALL',
       reason: `4/5 ticks rising → Enter Fall (mean reversion)`,
     };
   }
@@ -251,7 +248,7 @@ export function evaluateRiseFall(prices: number[]): BotDecision {
   if (falling >= 4) {
     return {
       shouldTrade: true,
-      contractType: 'PUT', // Fall = PUT in Deriv API
+      contractType: 'PUT',
       reason: `4/5 ticks falling → Enter Rise (mean reversion)`,
     };
   }

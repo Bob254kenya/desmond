@@ -238,15 +238,15 @@ export default function BotsPage() {
           t.id === id ? { ...t, result: won ? 'Win' : 'Loss', pnl } : t
         ));
 
-        // REVERSED MARTINGALE: WIN → multiply, LOSS → reset
+        // STANDARD MARTINGALE: LOSS → multiply, WIN → reset
         if (won) {
           consLosses = 0;
-          if (settings.martingale) {
-            stake *= settings.multiplier; // Increase on WIN
-          }
+          stake = settings.stake; // WIN → reset to base
         } else {
           consLosses++;
-          stake = settings.stake; // Reset on LOSS
+          if (settings.martingale) {
+            stake *= settings.multiplier; // LOSS → multiply
+          }
           if (consLosses >= 3 && !cooldownActive) {
             setCooldownActive(true);
             cooldownTimerRef.current = setTimeout(() => setCooldownActive(false), 10000);
@@ -306,7 +306,7 @@ export default function BotsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-foreground">🤖 Smart Trading Bots</h1>
-          <p className="text-xs text-muted-foreground">API-verified results • Reversed martingale • Digit validation</p>
+          <p className="text-xs text-muted-foreground">API-verified results • Standard martingale (LOSS → multiply) • Digit validation</p>
         </div>
         <div className="flex items-center gap-3">
           <Select value={String(historyView)} onValueChange={v => setHistoryView(parseInt(v))}>

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { getLastDigit } from '@/services/analysis';
@@ -168,21 +169,28 @@ export default function AutoTrade() {
         totalPnl += pnl;
         tradeCount++;
 
-        // REVERSED MARTINGALE: WIN → multiply, LOSS → reset
+        // STANDARD MARTINGALE: LOSS → multiply, WIN → reset
         if (config.martingale) {
           if (won) {
-            stake *= mult;
+            stake = parseFloat(config.stake); // WIN → reset to base
           } else {
-            stake = parseFloat(config.stake);
+            stake *= mult; // LOSS → multiply
           }
         } else {
           stake = parseFloat(config.stake);
         }
         setCurrentStake(stake);
 
-        // Stop Loss / Take Profit
-        if (totalPnl <= -sl || totalPnl >= tp) {
-          console.log('SL/TP hit. Total P/L:', totalPnl);
+        // Stop Loss / Take Profit with notifications
+        if (totalPnl <= -sl) {
+          console.log('Stop Loss hit. Total P/L:', totalPnl);
+          toast.error(`🛑 Stop Loss Hit! P/L: $${totalPnl.toFixed(2)}`, { duration: 10000 });
+          runningRef.current = false;
+        }
+        if (totalPnl >= tp) {
+          console.log('Take Profit hit. Total P/L:', totalPnl);
+          toast.success(`🎊 Congratulations! Take Profit Hit! +$${totalPnl.toFixed(2)}`, { duration: 15000 });
+          try { if ('speechSynthesis' in window) { window.speechSynthesis.speak(new SpeechSynthesisUtterance('Congratulations! Your take profit has been hit!')); } } catch {}
           runningRef.current = false;
         }
 
@@ -212,7 +220,7 @@ export default function AutoTrade() {
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-bold text-foreground">Digit Trading Bot</h1>
-        <p className="text-xs text-muted-foreground">API-confirmed results • Reversed martingale (WIN → multiply)</p>
+        <p className="text-xs text-muted-foreground">API-confirmed results • Standard martingale (LOSS → multiply)</p>
       </div>
 
       <StatsPanel
