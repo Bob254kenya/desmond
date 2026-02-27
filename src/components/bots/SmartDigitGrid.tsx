@@ -34,13 +34,13 @@ export default function SmartDigitGrid({ digits, barrier, onSelectDigit, selecte
   };
 
   // Stats
-  const overCount = digits.filter(d => d > barrier).length;
-  const underCount = digits.filter(d => d < barrier).length;
-  const evenCount = digits.filter(d => d % 2 === 0).length;
+  // Over=5-9, Under=0-4 (0 is Under). Digit 0 always counted.
+  const overCount = digits.filter(d => d >= 5).length;
+  const underCount = digits.filter(d => d <= 4).length;
+  const evenCount = digits.filter(d => d % 2 === 0).length; // 0 is even
   const oddCount = len - evenCount;
   const matchCount = digits.filter(d => d === selectedDigit).length;
   const differCount = len - matchCount;
-  // Over 6-9 / Under 0-4
   const over69 = digits.filter(d => d >= 6).length;
   const under04 = digits.filter(d => d <= 4).length;
 

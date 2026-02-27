@@ -1,24 +1,38 @@
-// Technical analysis utility functions
-// FIX: All digit logic uses explicit !== undefined checks instead of truthy checks,
-// ensuring digit 0 is never ignored.
+/**
+ * Technical analysis utility functions.
+ * DEFENSIVE PROGRAMMING: digit 0 is NEVER ignored.
+ * All checks use explicit numeric comparisons — no truthy/falsy evaluation.
+ */
 
 /**
  * Extract the last digit from a tick price.
- * FIX: Convert to string and slice the last character.
- * This correctly handles digit 0 (which is falsey in JS).
+ * Converts to string, removes decimal, takes last character.
+ * Digit 0 is a valid result.
  */
 export function getLastDigit(price: number): number {
-  const priceStr = price.toString();
-  // Slice last character, parse as integer
+  if (price === null || price === undefined || Number.isNaN(price)) {
+    console.error('[getLastDigit] Invalid price:', price);
+    return 0;
+  }
+  const priceStr = price.toString().replace('.', '');
   const lastChar = priceStr[priceStr.length - 1];
   const digit = parseInt(lastChar, 10);
-  // digit can be 0 — that's valid, do NOT use `if (digit)` checks
+
+  if (Number.isNaN(digit) || digit < 0 || digit > 9) {
+    console.error('[getLastDigit] Failed extraction from price:', price, '→ raw:', lastChar);
+    return 0;
+  }
+
+  if (digit === 0) {
+    console.log('[getLastDigit] Digit 0 detected from price:', price);
+  }
+
   return digit;
 }
 
 /**
  * Analyze digit frequency across a set of prices.
- * FIX: digit 0 is properly counted in frequency and percentage arrays.
+ * Digit 0 is explicitly counted.
  */
 export function analyzeDigits(prices: number[]): {
   frequency: number[];
@@ -28,11 +42,10 @@ export function analyzeDigits(prices: number[]): {
 } {
   const frequency = new Array(10).fill(0);
 
-  prices.forEach(price => {
-    const digit = getLastDigit(price);
-    // FIX: No truthy guard — digit 0 is valid
+  for (let i = 0; i < prices.length; i++) {
+    const digit = getLastDigit(prices[i]);
     frequency[digit]++;
-  });
+  }
 
   const total = prices.length || 1;
   const percentages = frequency.map(f => (f / total) * 100);
@@ -46,13 +59,10 @@ export function analyzeDigits(prices: number[]): {
 /**
  * Generate trading signals from recent price data.
  *
- * FIX — Over/Under logic:
- *   Over X  = digit >  X  (strict, NOT >=)
- *   Under X = digit <  X  (strict, NOT <=)
- *
- * FIX — Matches/Differs logic:
- *   Matches X = digit === X
- *   Differs X = digit !== X
+ * Over X  = digit > X (strict)
+ * Under X = digit < X (strict)
+ * Even includes 0, 2, 4, 6, 8
+ * Odd includes 1, 3, 5, 7, 9
  */
 export function generateSignals(prices: number[]): {
   overUnder: { type: string; strength: 'Weak' | 'Moderate' | 'Strong'; direction: string };
@@ -62,7 +72,7 @@ export function generateSignals(prices: number[]): {
   const recentDigits = prices.slice(-20).map(getLastDigit);
   const len = recentDigits.length || 1;
 
-  // Over/Under: digit > 4 is "Over", digit < 5 is "Under" (using strict >)
+  // Over/Under: digit > 4 is "Over", digit < 5 is "Under"
   const overCount = recentDigits.filter(d => d > 4).length;
   const overRatio = overCount / len;
 
@@ -70,7 +80,7 @@ export function generateSignals(prices: number[]): {
     Math.abs(overRatio - 0.5) > 0.2 ? 'Strong' :
     Math.abs(overRatio - 0.5) > 0.1 ? 'Moderate' : 'Weak';
 
-  // Even/Odd
+  // Even/Odd — 0 is EVEN
   const evenCount = recentDigits.filter(d => d % 2 === 0).length;
   const evenRatio = evenCount / len;
 
