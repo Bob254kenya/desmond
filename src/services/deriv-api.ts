@@ -351,16 +351,30 @@ export function parseOAuthRedirect(search: string): DerivAccount[] {
 }
 
 export const MARKETS = [
-  { symbol: 'R_10', name: 'Volatility 10', group: 'Volatility' },
-  { symbol: 'R_25', name: 'Volatility 25', group: 'Volatility' },
-  { symbol: 'R_50', name: 'Volatility 50', group: 'Volatility' },
-  { symbol: 'R_75', name: 'Volatility 75', group: 'Volatility' },
-  { symbol: 'R_100', name: 'Volatility 100', group: 'Volatility' },
-  { symbol: '1HZ10V', name: 'Volatility 10 (1s)', group: '1s Volatility' },
-  { symbol: '1HZ25V', name: 'Volatility 25 (1s)', group: '1s Volatility' },
-  { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: '1s Volatility' },
-  { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: '1s Volatility' },
-  { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: '1s Volatility' },
+  { symbol: '1HZ10V', name: 'Volatility 10 (1s)', group: 'vol' },
+  { symbol: 'R_10', name: 'Volatility 10', group: 'vol' },
+  { symbol: '1HZ25V', name: 'Volatility 25 (1s)', group: 'vol' },
+  { symbol: 'R_25', name: 'Volatility 25', group: 'vol' },
+  { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: 'vol' },
+  { symbol: 'R_50', name: 'Volatility 50', group: 'vol' },
+  { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: 'vol' },
+  { symbol: 'R_75', name: 'Volatility 75', group: 'vol' },
+  { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: 'vol' },
+  { symbol: 'R_100', name: 'Volatility 100', group: 'vol' },
+  { symbol: 'JD10', name: 'Jump 10', group: 'jump' },
+  { symbol: 'JD25', name: 'Jump 25', group: 'jump' },
+  { symbol: 'JD50', name: 'Jump 50', group: 'jump' },
+  { symbol: 'JD75', name: 'Jump 75', group: 'jump' },
+  { symbol: 'JD100', name: 'Jump 100', group: 'jump' },
+  { symbol: 'RDBULL', name: 'Bull Market', group: 'bull' },
+  { symbol: 'RDBEAR', name: 'Bear Market', group: 'bear' },
 ] as const;
 
 export type MarketSymbol = typeof MARKETS[number]['symbol'];
+
+export const MARKET_GROUPS = [
+  { value: 'vol', label: 'Volatilities' },
+  { value: 'jump', label: 'Jump' },
+  { value: 'bull', label: 'Bull' },
+  { value: 'bear', label: 'Bear' },
+] as const;

@@ -14,17 +14,14 @@ export function getLastDigit(price: number): number {
     console.error('[getLastDigit] Invalid price:', price);
     return 0;
   }
-  const priceStr = price.toString().replace('.', '');
-  const lastChar = priceStr[priceStr.length - 1];
+  // Deriv digit extraction: toFixed(2) then last character
+  const fixedStr = parseFloat(String(price)).toFixed(2);
+  const lastChar = fixedStr.slice(-1);
   const digit = parseInt(lastChar, 10);
 
   if (Number.isNaN(digit) || digit < 0 || digit > 9) {
     console.error('[getLastDigit] Failed extraction from price:', price, '→ raw:', lastChar);
     return 0;
-  }
-
-  if (digit === 0) {
-    console.log('[getLastDigit] Digit 0 detected from price:', price);
   }
 
   return digit;
