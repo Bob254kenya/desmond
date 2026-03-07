@@ -150,6 +150,9 @@ export default function TopNavbar() {
       {/* Mobile Nav Dropdown */}
       {mobileOpen && (
         <nav className="md:hidden border-t border-border bg-card p-2 space-y-1">
+          <div className="flex items-center justify-center gap-1 pb-2 border-b border-border/50 mb-1">
+            <SocialIcons />
+          </div>
           {navItems.map(item => (
             <NavLink
               key={item.url}
