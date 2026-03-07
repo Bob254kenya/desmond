@@ -534,6 +534,10 @@ export default function ProScannerBot() {
         cStake = baseStake;
       } else {
         setLosses(prev => prev + 1);
+        // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
+        if (activeAccount?.is_virtual) {
+          recordLoss(cStake, tradeSymbol, 6000);
+        }
         if (!inRecovery && m2Enabled) {
           inRecovery = true;
           switchInfo = '✗ Loss → Switch to M2';
