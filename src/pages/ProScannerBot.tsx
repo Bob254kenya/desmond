@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { getLastDigit } from '@/services/analysis';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLossRequirement } from '@/hooks/useLossRequirement';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -108,7 +109,8 @@ function simulateVirtualContract(
 }
 
 export default function ProScannerBot() {
-  const { isAuthorized, balance } = useAuth();
+  const { isAuthorized, balance, activeAccount } = useAuth();
+  const { recordLoss } = useLossRequirement();
 
   /* ── Market 1 config ── */
   const [m1Enabled, setM1Enabled] = useState(true);
@@ -532,6 +534,10 @@ export default function ProScannerBot() {
         cStake = baseStake;
       } else {
         setLosses(prev => prev + 1);
+        // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
+        if (activeAccount?.is_virtual) {
+          recordLoss(cStake, tradeSymbol, 6000);
+        }
         if (!inRecovery && m2Enabled) {
           inRecovery = true;
           switchInfo = '✗ Loss → Switch to M2';
