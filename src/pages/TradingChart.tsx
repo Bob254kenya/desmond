@@ -283,6 +283,7 @@ export default function TradingChart() {
     maxTrades: '50',
   });
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
+  const [turboMode, setTurboMode] = useState(false);
 
   /* ── Load history + subscribe ── */
   useEffect(() => {
