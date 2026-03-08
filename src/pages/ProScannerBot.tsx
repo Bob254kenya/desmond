@@ -905,15 +905,8 @@ export default function ProScannerBot() {
                       patternValid ? `✓ ${cleanPattern} (${cleanPattern.length} chars)` :
                         `✗ Too short (need 2+)`}
                   </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
-                      <input type="radio" name="pAction" checked={patternAction === 'tradeOnce'} onChange={() => setPatternAction('tradeOnce')} disabled={isRunning} />
-                      Trade Once per match
-                    </label>
-                    <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
-                      <input type="radio" name="pAction" checked={patternAction === 'tradeUntilWin'} onChange={() => setPatternAction('tradeUntilWin')} disabled={isRunning} />
-                      Trade Until Win (on loss → ignore pattern, trade every tick until win)
-                    </label>
+                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
+                    Mode: Trade Once per match
                   </div>
                   <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
                     {strategyEnabled && strategyM1Enabled ? '⚡ Strategy active on M1 & M2' :
