@@ -374,13 +374,11 @@ export default function TradingChart() {
       }
     };
 
-    const priceAxisX = rect.width - 70;
-
     const onMouseDown = (e: MouseEvent) => {
       const canvasRect = canvas.getBoundingClientRect();
-      const priceAxisX = canvasRect.width - 70;
+      const pAxisX = canvasRect.width - 70;
       const localX = e.clientX - canvasRect.left;
-        // Price axis drag — vertical drag to resize candles
+      if (localX >= pAxisX) {
         isPriceAxisDragging.current = true;
         priceAxisStartY.current = e.clientY;
         priceAxisStartWidth.current = candleWidth;
