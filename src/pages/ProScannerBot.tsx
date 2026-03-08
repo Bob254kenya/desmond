@@ -329,7 +329,7 @@ export default function ProScannerBot() {
       setCurrentMarket(mkt);
 
       if (mkt === 1 && !m1Enabled) { if (m2Enabled) { inRecovery = true; continue; } else break; }
-      if (mkt === 2 && !m2Enabled) { inRecovery = false; tuwLocked = false; continue; }
+      if (mkt === 2 && !m2Enabled) { inRecovery = false; continue; }
 
       let tradeSymbol: string;
       const cfg = getConfig(mkt);
