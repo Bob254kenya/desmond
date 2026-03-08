@@ -33,7 +33,7 @@ const CONTRACT_TYPES = [
 
 const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct);
 
-type BotStatus = 'idle' | 'trading_m1' | 'recovery' | 'waiting_pattern' | 'pattern_matched' | 'virtual_hook' | 'recovery_tuw';
+type BotStatus = 'idle' | 'trading_m1' | 'recovery' | 'waiting_pattern' | 'pattern_matched' | 'virtual_hook';
 
 interface LogEntry {
   id: number;
@@ -153,7 +153,7 @@ export default function ProScannerBot() {
   const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
   const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
   const [pattern, setPattern] = useState('');
-  const [patternAction, setPatternAction] = useState<'tradeOnce' | 'tradeUntilWin'>('tradeUntilWin');
+  
   const [digitCondition, setDigitCondition] = useState('==');
   const [digitCompare, setDigitCompare] = useState('5');
   const [digitWindow, setDigitWindow] = useState('3');
@@ -315,7 +315,6 @@ export default function ProScannerBot() {
     let cStake = baseStake;
     let mStep = 0;
     let inRecovery = false;
-    let tuwLocked = false; // TUW: after pattern loss, skip pattern until win
     let localPnl = 0;
     let localBalance = balance;
 
@@ -330,7 +329,7 @@ export default function ProScannerBot() {
       setCurrentMarket(mkt);
 
       if (mkt === 1 && !m1Enabled) { if (m2Enabled) { inRecovery = true; continue; } else break; }
-      if (mkt === 2 && !m2Enabled) { inRecovery = false; tuwLocked = false; continue; }
+      if (mkt === 2 && !m2Enabled) { inRecovery = false; continue; }
 
       let tradeSymbol: string;
       const cfg = getConfig(mkt);
@@ -338,20 +337,8 @@ export default function ProScannerBot() {
       const requiredLosses = parseInt(mkt === 1 ? m1VirtualLossCount : m2VirtualLossCount) || 3;
       const realCount = parseInt(mkt === 1 ? m1RealCount : m2RealCount) || 2;
 
-      /* ── TUW LOCKED: after pattern-matched loss, trade every tick until win ── */
-      if (tuwLocked) {
-        setBotStatus('recovery_tuw');
-        tradeSymbol = cfg.symbol;
-        // No pattern check, just trade immediately on next tick
-      }
-      /* ── TRADE UNTIL WIN RECOVERY (no strategy) ── */
-      else if (inRecovery && patternAction === 'tradeUntilWin' && !strategyEnabled) {
-        setBotStatus('recovery_tuw');
-        tradeSymbol = cfg.symbol;
-        // Trade every tick until win
-      }
       /* ── Strategy gating for M2 (recovery) ── */
-      else if (inRecovery && strategyEnabled) {
+      if (inRecovery && strategyEnabled) {
         setBotStatus('waiting_pattern');
 
         let matched = false;
@@ -462,8 +449,6 @@ export default function ProScannerBot() {
           cStake = result.cStake;
           mStep = result.mStep;
           inRecovery = result.inRecovery;
-          if (!result.inRecovery) tuwLocked = false;
-          else if (patternAction === 'tradeUntilWin' && strategyEnabled) tuwLocked = true;
 
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
@@ -486,17 +471,10 @@ export default function ProScannerBot() {
       mStep = result.mStep;
       inRecovery = result.inRecovery;
 
-      /* TUW: after pattern-matched loss, lock to trade every tick until win */
-      if (!result.inRecovery) {
-        tuwLocked = false; // Won & recovered → clear lock
-      } else if (patternAction === 'tradeUntilWin' && (strategyEnabled || strategyM1Enabled) && inRecovery && !tuwLocked) {
-        tuwLocked = true; // First loss after pattern match → lock
-      }
-
       if (result.shouldBreak) break;
 
       // Turbo: no delay between trades; normal: small delay
-      if (!turboMode && !tuwLocked) await new Promise(r => setTimeout(r, 400));
+      if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
 
     setIsRunning(false);
@@ -505,7 +483,7 @@ export default function ProScannerBot() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Contract, m2Contract,
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
-    takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, strategyMode, patternValid, patternAction,
+    takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, strategyMode, patternValid,
     scannerActive, findScannerMatch, checkCondition, addLog, updateLog, turboMode,
     m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
 
@@ -629,7 +607,6 @@ export default function ProScannerBot() {
     waiting_pattern: { icon: '🟡', label: 'WAITING PATTERN', color: 'text-warning' },
     pattern_matched: { icon: '✅', label: 'PATTERN MATCHED', color: 'text-profit' },
     virtual_hook: { icon: '🎣', label: 'VIRTUAL HOOK', color: 'text-primary' },
-    recovery_tuw: { icon: '🔴', label: 'TRADE UNTIL WIN', color: 'text-loss' },
   };
 
   const status = statusConfig[botStatus];
@@ -928,15 +905,8 @@ export default function ProScannerBot() {
                       patternValid ? `✓ ${cleanPattern} (${cleanPattern.length} chars)` :
                         `✗ Too short (need 2+)`}
                   </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
-                      <input type="radio" name="pAction" checked={patternAction === 'tradeOnce'} onChange={() => setPatternAction('tradeOnce')} disabled={isRunning} />
-                      Trade Once per match
-                    </label>
-                    <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
-                      <input type="radio" name="pAction" checked={patternAction === 'tradeUntilWin'} onChange={() => setPatternAction('tradeUntilWin')} disabled={isRunning} />
-                      Trade Until Win (on loss → ignore pattern, trade every tick until win)
-                    </label>
+                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
+                    Mode: Trade Once per match
                   </div>
                   <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
                     {strategyEnabled && strategyM1Enabled ? '⚡ Strategy active on M1 & M2' :
@@ -976,11 +946,6 @@ export default function ProScannerBot() {
               {botStatus === 'pattern_matched' && (
                 <div className="bg-profit/10 border border-profit/30 rounded-lg p-2 text-[10px] text-profit text-center font-semibold animate-pulse">
                   ✅ PATTERN MATCHED!
-                </div>
-              )}
-              {botStatus === 'recovery_tuw' && (
-                <div className="bg-loss/10 border border-loss/30 rounded-lg p-2 text-[10px] text-loss text-center font-semibold animate-pulse">
-                  🔴 TRADE UNTIL WIN — Every tick
                 </div>
               )}
             </div>
