@@ -234,60 +234,62 @@ export default function ProScannerBot() {
   }, []);
 
   /* ── Pattern validation ── */
-  const cleanPattern = pattern.toUpperCase().replace(/[^EO]/g, '');
-  const patternValid = cleanPattern.length >= 2;
+  const cleanM1Pattern = m1Pattern.toUpperCase().replace(/[^EO]/g, '');
+  const m1PatternValid = cleanM1Pattern.length >= 2;
+  const cleanM2Pattern = m2Pattern.toUpperCase().replace(/[^EO]/g, '');
+  const m2PatternValid = cleanM2Pattern.length >= 2;
 
-  /* ── Check pattern match for a symbol ── */
-  const checkPatternMatch = useCallback((symbol: string): boolean => {
+  /* ── Check pattern match for a symbol with specific pattern ── */
+  const checkPatternMatchWith = useCallback((symbol: string, cleanPat: string): boolean => {
     const digits = tickMapRef.current.get(symbol) || [];
-    if (digits.length < cleanPattern.length) return false;
-    const recent = digits.slice(-cleanPattern.length);
-    for (let i = 0; i < cleanPattern.length; i++) {
-      const expected = cleanPattern[i];
+    if (digits.length < cleanPat.length) return false;
+    const recent = digits.slice(-cleanPat.length);
+    for (let i = 0; i < cleanPat.length; i++) {
+      const expected = cleanPat[i];
       const actual = recent[i] % 2 === 0 ? 'E' : 'O';
       if (expected !== actual) return false;
     }
     return true;
-  }, [cleanPattern]);
+  }, []);
 
-  /* ── Check digit condition for a symbol ── */
-  const checkDigitCondition = useCallback((symbol: string): boolean => {
+  /* ── Check digit condition for a symbol with specific config ── */
+  const checkDigitConditionWith = useCallback((symbol: string, condition: string, compare: string, window: string): boolean => {
     const digits = tickMapRef.current.get(symbol) || [];
-    const win = parseInt(digitWindow) || 3;
-    const compare = parseInt(digitCompare);
+    const win = parseInt(window) || 3;
+    const comp = parseInt(compare);
     if (digits.length < win) return false;
     const recent = digits.slice(-win);
     return recent.every(d => {
-      switch (digitCondition) {
-        case '>': return d > compare;
-        case '<': return d < compare;
-        case '>=': return d >= compare;
-        case '<=': return d <= compare;
-        case '==': return d === compare;
+      switch (condition) {
+        case '>': return d > comp;
+        case '<': return d < comp;
+        case '>=': return d >= comp;
+        case '<=': return d <= comp;
+        case '==': return d === comp;
         default: return false;
       }
     });
-  }, [digitCondition, digitCompare, digitWindow]);
+  }, []);
 
-  /* ── Check strategy condition (raw — ignores enabled flags) ── */
-  const checkStrategyCondition = useCallback((symbol: string): boolean => {
-    if (strategyMode === 'pattern') return checkPatternMatch(symbol);
-    return checkDigitCondition(symbol);
-  }, [strategyMode, checkPatternMatch, checkDigitCondition]);
+  /* ── Check strategy condition for a specific market ── */
+  const checkStrategyForMarket = useCallback((symbol: string, market: 1 | 2): boolean => {
+    if (strategyMode === 'pattern') {
+      const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern;
+      return checkPatternMatchWith(symbol, pat);
+    }
+    const cond = market === 1 ? m1DigitCondition : m2DigitCondition;
+    const comp = market === 1 ? m1DigitCompare : m2DigitCompare;
+    const win = market === 1 ? m1DigitWindow : m2DigitWindow;
+    return checkDigitConditionWith(symbol, cond, comp, win);
+  }, [strategyMode, cleanM1Pattern, cleanM2Pattern, checkPatternMatchWith, checkDigitConditionWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2DigitCondition, m2DigitCompare, m2DigitWindow]);
 
-  /* ── Check condition with M2 flag (legacy compat) ── */
-  const checkCondition = useCallback((symbol: string): boolean => {
-    if (!strategyEnabled) return true;
-    return checkStrategyCondition(symbol);
-  }, [strategyEnabled, checkStrategyCondition]);
-
-  /* ── Find scanner match across all markets ── */
-  const findScannerMatch = useCallback((): string | null => {
+  /* ── Find scanner match across all markets for a specific market ── */
+  const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => {
     for (const m of SCANNER_MARKETS) {
-      if (checkStrategyCondition(m.symbol)) return m.symbol;
+      if (checkStrategyForMarket(m.symbol, market)) return m.symbol;
     }
     return null;
-  }, [checkStrategyCondition]);
+  }, [checkStrategyForMarket]);
 
   /* ── Add log entry ── */
   const addLog = useCallback((id: number, entry: Omit<LogEntry, 'id'>) => {
