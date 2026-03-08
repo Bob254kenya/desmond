@@ -911,45 +911,91 @@ export default function ProScannerBot() {
               </div>
 
               {strategyMode === 'pattern' ? (
-                <div className="space-y-2">
-                  <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={pattern}
-                    onChange={e => setPattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
-                    disabled={isRunning} className="h-16 text-xs font-mono" />
-                  <div className={`text-[10px] font-mono ${patternValid ? 'text-profit' : 'text-loss'}`}>
-                    {cleanPattern.length === 0 ? 'Enter pattern...' :
-                      patternValid ? `✓ ${cleanPattern} (${cleanPattern.length} chars)` :
-                        `✗ Too short (need 2+)`}
-                  </div>
+                <div className="space-y-3">
+                  {/* M1 Pattern */}
+                  {strategyM1Enabled && (
+                    <div className="space-y-1.5 border border-profit/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-profit">M1 Pattern</label>
+                      <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={m1Pattern}
+                        onChange={e => setM1Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-14 text-xs font-mono" />
+                      <div className={`text-[10px] font-mono ${m1PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM1Pattern.length === 0 ? 'Enter M1 pattern...' :
+                          m1PatternValid ? `✓ ${cleanM1Pattern} (${cleanM1Pattern.length} chars)` :
+                            `✗ Too short (need 2+)`}
+                      </div>
+                    </div>
+                  )}
+                  {/* M2 Pattern */}
+                  {strategyEnabled && (
+                    <div className="space-y-1.5 border border-destructive/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-destructive">M2 Pattern</label>
+                      <Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern}
+                        onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-14 text-xs font-mono" />
+                      <div className={`text-[10px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM2Pattern.length === 0 ? 'Enter M2 pattern...' :
+                          m2PatternValid ? `✓ ${cleanM2Pattern} (${cleanM2Pattern.length} chars)` :
+                            `✗ Too short (need 2+)`}
+                      </div>
+                    </div>
+                  )}
                   <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
                     Mode: Trade Once per match
                   </div>
-                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
-                    {strategyEnabled && strategyM1Enabled ? '⚡ Strategy active on M1 & M2' :
-                     strategyEnabled ? '⚡ Strategy active on M2 only' :
-                     '⚡ Strategy active on M1 only'}
-                  </div>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">Condition</label>
-                      <Select value={digitCondition} onValueChange={setDigitCondition} disabled={isRunning}>
-                        <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
+                <div className="space-y-3">
+                  {/* M1 Digit */}
+                  {strategyM1Enabled && (
+                    <div className="space-y-1.5 border border-profit/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-profit">M1 Digit Condition</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Condition</label>
+                          <Select value={m1DigitCondition} onValueChange={setM1DigitCondition} disabled={isRunning}>
+                            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Value</label>
+                          <Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Window</label>
+                          <Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">Value</label>
-                      <Input type="number" min="0" max="9" value={digitCompare} onChange={e => setDigitCompare(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                  )}
+                  {/* M2 Digit */}
+                  {strategyEnabled && (
+                    <div className="space-y-1.5 border border-destructive/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-destructive">M2 Digit Condition</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Condition</label>
+                          <Select value={m2DigitCondition} onValueChange={setM2DigitCondition} disabled={isRunning}>
+                            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Value</label>
+                          <Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Window</label>
+                          <Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">Window</label>
-                      <Input type="number" min="1" max="50" value={digitWindow} onChange={e => setDigitWindow(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
 
