@@ -265,6 +265,25 @@ export default function TradingChart() {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const lastSpokenSignal = useRef('');
 
+  // Auto Bot state
+  const [botRunning, setBotRunning] = useState(false);
+  const [botPaused, setBotPaused] = useState(false);
+  const botRunningRef = useRef(false);
+  const botPausedRef = useRef(false);
+  const [botConfig, setBotConfig] = useState({
+    stake: '1.00',
+    contractType: 'CALL',
+    prediction: '5',
+    duration: '1',
+    durationUnit: 't',
+    martingale: false,
+    multiplier: '2.0',
+    stopLoss: '10',
+    takeProfit: '20',
+    maxTrades: '50',
+  });
+  const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
+
   /* ── Load history + subscribe ── */
   useEffect(() => {
     let active = true;
