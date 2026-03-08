@@ -801,14 +801,18 @@ export default function ProScannerBot() {
               <h3 className="text-xs font-semibold text-primary flex items-center gap-1">
                 <Anchor className="w-3.5 h-3.5" /> Virtual Hook Status
               </h3>
-              <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="grid grid-cols-4 gap-2 text-center">
                 <div>
-                  <div className="text-[9px] text-muted-foreground">Fake Wins</div>
+                  <div className="text-[9px] text-muted-foreground">V-Wins</div>
                   <div className="font-mono text-sm font-bold text-profit">{vhFakeWins}</div>
                 </div>
                 <div>
-                  <div className="text-[9px] text-muted-foreground">Fake Losses</div>
+                  <div className="text-[9px] text-muted-foreground">V-Losses</div>
                   <div className="font-mono text-sm font-bold text-loss">{vhFakeLosses}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-muted-foreground">Loss Streak</div>
+                  <div className="font-mono text-sm font-bold text-warning">{vhConsecLosses}</div>
                 </div>
                 <div>
                   <div className="text-[9px] text-muted-foreground">Status</div>
