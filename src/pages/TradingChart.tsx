@@ -788,68 +788,82 @@ export default function TradingChart() {
 
   // Trade execution
   const handleBuy = async (side: 'buy' | 'sell') => {
-    if (!isAuthorized) {
-      toast.error('Please login to your Deriv account first');
-      return;
-    }
+    if (!isAuthorized) { toast.error('Please login to your Deriv account first'); return; }
     if (isTrading) return;
     setIsTrading(true);
-
-    const ct = side === 'buy' ? contractType : 
-      (contractType === 'CALL' ? 'PUT' : contractType === 'PUT' ? 'CALL' : contractType);
-
-    const params: any = {
-      contract_type: ct,
-      symbol,
-      duration: parseInt(duration),
-      duration_unit: durationUnit,
-      basis: 'stake',
-      amount: parseFloat(tradeStake),
-    };
-
-    // Add barrier for digit contracts
-    if (['DIGITMATCH', 'DIGITDIFF'].includes(ct)) {
-      params.barrier = prediction;
-    } else if (ct === 'DIGITOVER') {
-      params.barrier = prediction;
-    } else if (ct === 'DIGITUNDER') {
-      params.barrier = prediction;
-    }
-
+    const ct = side === 'buy' ? contractType : (contractType === 'CALL' ? 'PUT' : contractType === 'PUT' ? 'CALL' : contractType);
+    const params: any = { contract_type: ct, symbol, duration: parseInt(duration), duration_unit: durationUnit, basis: 'stake', amount: parseFloat(tradeStake) };
+    if (['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct)) params.barrier = prediction;
     try {
       toast.info(`⏳ Placing ${ct} trade... $${tradeStake}`);
-      const { contractId, buyPrice } = await derivApi.buyContract(params);
-      
-      const newTrade: TradeRecord = {
-        id: contractId,
-        time: Date.now(),
-        type: ct,
-        stake: parseFloat(tradeStake),
-        profit: 0,
-        status: 'open',
-        symbol,
-      };
+      const { contractId } = await derivApi.buyContract(params);
+      const newTrade: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake: parseFloat(tradeStake), profit: 0, status: 'open', symbol };
       setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
-
-      // Wait for result
       const result = await derivApi.waitForContractResult(contractId);
-      setTradeHistory(prev => prev.map(t => 
-        t.id === contractId ? { ...t, profit: result.profit, status: result.status } : t
-      ));
-
-      if (result.status === 'won') {
-        toast.success(`✅ WON +$${result.profit.toFixed(2)}`);
-        if (voiceEnabled) speak(`Trade won. Profit ${result.profit.toFixed(2)} dollars`);
-      } else {
-        toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)}`);
-        if (voiceEnabled) speak(`Trade lost. Loss ${Math.abs(result.profit).toFixed(2)} dollars`);
-      }
-    } catch (err: any) {
-      toast.error(`Trade failed: ${err.message}`);
-    } finally {
-      setIsTrading(false);
-    }
+      setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status } : t));
+      if (result.status === 'won') { toast.success(`✅ WON +$${result.profit.toFixed(2)}`); if (voiceEnabled) speak(`Trade won. Profit ${result.profit.toFixed(2)} dollars`); }
+      else { toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)}`); if (voiceEnabled) speak(`Trade lost. Loss ${Math.abs(result.profit).toFixed(2)} dollars`); }
+    } catch (err: any) { toast.error(`Trade failed: ${err.message}`); }
+    finally { setIsTrading(false); }
   };
+
+  // ═══ AUTO BOT LOGIC ═══
+  const startBot = useCallback(async () => {
+    if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
+    setBotRunning(true); setBotPaused(false);
+    botRunningRef.current = true; botPausedRef.current = false;
+    const baseStake = parseFloat(botConfig.stake) || 1;
+    const sl = parseFloat(botConfig.stopLoss) || 10;
+    const tp = parseFloat(botConfig.takeProfit) || 20;
+    const maxT = parseInt(botConfig.maxTrades) || 50;
+    const mart = botConfig.martingale;
+    const mult = parseFloat(botConfig.multiplier) || 2;
+    let stake = baseStake;
+    let pnl = 0; let trades = 0; let wins = 0; let losses = 0; let consLosses = 0;
+
+    if (voiceEnabled) speak('Auto trading bot started');
+
+    while (botRunningRef.current) {
+      if (botPausedRef.current) { await new Promise(r => setTimeout(r, 500)); continue; }
+      if (trades >= maxT || pnl <= -sl || pnl >= tp) {
+        const reason = trades >= maxT ? 'Max trades reached' : pnl <= -sl ? 'Stop loss hit' : 'Take profit reached';
+        toast.info(`🤖 Bot stopped: ${reason}`);
+        if (voiceEnabled) speak(`Bot stopped. ${reason}. Total profit ${pnl.toFixed(2)} dollars`);
+        break;
+      }
+
+      const ct = botConfig.contractType;
+      const params: any = { contract_type: ct, symbol, duration: parseInt(botConfig.duration), duration_unit: botConfig.durationUnit, basis: 'stake', amount: stake };
+      if (['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct)) params.barrier = botConfig.prediction;
+
+      try {
+        const { contractId } = await derivApi.buyContract(params);
+        const tr: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake, profit: 0, status: 'open', symbol };
+        setTradeHistory(prev => [tr, ...prev].slice(0, 100));
+        const result = await derivApi.waitForContractResult(contractId);
+        trades++; pnl += result.profit;
+        setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status } : t));
+
+        if (result.status === 'won') {
+          wins++; consLosses = 0; stake = baseStake;
+          if (voiceEnabled && trades % 5 === 0) speak(`Trade ${trades} won. Total profit ${pnl.toFixed(2)}`);
+        } else {
+          losses++; consLosses++;
+          stake = mart ? stake * mult : baseStake;
+          if (voiceEnabled) speak(`Loss ${consLosses}. ${mart ? `Martingale stake ${stake.toFixed(2)}` : ''}`);
+        }
+        setBotStats({ trades, wins, losses, pnl, currentStake: stake, consecutiveLosses: consLosses });
+      } catch (err: any) {
+        toast.error(`Bot trade error: ${err.message}`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    setBotRunning(false); botRunningRef.current = false;
+    setBotStats(prev => ({ ...prev, trades, wins, losses, pnl }));
+  }, [isAuthorized, botConfig, symbol, voiceEnabled, speak]);
+
+  const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
+  const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
 
   // Bot stats
   const totalTrades = tradeHistory.filter(t => t.status !== 'open').length;
