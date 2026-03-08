@@ -1201,6 +1201,33 @@ export default function TradingChart() {
             </div>
           </div>
 
+          {/* Last 18 Digits */}
+          <div className="bg-card border border-border rounded-xl p-3">
+            <h3 className="text-xs font-semibold text-foreground mb-2">Last 18 Digits</h3>
+            <div className="flex gap-1 flex-wrap justify-center">
+              {last18.map((d, i) => {
+                const isLast = i === last18.length - 1;
+                const isEven = d % 2 === 0;
+                return (
+                  <motion.div
+                    key={i}
+                    initial={isLast ? { scale: 0.8 } : {}}
+                    animate={isLast ? { scale: [1, 1.1, 1] } : {}}
+                    transition={isLast ? { duration: 1, repeat: Infinity } : {}}
+                    className={`w-8 h-10 rounded-lg flex items-center justify-center font-mono font-bold text-sm border-2 transition-all ${
+                      isLast ? 'w-10 h-12 text-base ring-2 ring-primary' : ''
+                    } ${isEven
+                      ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
+                      : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
+                    }`}
+                  >
+                    {d}
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* ═══ AUTO BOT PANEL ═══ */}
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
