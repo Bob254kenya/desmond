@@ -152,11 +152,18 @@ export default function ProScannerBot() {
   const [strategyEnabled, setStrategyEnabled] = useState(false);
   const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
   const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
-  const [pattern, setPattern] = useState('');
-  
-  const [digitCondition, setDigitCondition] = useState('==');
-  const [digitCompare, setDigitCompare] = useState('5');
-  const [digitWindow, setDigitWindow] = useState('3');
+
+  /* ── M1 pattern/digit config ── */
+  const [m1Pattern, setM1Pattern] = useState('');
+  const [m1DigitCondition, setM1DigitCondition] = useState('==');
+  const [m1DigitCompare, setM1DigitCompare] = useState('5');
+  const [m1DigitWindow, setM1DigitWindow] = useState('3');
+
+  /* ── M2 pattern/digit config ── */
+  const [m2Pattern, setM2Pattern] = useState('');
+  const [m2DigitCondition, setM2DigitCondition] = useState('==');
+  const [m2DigitCompare, setM2DigitCompare] = useState('5');
+  const [m2DigitWindow, setM2DigitWindow] = useState('3');
 
   /* ── Scanner ── */
   const [scannerActive, setScannerActive] = useState(false);
