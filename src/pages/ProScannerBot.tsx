@@ -13,7 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import {
   Play, StopCircle, Trash2, Scan,
-  Home, RefreshCw, Shield, Zap, Eye, Anchor,
+  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
 } from 'lucide-react';
 
 /* ───── CONSTANTS ───── */
