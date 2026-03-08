@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { derivApi, MARKETS, type MarketSymbol } from '@/services/deriv-api';
 import { getLastDigit } from '@/services/analysis';
