@@ -920,25 +920,26 @@ export default function ProScannerBot() {
           {/* Strategy Card */}
           {(strategyEnabled || strategyM1Enabled) && (
             <div className="bg-card border border-warning/30 rounded-xl p-2.5 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-warning flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Strategy</h3>
-                <div className="flex gap-0.5">
-                  <Button size="sm" variant={strategyMode === 'pattern' ? 'default' : 'outline'}
-                    className="text-[9px] h-6 px-2" onClick={() => setStrategyMode('pattern')} disabled={isRunning}>
-                    Pattern
-                  </Button>
-                  <Button size="sm" variant={strategyMode === 'digit' ? 'default' : 'outline'}
-                    className="text-[9px] h-6 px-2" onClick={() => setStrategyMode('digit')} disabled={isRunning}>
-                    Digit
-                  </Button>
-                </div>
-              </div>
+              <h3 className="text-xs font-semibold text-warning flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Strategy</h3>
 
-              {strategyMode === 'pattern' ? (
-                <div className="space-y-1.5">
-                  {strategyM1Enabled && (
-                    <div className="border border-profit/20 rounded-lg p-1.5 space-y-1">
-                      <label className="text-[9px] font-semibold text-profit">M1 Pattern</label>
+              {/* M1 Strategy */}
+              {strategyM1Enabled && (
+                <div className="border border-profit/20 rounded-lg p-1.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[9px] font-semibold text-profit">M1 Strategy</label>
+                    <div className="flex gap-0.5">
+                      <Button size="sm" variant={m1StrategyMode === 'pattern' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('pattern')} disabled={isRunning}>
+                        Pattern
+                      </Button>
+                      <Button size="sm" variant={m1StrategyMode === 'digit' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('digit')} disabled={isRunning}>
+                        Digit
+                      </Button>
+                    </div>
+                  </div>
+                  {m1StrategyMode === 'pattern' ? (
+                    <>
                       <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={m1Pattern}
                         onChange={e => setM1Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
                         disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
@@ -946,26 +947,9 @@ export default function ProScannerBot() {
                         {cleanM1Pattern.length === 0 ? 'Enter pattern...' :
                           m1PatternValid ? `✓ ${cleanM1Pattern}` : `✗ Need 2+`}
                       </div>
-                    </div>
-                  )}
-                  {strategyEnabled && (
-                    <div className="border border-destructive/20 rounded-lg p-1.5 space-y-1">
-                      <label className="text-[9px] font-semibold text-destructive">M2 Pattern</label>
-                      <Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern}
-                        onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
-                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
-                      <div className={`text-[9px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>
-                        {cleanM2Pattern.length === 0 ? 'Enter pattern...' :
-                          m2PatternValid ? `✓ ${cleanM2Pattern}` : `✗ Need 2+`}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {strategyM1Enabled && (
-                    <div className="border border-profit/20 rounded-lg p-1.5">
-                      <label className="text-[9px] font-semibold text-profit">M1 Digit</label>
+                    </>
+                  ) : (
+                    <>
                       <div className="grid grid-cols-3 gap-1 mt-0.5">
                         <label className="text-[8px] text-muted-foreground text-center">Condition</label>
                         <label className="text-[8px] text-muted-foreground text-center">Digit</label>
@@ -981,11 +965,39 @@ export default function ProScannerBot() {
                         <Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
                         <Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
                       </div>
-                    </div>
+                    </>
                   )}
-                  {strategyEnabled && (
-                    <div className="border border-destructive/20 rounded-lg p-1.5">
-                      <label className="text-[9px] font-semibold text-destructive">M2 Digit</label>
+                </div>
+              )}
+
+              {/* M2 Strategy */}
+              {strategyEnabled && (
+                <div className="border border-destructive/20 rounded-lg p-1.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[9px] font-semibold text-destructive">M2 Strategy</label>
+                    <div className="flex gap-0.5">
+                      <Button size="sm" variant={m2StrategyMode === 'pattern' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('pattern')} disabled={isRunning}>
+                        Pattern
+                      </Button>
+                      <Button size="sm" variant={m2StrategyMode === 'digit' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('digit')} disabled={isRunning}>
+                        Digit
+                      </Button>
+                    </div>
+                  </div>
+                  {m2StrategyMode === 'pattern' ? (
+                    <>
+                      <Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern}
+                        onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
+                      <div className={`text-[9px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM2Pattern.length === 0 ? 'Enter pattern...' :
+                          m2PatternValid ? `✓ ${cleanM2Pattern}` : `✗ Need 2+`}
+                      </div>
+                    </>
+                  ) : (
+                    <>
                       <div className="grid grid-cols-3 gap-1 mt-0.5">
                         <label className="text-[8px] text-muted-foreground text-center">Condition</label>
                         <label className="text-[8px] text-muted-foreground text-center">Digit</label>
@@ -1001,7 +1013,7 @@ export default function ProScannerBot() {
                         <Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
                         <Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
                       </div>
-                    </div>
+                    </>
                   )}
                 </div>
               )}
