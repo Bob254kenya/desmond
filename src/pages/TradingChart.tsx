@@ -1357,9 +1357,17 @@ export default function TradingChart() {
 
           {/* Bot Progress */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
-            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-              <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
+              </h3>
+              {tradeHistory.length > 0 && (
+                <Button variant="ghost" size="sm" className="h-6 text-[9px] text-muted-foreground hover:text-loss"
+                  onClick={() => { setTradeHistory([]); setBotStats({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 }); }}>
+                  Clear
+                </Button>
+              )}
+            </div>
             <div className="grid grid-cols-4 gap-1.5">
               <div className="bg-muted/30 rounded-lg p-1.5 text-center">
                 <div className="text-[8px] text-muted-foreground">Trades</div>
