@@ -1045,6 +1045,32 @@ export default function ProScannerBot() {
             </div>
           </div>
 
+          {/* Trade Summary Panel */}
+          <div className="grid grid-cols-5 gap-1.5">
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Trades</div>
+              <div className="font-mono text-xs font-bold text-foreground">{wins + losses}</div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Wins</div>
+              <div className="font-mono text-xs font-bold text-profit">{wins}</div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Losses</div>
+              <div className="font-mono text-xs font-bold text-loss">{losses}</div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Profit/Loss</div>
+              <div className={`font-mono text-xs font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {netProfit >= 0 ? '+' : ''}{netProfit.toFixed(2)}
+              </div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Total Staked</div>
+              <div className="font-mono text-xs font-bold text-primary">${totalStaked.toFixed(2)}</div>
+            </div>
+          </div>
+
           {/* Start / Stop Buttons */}
           <div className="grid grid-cols-2 gap-2">
             <Button
