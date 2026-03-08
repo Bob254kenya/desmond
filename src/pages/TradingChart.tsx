@@ -116,6 +116,81 @@ function calcEMA(prices: number[], period: number): number {
   return ema;
 }
 
+/* ── Per-candle indicator series ── */
+function calcEMASeries(prices: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  if (prices.length < period) return prices.map(() => null);
+  const k = 2 / (period + 1);
+  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = 0; i < period; i++) result.push(null);
+  result[period - 1] = ema;
+  for (let i = period; i < prices.length; i++) {
+    ema = prices[i] * k + ema * (1 - k);
+    result.push(ema);
+  }
+  return result;
+}
+
+function calcBBSeries(prices: number[], period: number, mult: number = 2) {
+  const upper: (number | null)[] = [];
+  const middle: (number | null)[] = [];
+  const lower: (number | null)[] = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) { upper.push(null); middle.push(null); lower.push(null); continue; }
+    const slice = prices.slice(i - period + 1, i + 1);
+    const ma = slice.reduce((a, b) => a + b, 0) / period;
+    const variance = slice.reduce((s, p) => s + (p - ma) ** 2, 0) / period;
+    const std = Math.sqrt(variance);
+    upper.push(ma + mult * std);
+    middle.push(ma);
+    lower.push(ma - mult * std);
+  }
+  return { upper, middle, lower };
+}
+
+function calcRSISeries(prices: number[], period: number = 14): (number | null)[] {
+  const result: (number | null)[] = [null];
+  if (prices.length < period + 1) return prices.map(() => null);
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = prices[i] - prices[i - 1];
+    if (d > 0) gains += d; else losses -= d;
+    result.push(null);
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  const rsi0 = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  result[period] = rsi0;
+  for (let i = period + 1; i < prices.length; i++) {
+    const d = prices[i] - prices[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(0, d)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(0, -d)) / period;
+    result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+  return result;
+}
+
+/* ── Map candle index back to price-series index for indicators ── */
+function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string): number[] {
+  // returns the ending price-index for each candle
+  const seconds: Record<string, number> = {
+    '1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'12h':43200,'1d':86400,
+  };
+  const interval = seconds[tf] || 60;
+  const indices: number[] = [];
+  let lastBucket = -1;
+  for (let i = 0; i < prices.length; i++) {
+    const t = times[i] || Date.now() / 1000 + i;
+    const bucket = Math.floor(t / interval) * interval;
+    if (bucket !== lastBucket) {
+      if (lastBucket !== -1) indices.push(i - 1);
+      lastBucket = bucket;
+    }
+  }
+  indices.push(prices.length - 1);
+  return indices;
+}
+
 /* ── Support/Resistance ── */
 function calcSR(prices: number[]) {
   if (prices.length < 10) return { support: 0, resistance: 0 };
