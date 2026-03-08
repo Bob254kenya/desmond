@@ -275,7 +275,8 @@ export default function ProScannerBot() {
 
   /* ── Check strategy condition for a specific market ── */
   const checkStrategyForMarket = useCallback((symbol: string, market: 1 | 2): boolean => {
-    if (strategyMode === 'pattern') {
+    const mode = market === 1 ? m1StrategyMode : m2StrategyMode;
+    if (mode === 'pattern') {
       const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern;
       return checkPatternMatchWith(symbol, pat);
     }
@@ -283,7 +284,7 @@ export default function ProScannerBot() {
     const comp = market === 1 ? m1DigitCompare : m2DigitCompare;
     const win = market === 1 ? m1DigitWindow : m2DigitWindow;
     return checkDigitConditionWith(symbol, cond, comp, win);
-  }, [strategyMode, cleanM1Pattern, cleanM2Pattern, checkPatternMatchWith, checkDigitConditionWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2DigitCondition, m2DigitCompare, m2DigitWindow]);
+  }, [m1StrategyMode, m2StrategyMode, cleanM1Pattern, cleanM2Pattern, checkPatternMatchWith, checkDigitConditionWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2DigitCondition, m2DigitCompare, m2DigitWindow]);
 
   /* ── Find scanner match across all markets for a specific market ── */
   const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => {
