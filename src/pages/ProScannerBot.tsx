@@ -480,7 +480,7 @@ export default function ProScannerBot() {
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
     takeProfit, stopLoss, strategyEnabled, strategyMode, patternValid, patternAction,
     scannerActive, findScannerMatch, checkCondition, addLog, updateLog, turboMode,
-    m1HookEnabled, m2HookEnabled, m1FakeCount, m2FakeCount, m1RealCount, m2RealCount]);
+    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
 
   /* ── Execute a single real trade ── */
   const executeRealTrade = useCallback(async (
