@@ -449,8 +449,6 @@ export default function ProScannerBot() {
           cStake = result.cStake;
           mStep = result.mStep;
           inRecovery = result.inRecovery;
-          if (!result.inRecovery) tuwLocked = false;
-          else if (patternAction === 'tradeUntilWin' && strategyEnabled) tuwLocked = true;
 
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
