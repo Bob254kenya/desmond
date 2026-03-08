@@ -153,7 +153,7 @@ export default function ProScannerBot() {
   const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
   const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
   const [pattern, setPattern] = useState('');
-  const [patternAction] = useState<'tradeOnce'>('tradeOnce');
+  
   const [digitCondition, setDigitCondition] = useState('==');
   const [digitCompare, setDigitCompare] = useState('5');
   const [digitWindow, setDigitWindow] = useState('3');
