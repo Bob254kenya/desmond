@@ -522,7 +522,10 @@ export default function ProScannerBot() {
     let inRecovery = mkt === 2;
 
     try {
-      await waitForNextTick(tradeSymbol as MarketSymbol);
+      // Turbo: skip waiting for next tick, trade immediately
+      if (!turboMode) {
+        await waitForNextTick(tradeSymbol as MarketSymbol);
+      }
 
       const buyParams: any = {
         contract_type: cfg.contract, symbol: tradeSymbol,
