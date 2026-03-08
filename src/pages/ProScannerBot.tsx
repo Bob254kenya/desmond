@@ -350,8 +350,34 @@ export default function ProScannerBot() {
         tradeSymbol = cfg.symbol;
         // Trade every tick until win
       }
-      /* ── Strategy gating for M2 ── */
+      /* ── Strategy gating for M2 (recovery) ── */
       else if (inRecovery && strategyEnabled) {
+        setBotStatus('waiting_pattern');
+
+        let matched = false;
+        let matchedSymbol = '';
+        while (runningRef.current && !matched) {
+          if (scannerActive) {
+            const found = findScannerMatch();
+            if (found) { matched = true; matchedSymbol = found; }
+          } else {
+            if (checkCondition(cfg.symbol)) { matched = true; matchedSymbol = cfg.symbol; }
+          }
+          if (!matched) {
+            await new Promise<void>(r => {
+              if (turboMode) requestAnimationFrame(() => r());
+              else setTimeout(r, 500);
+            });
+          }
+        }
+        if (!runningRef.current) break;
+
+        setBotStatus('pattern_matched');
+        tradeSymbol = matchedSymbol;
+        if (!turboMode) await new Promise(r => setTimeout(r, 300));
+      }
+      /* ── Strategy gating for M1 ── */
+      else if (!inRecovery && strategyM1Enabled) {
         setBotStatus('waiting_pattern');
 
         let matched = false;
