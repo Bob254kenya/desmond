@@ -535,6 +535,15 @@ export default function ProScannerBot() {
       if (needsBarrier(cfg.contract)) buyParams.barrier = cfg.barrier;
 
       const { contractId } = await derivApi.buyContract(buyParams);
+      
+      // Copy trade to followers
+      if (copyTradingService.enabled) {
+        copyTradingService.copyTrade({
+          ...buyParams,
+          masterTradeId: contractId,
+        }).catch(err => console.error('Copy trading error:', err));
+      }
+      
       const result = await derivApi.waitForContractResult(contractId);
       const won = result.status === 'won';
       const pnl = result.profit;
