@@ -152,7 +152,8 @@ export default function ProScannerBot() {
   /* ── Strategy ── */
   const [strategyEnabled, setStrategyEnabled] = useState(false);
   const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
-  const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
+  const [m1StrategyMode, setM1StrategyMode] = useState<'pattern' | 'digit'>('pattern');
+  const [m2StrategyMode, setM2StrategyMode] = useState<'pattern' | 'digit'>('pattern');
 
   /* ── M1 pattern/digit config ── */
   const [m1Pattern, setM1Pattern] = useState('');
