@@ -787,7 +787,6 @@ export default function ProScannerBot() {
                     Bot will simulate virtual trades until {m2VirtualLossCount} consecutive losses occur, then execute real trades.
                   </div>
                 </div>
-                </div>
               )}
             </div>
 
