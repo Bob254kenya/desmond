@@ -116,6 +116,81 @@ function calcEMA(prices: number[], period: number): number {
   return ema;
 }
 
+/* ── Per-candle indicator series ── */
+function calcEMASeries(prices: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  if (prices.length < period) return prices.map(() => null);
+  const k = 2 / (period + 1);
+  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = 0; i < period; i++) result.push(null);
+  result[period - 1] = ema;
+  for (let i = period; i < prices.length; i++) {
+    ema = prices[i] * k + ema * (1 - k);
+    result.push(ema);
+  }
+  return result;
+}
+
+function calcBBSeries(prices: number[], period: number, mult: number = 2) {
+  const upper: (number | null)[] = [];
+  const middle: (number | null)[] = [];
+  const lower: (number | null)[] = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) { upper.push(null); middle.push(null); lower.push(null); continue; }
+    const slice = prices.slice(i - period + 1, i + 1);
+    const ma = slice.reduce((a, b) => a + b, 0) / period;
+    const variance = slice.reduce((s, p) => s + (p - ma) ** 2, 0) / period;
+    const std = Math.sqrt(variance);
+    upper.push(ma + mult * std);
+    middle.push(ma);
+    lower.push(ma - mult * std);
+  }
+  return { upper, middle, lower };
+}
+
+function calcRSISeries(prices: number[], period: number = 14): (number | null)[] {
+  const result: (number | null)[] = [null];
+  if (prices.length < period + 1) return prices.map(() => null);
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = prices[i] - prices[i - 1];
+    if (d > 0) gains += d; else losses -= d;
+    result.push(null);
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  const rsi0 = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  result[period] = rsi0;
+  for (let i = period + 1; i < prices.length; i++) {
+    const d = prices[i] - prices[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(0, d)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(0, -d)) / period;
+    result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+  return result;
+}
+
+/* ── Map candle index back to price-series index for indicators ── */
+function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string): number[] {
+  // returns the ending price-index for each candle
+  const seconds: Record<string, number> = {
+    '1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'12h':43200,'1d':86400,
+  };
+  const interval = seconds[tf] || 60;
+  const indices: number[] = [];
+  let lastBucket = -1;
+  for (let i = 0; i < prices.length; i++) {
+    const t = times[i] || Date.now() / 1000 + i;
+    const bucket = Math.floor(t / interval) * interval;
+    if (bucket !== lastBucket) {
+      if (lastBucket !== -1) indices.push(i - 1);
+      lastBucket = bucket;
+    }
+  }
+  indices.push(prices.length - 1);
+  return indices;
+}
+
 /* ── Support/Resistance ── */
 function calcSR(prices: number[]) {
   if (prices.length < 10) return { support: 0, resistance: 0 };
@@ -253,6 +328,12 @@ export default function TradingChart() {
   }, [percentages, mostCommon]);
 
   /* ── Canvas Chart ── */
+  // Per-candle indicator series
+  const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
+  const emaSeries = useMemo(() => calcEMASeries(tfPrices, 50), [tfPrices]);
+  const bbSeries = useMemo(() => calcBBSeries(tfPrices, 20, 2), [tfPrices]);
+  const rsiSeries = useMemo(() => calcRSISeries(tfPrices, 14), [tfPrices]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || candles.length < 2) return;
@@ -265,96 +346,140 @@ export default function TradingChart() {
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
     const W = rect.width;
-    const H = rect.height;
+    const totalH = rect.height;
+    const rsiH = 80; // RSI subplot height
+    const H = totalH - rsiH - 8; // main chart area
+    const priceAxisW = 70;
+    const chartW = W - priceAxisW;
 
     // Background
     ctx.fillStyle = '#0D1117';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, W, totalH);
 
-    // Grid
-    ctx.strokeStyle = '#30363D';
+    // ── Price scale ──
+    const allPrices = candles.flatMap(c => [c.high, c.low]);
+    const rawMin = Math.min(...allPrices);
+    const rawMax = Math.max(...allPrices);
+    const padding = (rawMax - rawMin) * 0.08 || 0.001;
+    const minP = rawMin - padding;
+    const maxP = rawMax + padding;
+    const range = maxP - minP || 1;
+    const toY = (p: number) => 10 + ((maxP - p) / range) * (H - 20);
+
+    // ── Grid ──
+    ctx.strokeStyle = '#21262D';
     ctx.lineWidth = 0.5;
-    for (let i = 0; i < 10; i++) {
-      const y = (H / 10) * i;
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    const gridSteps = 8;
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillStyle = '#484F58';
+    for (let i = 0; i <= gridSteps; i++) {
+      const y = 10 + (i / gridSteps) * (H - 20);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+      const pLabel = maxP - (i / gridSteps) * range;
+      ctx.fillText(pLabel.toFixed(4), chartW + 4, y + 3);
     }
-    for (let i = 0; i < 12; i++) {
-      const x = (W / 12) * i;
+    for (let i = 0; i < 10; i++) {
+      const x = (chartW / 10) * i;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
 
-    const allPrices = candles.flatMap(c => [c.high, c.low]);
-    const minP = Math.min(...allPrices, bb.lower, support) * 0.9999;
-    const maxP = Math.max(...allPrices, bb.upper, resistance) * 1.0001;
-    const range = maxP - minP || 1;
-    const toY = (p: number) => H - ((p - minP) / range) * H * 0.9 - H * 0.05;
-    const candleW = Math.max(2, (W - 40) / candles.length - 1);
-    const startX = 20;
+    // ── Candle geometry ──
+    const maxCandles = Math.min(candles.length, 120); // show last 120 candles max
+    const visibleCandles = candles.slice(-maxCandles);
+    const visibleEndIndices = candleEndIndices.slice(-maxCandles);
+    const gap = 1;
+    const candleW = Math.max(3, Math.min(12, (chartW - 10) / maxCandles - gap));
+    const totalCandleW = candleW + gap;
+    const offsetX = chartW - maxCandles * totalCandleW - 5;
 
-    // Bollinger Bands fill
-    ctx.fillStyle = 'rgba(188,140,255,0.05)';
+    // ── Draw BB bands as filled area + lines ──
+    // Collect per-candle BB values
+    const drawLine = (values: (number | null)[], color: string, width: number, dash: number[] = []) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash);
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < visibleCandles.length; i++) {
+        const idx = visibleEndIndices[i];
+        if (idx === undefined) continue;
+        const v = idx < values.length ? values[idx] : null;
+        if (v === null) continue;
+        const x = offsetX + i * totalCandleW + candleW / 2;
+        const y = toY(v);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+
+    // BB fill area
+    ctx.fillStyle = 'rgba(188, 140, 255, 0.06)';
     ctx.beginPath();
-    // Approximate BB as horizontal bands
-    const bbUpY = toY(bb.upper);
-    const bbLoY = toY(bb.lower);
-    ctx.fillRect(0, bbUpY, W, bbLoY - bbUpY);
+    let fillStarted = false;
+    const bbUpperPoints: {x: number, y: number}[] = [];
+    const bbLowerPoints: {x: number, y: number}[] = [];
+    for (let i = 0; i < visibleCandles.length; i++) {
+      const idx = visibleEndIndices[i];
+      if (idx === undefined) continue;
+      const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
+      const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
+      if (u === null || l === null) continue;
+      const x = offsetX + i * totalCandleW + candleW / 2;
+      bbUpperPoints.push({ x, y: toY(u) });
+      bbLowerPoints.push({ x, y: toY(l) });
+    }
+    if (bbUpperPoints.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(bbUpperPoints[0].x, bbUpperPoints[0].y);
+      bbUpperPoints.forEach(p => ctx.lineTo(p.x, p.y));
+      for (let i = bbLowerPoints.length - 1; i >= 0; i--) ctx.lineTo(bbLowerPoints[i].x, bbLowerPoints[i].y);
+      ctx.closePath();
+      ctx.fill();
+    }
 
-    // BB Upper (dashed)
+    // BB lines
+    drawLine(bbSeries.upper, '#BC8CFF', 1.2, [5, 3]);
+    drawLine(bbSeries.middle, '#BC8CFF', 1.5);
+    drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3]);
+
+    // EMA 50 line
+    drawLine(emaSeries, '#2F81F7', 2);
+
+    // Support line
     ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = '#BC8CFF';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(0, bbUpY); ctx.lineTo(W, bbUpY); ctx.stroke();
-
-    // BB Middle (solid)
-    ctx.setLineDash([]);
-    const bbMidY = toY(bb.middle);
-    ctx.beginPath(); ctx.moveTo(0, bbMidY); ctx.lineTo(W, bbMidY); ctx.stroke();
-
-    // BB Lower (dashed)
-    ctx.setLineDash([6, 4]);
-    ctx.beginPath(); ctx.moveTo(0, bbLoY); ctx.lineTo(W, bbLoY); ctx.stroke();
-
-    // EMA 50
-    ctx.setLineDash([]);
-    ctx.strokeStyle = '#2F81F7';
-    ctx.lineWidth = 2;
-    const ema50Y = toY(ema50);
-    ctx.beginPath(); ctx.moveTo(0, ema50Y); ctx.lineTo(W, ema50Y); ctx.stroke();
-
-    // Support (green dashed)
-    ctx.setLineDash([8, 4]);
     ctx.strokeStyle = '#3FB950';
     ctx.lineWidth = 1.5;
     const supY = toY(support);
-    ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(W, supY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(chartW, supY); ctx.stroke();
 
-    // Resistance (red dashed)
+    // Resistance line
     ctx.strokeStyle = '#F85149';
     const resY = toY(resistance);
-    ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(W, resY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(chartW, resY); ctx.stroke();
     ctx.setLineDash([]);
 
-    // Labels
-    ctx.font = '10px JetBrains Mono, monospace';
-    ctx.fillStyle = '#BC8CFF';
-    ctx.fillText(`BB Upper ${bb.upper.toFixed(2)}`, W - 130, bbUpY - 4);
-    ctx.fillText(`BB Mid ${bb.middle.toFixed(2)}`, W - 120, bbMidY - 4);
-    ctx.fillText(`BB Lower ${bb.lower.toFixed(2)}`, W - 130, bbLoY + 12);
-    ctx.fillStyle = '#2F81F7';
-    ctx.fillText(`EMA50 ${ema50.toFixed(2)}`, W - 120, ema50Y - 4);
+    // S/R labels on price axis
+    ctx.font = '9px JetBrains Mono, monospace';
     ctx.fillStyle = '#3FB950';
-    ctx.fillText(`S: ${support.toFixed(2)}`, 4, supY - 4);
+    ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
     ctx.fillStyle = '#F85149';
-    ctx.fillText(`R: ${resistance.toFixed(2)}`, 4, resY + 12);
+    ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
 
-    // Candlesticks
-    for (let i = 0; i < candles.length; i++) {
-      const c = candles[i];
-      const x = startX + i * (candleW + 1);
+    // ── Candlesticks ──
+    for (let i = 0; i < visibleCandles.length; i++) {
+      const c = visibleCandles[i];
+      const x = offsetX + i * totalCandleW;
       const isGreen = c.close >= c.open;
+      const color = isGreen ? '#3FB950' : '#F85149';
 
       // Wick
-      ctx.strokeStyle = isGreen ? '#3FB950' : '#F85149';
+      ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x + candleW / 2, toY(c.high));
@@ -365,24 +490,106 @@ export default function TradingChart() {
       const bodyTop = toY(Math.max(c.open, c.close));
       const bodyBot = toY(Math.min(c.open, c.close));
       const bodyH = Math.max(1, bodyBot - bodyTop);
-      ctx.fillStyle = isGreen ? '#3FB950' : '#F85149';
-      ctx.fillRect(x, bodyTop, candleW, bodyH);
+
+      if (isGreen) {
+        ctx.fillStyle = color;
+        ctx.fillRect(x, bodyTop, candleW, bodyH);
+      } else {
+        // Hollow red or filled
+        ctx.fillStyle = color;
+        ctx.fillRect(x, bodyTop, candleW, bodyH);
+      }
     }
 
-    // Current price line
+    // ── Current price line ──
     const curY = toY(currentPrice);
-    ctx.setLineDash([3, 3]);
+    ctx.setLineDash([2, 2]);
     ctx.strokeStyle = '#E6EDF3';
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, curY); ctx.lineTo(W, curY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, curY); ctx.lineTo(chartW, curY); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#E6EDF3';
-    ctx.fillRect(W - 80, curY - 8, 78, 16);
+    // Price tag on axis
+    ctx.fillStyle = '#58A6FF';
+    ctx.fillRect(chartW, curY - 8, priceAxisW, 16);
     ctx.fillStyle = '#0D1117';
     ctx.font = 'bold 10px JetBrains Mono, monospace';
-    ctx.fillText(currentPrice.toFixed(4), W - 76, curY + 4);
+    ctx.fillText(currentPrice.toFixed(4), chartW + 2, curY + 4);
 
-  }, [candles, bb, ema50, support, resistance, currentPrice]);
+    // ── Indicator legend (top-left) ──
+    ctx.font = '10px JetBrains Mono, monospace';
+    const legends = [
+      { label: 'BB(20,2)', color: '#BC8CFF' },
+      { label: 'EMA 50', color: '#2F81F7' },
+      { label: 'Support', color: '#3FB950' },
+      { label: 'Resistance', color: '#F85149' },
+    ];
+    let lx = 8;
+    legends.forEach(l => {
+      ctx.fillStyle = l.color;
+      ctx.fillRect(lx, 6, 10, 3);
+      ctx.fillText(l.label, lx + 14, 12);
+      lx += ctx.measureText(l.label).width + 24;
+    });
+
+    // ══════ RSI Subplot ══════
+    const rsiTop = H + 8;
+    ctx.fillStyle = '#161B22';
+    ctx.fillRect(0, rsiTop, W, rsiH);
+    ctx.strokeStyle = '#21262D';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
+
+    // RSI grid: 30, 50, 70
+    const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8);
+    ctx.font = '8px JetBrains Mono, monospace';
+    [30, 50, 70].forEach(level => {
+      const y = rsiToY(level);
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050');
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#484F58';
+      ctx.fillText(String(level), chartW + 4, y + 3);
+    });
+
+    // RSI label
+    ctx.fillStyle = '#8B949E';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillText('RSI(14)', 4, rsiTop + 12);
+
+    // RSI line
+    ctx.strokeStyle = '#D29922';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let rsiStarted = false;
+    for (let i = 0; i < visibleCandles.length; i++) {
+      const idx = visibleEndIndices[i];
+      if (idx === undefined) continue;
+      const v = idx < rsiSeries.length ? rsiSeries[idx] : null;
+      if (v === null) continue;
+      const x = offsetX + i * totalCandleW + candleW / 2;
+      const y = rsiToY(v);
+      if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // RSI current value
+    const lastRsi = rsi;
+    const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922';
+    ctx.fillStyle = rsiColor;
+    ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.font = 'bold 9px JetBrains Mono, monospace';
+    ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
+
+    // Overbought/Oversold zones
+    ctx.fillStyle = 'rgba(248, 81, 73, 0.04)';
+    ctx.fillRect(0, rsiTop, chartW, rsiToY(70) - rsiTop);
+    ctx.fillStyle = 'rgba(63, 185, 80, 0.04)';
+    ctx.fillRect(0, rsiToY(30), chartW, rsiTop + rsiH - rsiToY(30));
+
+  }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, bbSeries, rsiSeries, rsi]);
 
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
@@ -444,7 +651,7 @@ export default function TradingChart() {
         <div className="xl:col-span-8 space-y-3">
           {/* Candlestick Chart */}
           <div className="bg-[#0D1117] border border-[#30363D] rounded-xl overflow-hidden">
-            <canvas ref={canvasRef} className="w-full" style={{ height: 400 }} />
+            <canvas ref={canvasRef} className="w-full" style={{ height: 520 }} />
           </div>
 
           {/* Price Info Panel */}
