@@ -1277,6 +1277,133 @@ export default function TradingChart() {
             </div>
           </div>
 
+          {/* ═══ AUTO BOT PANEL ═══ */}
+          <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5 text-primary" /> Auto Trading Bot
+              </h3>
+              {botRunning && (
+                <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.5 }}>
+                  <Badge className="text-[8px] bg-profit text-profit-foreground">RUNNING</Badge>
+                </motion.div>
+              )}
+            </div>
+
+            <Select value={botConfig.contractType} onValueChange={v => setBotConfig(p => ({ ...p, contractType: v }))} disabled={botRunning}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
+            </Select>
+
+            {['DIGITMATCH','DIGITDIFF','DIGITOVER','DIGITUNDER'].includes(botConfig.contractType) && (
+              <div>
+                <label className="text-[9px] text-muted-foreground">Prediction (0-9)</label>
+                <div className="grid grid-cols-5 gap-1">
+                  {Array.from({ length: 10 }, (_, i) => (
+                    <button key={i} disabled={botRunning} onClick={() => setBotConfig(p => ({ ...p, prediction: String(i) }))}
+                      className={`h-6 rounded text-[10px] font-mono font-bold transition-all ${
+                        botConfig.prediction === String(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'
+                      }`}>{i}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[9px] text-muted-foreground">Stake ($)</label>
+                <Input type="number" min="0.35" step="0.01" value={botConfig.stake}
+                  onChange={e => setBotConfig(p => ({ ...p, stake: e.target.value }))} disabled={botRunning} className="h-7 text-xs" />
+              </div>
+              <div>
+                <label className="text-[9px] text-muted-foreground">Duration</label>
+                <div className="flex gap-1">
+                  <Input type="number" min="1" value={botConfig.duration}
+                    onChange={e => setBotConfig(p => ({ ...p, duration: e.target.value }))} disabled={botRunning} className="h-7 text-xs flex-1" />
+                  <Select value={botConfig.durationUnit} onValueChange={v => setBotConfig(p => ({ ...p, durationUnit: v }))} disabled={botRunning}>
+                    <SelectTrigger className="h-7 text-xs w-16"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="t">T</SelectItem>
+                      <SelectItem value="s">S</SelectItem>
+                      <SelectItem value="m">M</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] text-foreground">Martingale</label>
+              <div className="flex items-center gap-2">
+                {botConfig.martingale && (
+                  <Input type="number" min="1.1" step="0.1" value={botConfig.multiplier}
+                    onChange={e => setBotConfig(p => ({ ...p, multiplier: e.target.value }))} disabled={botRunning}
+                    className="h-6 text-[10px] w-14" />
+                )}
+                <button onClick={() => setBotConfig(p => ({ ...p, martingale: !p.martingale }))} disabled={botRunning}
+                  className={`w-9 h-5 rounded-full transition-colors ${botConfig.martingale ? 'bg-primary' : 'bg-muted'} relative`}>
+                  <div className={`w-4 h-4 rounded-full bg-background shadow absolute top-0.5 transition-transform ${botConfig.martingale ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5">
+              <div>
+                <label className="text-[8px] text-muted-foreground">Stop Loss</label>
+                <Input type="number" value={botConfig.stopLoss} onChange={e => setBotConfig(p => ({ ...p, stopLoss: e.target.value }))}
+                  disabled={botRunning} className="h-7 text-xs" />
+              </div>
+              <div>
+                <label className="text-[8px] text-muted-foreground">Take Profit</label>
+                <Input type="number" value={botConfig.takeProfit} onChange={e => setBotConfig(p => ({ ...p, takeProfit: e.target.value }))}
+                  disabled={botRunning} className="h-7 text-xs" />
+              </div>
+              <div>
+                <label className="text-[8px] text-muted-foreground">Max Trades</label>
+                <Input type="number" value={botConfig.maxTrades} onChange={e => setBotConfig(p => ({ ...p, maxTrades: e.target.value }))}
+                  disabled={botRunning} className="h-7 text-xs" />
+              </div>
+            </div>
+
+            {/* Bot live stats */}
+            {botRunning && (
+              <div className="grid grid-cols-3 gap-1 text-center">
+                <div className="bg-muted/30 rounded p-1">
+                  <div className="text-[7px] text-muted-foreground">Stake</div>
+                  <div className="font-mono text-[10px] font-bold text-foreground">${botStats.currentStake.toFixed(2)}</div>
+                </div>
+                <div className="bg-muted/30 rounded p-1">
+                  <div className="text-[7px] text-muted-foreground">Streak</div>
+                  <div className="font-mono text-[10px] font-bold text-loss">{botStats.consecutiveLosses}L</div>
+                </div>
+                <div className={`${botStats.pnl >= 0 ? 'bg-profit/10' : 'bg-loss/10'} rounded p-1`}>
+                  <div className="text-[7px] text-muted-foreground">P/L</div>
+                  <div className={`font-mono text-[10px] font-bold ${botStats.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                    {botStats.pnl >= 0 ? '+' : ''}{botStats.pnl.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Start/Pause/Stop buttons */}
+            <div className="flex gap-2">
+              {!botRunning ? (
+                <Button onClick={startBot} disabled={!isAuthorized} className="flex-1 h-10 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
+                  <Play className="w-4 h-4 mr-1" /> Start Bot
+                </Button>
+              ) : (
+                <>
+                  <Button onClick={togglePauseBot} variant="outline" className="flex-1 h-10 text-xs">
+                    <Pause className="w-3.5 h-3.5 mr-1" /> {botPaused ? 'Resume' : 'Pause'}
+                  </Button>
+                  <Button onClick={stopBot} variant="destructive" className="flex-1 h-10 text-xs">
+                    <StopCircle className="w-3.5 h-3.5 mr-1" /> Stop
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+
           {/* Bot Progress */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
             <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
