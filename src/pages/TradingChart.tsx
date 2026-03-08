@@ -9,9 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
-  Target, ShieldAlert, Gauge,
+  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy,
 } from 'lucide-react';
 
 /* ── Markets ── */
@@ -219,7 +220,18 @@ function calcMACDFull(prices: number[]) {
   return { macd, signal, histogram: macd - signal };
 }
 
+interface TradeRecord {
+  id: string;
+  time: number;
+  type: string;
+  stake: number;
+  profit: number;
+  status: 'won' | 'lost' | 'open';
+  symbol: string;
+}
+
 export default function TradingChart() {
+  const { isAuthorized } = useAuth();
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
   const [timeframe, setTimeframe] = useState('1m');
@@ -235,7 +247,6 @@ export default function TradingChart() {
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
   const dragStartOffset = useRef(0);
-  // Price axis drag for candle size
   const isPriceAxisDragging = useRef(false);
   const priceAxisStartY = useRef(0);
   const priceAxisStartWidth = useRef(7);
@@ -247,6 +258,12 @@ export default function TradingChart() {
   const [durationUnit, setDurationUnit] = useState('t');
   const [tradeStake, setTradeStake] = useState('1.00');
   const [selectedDigit, setSelectedDigit] = useState<number | null>(null);
+  const [isTrading, setIsTrading] = useState(false);
+
+  // Bot progress
+  const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const lastSpokenSignal = useRef('');
 
   /* ── Load history + subscribe ── */
   useEffect(() => {
@@ -698,9 +715,129 @@ export default function TradingChart() {
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
 
-  const handleBuy = (side: 'buy' | 'sell') => {
-    toast.info(`${side === 'buy' ? '📈 BUY' : '📉 SELL'} order — ${CONTRACT_TYPES.find(c => c.value === contractType)?.label} — Stake $${tradeStake}`);
+  // Multi-timeframe Rise/Fall predictions
+  const multiTfPredictions = useMemo(() => {
+    const tfList = ['1m', '3m', '5m', '15m', '30m', '1h', '4h'];
+    return tfList.map(tf => {
+      const n = TF_TICKS[tf] || 1000;
+      const p = prices.slice(-n);
+      if (p.length < 30) return { tf, direction: 'N/A' as const, confidence: 0, rsi: 50, trend: 0 };
+      const tfRsi = calculateRSI(p, 14);
+      const ema12 = calcEMA(p, 12);
+      const ema26 = calcEMA(p, 26);
+      const trend = ema12 - ema26;
+      const last = p[p.length - 1];
+      const sma = p.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, p.length);
+      const aboveSma = last > sma;
+      
+      // Score: RSI + trend + SMA position
+      let score = 50;
+      if (tfRsi < 30) score += 25; else if (tfRsi < 45) score += 10;
+      else if (tfRsi > 70) score -= 25; else if (tfRsi > 55) score -= 10;
+      if (trend > 0) score += 15; else score -= 15;
+      if (aboveSma) score += 10; else score -= 10;
+      
+      const direction = score >= 50 ? 'Rise' : 'Fall';
+      const confidence = Math.min(95, Math.max(15, Math.round(Math.abs(score - 50) * 2 + 40)));
+      return { tf, direction, confidence, rsi: tfRsi, trend };
+    });
+  }, [prices]);
+
+  // Voice AI announcements
+  const speak = useCallback((text: string) => {
+    if (!voiceEnabled || !window.speechSynthesis) return;
+    if (lastSpokenSignal.current === text) return;
+    lastSpokenSignal.current = text;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.1;
+    utterance.pitch = 1;
+    utterance.volume = 0.8;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [voiceEnabled]);
+
+  // Announce strong signals
+  useEffect(() => {
+    if (!voiceEnabled) return;
+    const strongSignals = multiTfPredictions.filter(p => p.confidence >= 75);
+    if (strongSignals.length >= 3) {
+      const direction = strongSignals[0].direction;
+      const tfs = strongSignals.map(s => s.tf).join(', ');
+      speak(`Strong ${direction} signal detected across ${tfs} timeframes with over 75% confidence`);
+    }
+  }, [multiTfPredictions, voiceEnabled, speak]);
+
+  // Trade execution
+  const handleBuy = async (side: 'buy' | 'sell') => {
+    if (!isAuthorized) {
+      toast.error('Please login to your Deriv account first');
+      return;
+    }
+    if (isTrading) return;
+    setIsTrading(true);
+
+    const ct = side === 'buy' ? contractType : 
+      (contractType === 'CALL' ? 'PUT' : contractType === 'PUT' ? 'CALL' : contractType);
+
+    const params: any = {
+      contract_type: ct,
+      symbol,
+      duration: parseInt(duration),
+      duration_unit: durationUnit,
+      basis: 'stake',
+      amount: parseFloat(tradeStake),
+    };
+
+    // Add barrier for digit contracts
+    if (['DIGITMATCH', 'DIGITDIFF'].includes(ct)) {
+      params.barrier = prediction;
+    } else if (ct === 'DIGITOVER') {
+      params.barrier = prediction;
+    } else if (ct === 'DIGITUNDER') {
+      params.barrier = prediction;
+    }
+
+    try {
+      toast.info(`⏳ Placing ${ct} trade... $${tradeStake}`);
+      const { contractId, buyPrice } = await derivApi.buyContract(params);
+      
+      const newTrade: TradeRecord = {
+        id: contractId,
+        time: Date.now(),
+        type: ct,
+        stake: parseFloat(tradeStake),
+        profit: 0,
+        status: 'open',
+        symbol,
+      };
+      setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
+
+      // Wait for result
+      const result = await derivApi.waitForContractResult(contractId);
+      setTradeHistory(prev => prev.map(t => 
+        t.id === contractId ? { ...t, profit: result.profit, status: result.status } : t
+      ));
+
+      if (result.status === 'won') {
+        toast.success(`✅ WON +$${result.profit.toFixed(2)}`);
+        if (voiceEnabled) speak(`Trade won. Profit ${result.profit.toFixed(2)} dollars`);
+      } else {
+        toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)}`);
+        if (voiceEnabled) speak(`Trade lost. Loss ${Math.abs(result.profit).toFixed(2)} dollars`);
+      }
+    } catch (err: any) {
+      toast.error(`Trade failed: ${err.message}`);
+    } finally {
+      setIsTrading(false);
+    }
   };
+
+  // Bot stats
+  const totalTrades = tradeHistory.filter(t => t.status !== 'open').length;
+  const wins = tradeHistory.filter(t => t.status === 'won').length;
+  const losses = tradeHistory.filter(t => t.status === 'lost').length;
+  const totalProfit = tradeHistory.reduce((s, t) => s + t.profit, 0);
+  const winRate = totalTrades > 0 ? (wins / totalTrades * 100) : 0;
 
   return (
     <div className="space-y-4 max-w-[1920px] mx-auto">
@@ -928,6 +1065,68 @@ export default function TradingChart() {
 
         {/* ═══ RIGHT: Signals + Trade + Tech ═══ */}
         <div className="xl:col-span-4 space-y-3">
+          {/* Voice AI Toggle */}
+          <div className="bg-card border border-primary/30 rounded-xl p-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5 text-primary" /> AI Voice Signals
+              </h3>
+              <Button
+                size="sm"
+                variant={voiceEnabled ? 'default' : 'outline'}
+                className="h-7 text-[10px] gap-1"
+                onClick={() => {
+                  setVoiceEnabled(!voiceEnabled);
+                  if (!voiceEnabled) {
+                    const u = new SpeechSynthesisUtterance('Voice signals enabled');
+                    u.rate = 1.1;
+                    window.speechSynthesis?.speak(u);
+                  } else {
+                    window.speechSynthesis?.cancel();
+                  }
+                }}
+              >
+                {voiceEnabled ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+                {voiceEnabled ? 'ON' : 'OFF'}
+              </Button>
+            </div>
+            {voiceEnabled && (
+              <p className="text-[9px] text-muted-foreground mt-1">🔊 AI will announce strong signals across timeframes</p>
+            )}
+          </div>
+
+          {/* Multi-Timeframe Rise/Fall Predictions */}
+          <div className="bg-card border border-border rounded-xl p-3 space-y-2">
+            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+              <Clock className="w-3.5 h-3.5 text-primary" /> Rise/Fall Predictions
+            </h3>
+            <div className="space-y-1.5">
+              {multiTfPredictions.map(p => (
+                <div key={p.tf} className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold w-8 text-muted-foreground">{p.tf}</span>
+                  <div className="flex-1 h-5 bg-muted rounded-full overflow-hidden relative">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${p.confidence}%` }}
+                      transition={{ duration: 0.6 }}
+                      className={`h-full rounded-full ${p.direction === 'Rise' ? 'bg-profit' : 'bg-loss'}`}
+                    />
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-foreground">
+                      {p.direction} {p.confidence}%
+                    </span>
+                  </div>
+                  {p.direction === 'Rise' 
+                    ? <TrendingUp className="w-3.5 h-3.5 text-profit" />
+                    : <TrendingDown className="w-3.5 h-3.5 text-loss" />
+                  }
+                </div>
+              ))}
+            </div>
+            <div className="text-[8px] text-muted-foreground text-center mt-1">
+              Based on RSI, EMA crossover & SMA position analysis
+            </div>
+          </div>
+
           {/* Trading Signals */}
           <div className="grid grid-cols-2 gap-2">
             {/* Rise/Fall */}
@@ -1036,13 +1235,75 @@ export default function TradingChart() {
               <div className="text-[9px] text-primary">Auto-suggestion: Digit {selectedDigit} ({percentages[selectedDigit]?.toFixed(1)}%)</div>
             )}
             <div className="grid grid-cols-2 gap-2">
-              <Button onClick={() => handleBuy('buy')} className="h-9 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
-                <ArrowUp className="w-3 h-3 mr-1" /> BUY
+              <Button onClick={() => handleBuy('buy')} disabled={isTrading} className="h-9 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
+                {isTrading ? <span className="animate-spin">⏳</span> : <ArrowUp className="w-3 h-3 mr-1" />} BUY
               </Button>
-              <Button onClick={() => handleBuy('sell')} className="h-9 text-xs font-bold bg-loss hover:bg-loss/90 text-loss-foreground">
-                <ArrowDown className="w-3 h-3 mr-1" /> SELL
+              <Button onClick={() => handleBuy('sell')} disabled={isTrading} className="h-9 text-xs font-bold bg-loss hover:bg-loss/90 text-loss-foreground">
+                {isTrading ? <span className="animate-spin">⏳</span> : <ArrowDown className="w-3 h-3 mr-1" />} SELL
               </Button>
             </div>
+          </div>
+
+          {/* Bot Progress */}
+          <div className="bg-card border border-border rounded-xl p-3 space-y-2">
+            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+              <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
+            </h3>
+            <div className="grid grid-cols-4 gap-1.5">
+              <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+                <div className="text-[8px] text-muted-foreground">Trades</div>
+                <div className="font-mono text-sm font-bold text-foreground">{totalTrades}</div>
+              </div>
+              <div className="bg-profit/10 rounded-lg p-1.5 text-center">
+                <div className="text-[8px] text-profit">Wins</div>
+                <div className="font-mono text-sm font-bold text-profit">{wins}</div>
+              </div>
+              <div className="bg-loss/10 rounded-lg p-1.5 text-center">
+                <div className="text-[8px] text-loss">Losses</div>
+                <div className="font-mono text-sm font-bold text-loss">{losses}</div>
+              </div>
+              <div className={`${totalProfit >= 0 ? 'bg-profit/10' : 'bg-loss/10'} rounded-lg p-1.5 text-center`}>
+                <div className="text-[8px] text-muted-foreground">P/L</div>
+                <div className={`font-mono text-sm font-bold ${totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  {totalProfit >= 0 ? '+' : ''}{totalProfit.toFixed(2)}
+                </div>
+              </div>
+            </div>
+            {totalTrades > 0 && (
+              <div>
+                <div className="flex justify-between text-[9px] text-muted-foreground mb-0.5">
+                  <span>Win Rate</span>
+                  <span className="font-mono font-bold">{winRate.toFixed(1)}%</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full bg-profit rounded-full" style={{ width: `${winRate}%` }} />
+                </div>
+              </div>
+            )}
+
+            {/* Trade History */}
+            {tradeHistory.length > 0 && (
+              <div className="max-h-40 overflow-auto space-y-1">
+                {tradeHistory.slice(0, 10).map(t => (
+                  <div key={t.id} className={`flex items-center justify-between text-[9px] p-1.5 rounded-lg border ${
+                    t.status === 'open' ? 'border-primary/30 bg-primary/5' :
+                    t.status === 'won' ? 'border-profit/30 bg-profit/5' :
+                    'border-loss/30 bg-loss/5'
+                  }`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`font-bold ${t.status === 'won' ? 'text-profit' : t.status === 'lost' ? 'text-loss' : 'text-primary'}`}>
+                        {t.status === 'open' ? '⏳' : t.status === 'won' ? '✅' : '❌'}
+                      </span>
+                      <span className="font-mono text-muted-foreground">{t.type}</span>
+                      <span className="text-muted-foreground">${t.stake.toFixed(2)}</span>
+                    </div>
+                    <span className={`font-mono font-bold ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                      {t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Technical Status */}
