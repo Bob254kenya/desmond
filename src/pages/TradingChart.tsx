@@ -328,7 +328,7 @@ export default function TradingChart() {
   const currentPrice = prices[prices.length - 1] || 0;
   const lastDigit = getLastDigit(currentPrice);
   const digits = useMemo(() => tfPrices.map(getLastDigit), [tfPrices]);
-  const last18 = useMemo(() => digits.slice(-18), [digits]);
+  const last26 = useMemo(() => digits.slice(-26), [digits]);
   const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => analyzeDigits(tfPrices), [tfPrices]);
 
   // Indicators
@@ -1201,12 +1201,12 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Last 18 Digits */}
+          {/* Last 26 Digits */}
           <div className="bg-card border border-border rounded-xl p-3">
-            <h3 className="text-xs font-semibold text-foreground mb-2">Last 18 Digits</h3>
+            <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
             <div className="flex gap-1 flex-wrap justify-center">
-              {last18.map((d, i) => {
-                const isLast = i === last18.length - 1;
+              {last26.map((d, i) => {
+                const isLast = i === last26.length - 1;
                 const isEven = d % 2 === 0;
                 return (
                   <motion.div
@@ -1214,8 +1214,8 @@ export default function TradingChart() {
                     initial={isLast ? { scale: 0.8 } : {}}
                     animate={isLast ? { scale: [1, 1.1, 1] } : {}}
                     transition={isLast ? { duration: 1, repeat: Infinity } : {}}
-                    className={`w-8 h-10 rounded-lg flex items-center justify-center font-mono font-bold text-sm border-2 transition-all ${
-                      isLast ? 'w-10 h-12 text-base ring-2 ring-primary' : ''
+                    className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${
+                      isLast ? 'w-9 h-11 text-sm ring-2 ring-primary' : ''
                     } ${isEven
                       ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
                       : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
