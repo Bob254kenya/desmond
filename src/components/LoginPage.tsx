@@ -2,6 +2,8 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import { Activity, Shield, TrendingUp, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import bgHero from '@/assets/bg-hero.jpeg';
+import { Button } from '@/components/ui/button';
 
 export default function LoginPage() {
   const { login, isLoading } = useAuth();
