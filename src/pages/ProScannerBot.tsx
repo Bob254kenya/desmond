@@ -1030,6 +1030,116 @@ export default function ProScannerBot() {
               )}
             </div>
           )}
+
+          {/* Save / Load Config */}
+          <div className="bg-card border border-border rounded-xl p-2.5 space-y-1.5">
+            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">💾 Bot Config</h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-[10px] gap-1"
+                disabled={isRunning}
+                onClick={() => {
+                  const config = {
+                    version: 1,
+                    m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
+                    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
+                    risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
+                    strategy: {
+                      m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled,
+                      m1Mode: m1StrategyMode, m2Mode: m2StrategyMode,
+                      m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow,
+                      m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow,
+                    },
+                    scanner: { active: scannerActive },
+                    turbo: { enabled: turboMode },
+                  };
+                  const now = new Date();
+                  const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}`;
+                  const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = `bot_config_${ts}.json`; a.click();
+                  URL.revokeObjectURL(url);
+                  toast.success('Config saved!');
+                }}
+              >
+                <Download className="w-3 h-3" /> Save Config
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-[10px] gap-1"
+                disabled={isRunning}
+                onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file'; input.accept = '.json';
+                  input.onchange = (ev: any) => {
+                    const file = ev.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                      try {
+                        const cfg = JSON.parse(e.target?.result as string);
+                        if (!cfg.version || !cfg.m1 || !cfg.m2 || !cfg.risk) {
+                          toast.error('Invalid config file format'); return;
+                        }
+                        // M1
+                        if (cfg.m1.enabled !== undefined) setM1Enabled(cfg.m1.enabled);
+                        if (cfg.m1.symbol) setM1Symbol(cfg.m1.symbol);
+                        if (cfg.m1.contract) setM1Contract(cfg.m1.contract);
+                        if (cfg.m1.barrier) setM1Barrier(cfg.m1.barrier);
+                        if (cfg.m1.hookEnabled !== undefined) setM1HookEnabled(cfg.m1.hookEnabled);
+                        if (cfg.m1.virtualLossCount) setM1VirtualLossCount(cfg.m1.virtualLossCount);
+                        if (cfg.m1.realCount) setM1RealCount(cfg.m1.realCount);
+                        // M2
+                        if (cfg.m2.enabled !== undefined) setM2Enabled(cfg.m2.enabled);
+                        if (cfg.m2.symbol) setM2Symbol(cfg.m2.symbol);
+                        if (cfg.m2.contract) setM2Contract(cfg.m2.contract);
+                        if (cfg.m2.barrier) setM2Barrier(cfg.m2.barrier);
+                        if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
+                        if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
+                        if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
+                        // Risk
+                        if (cfg.risk.stake) setStake(cfg.risk.stake);
+                        if (cfg.risk.martingaleOn !== undefined) setMartingaleOn(cfg.risk.martingaleOn);
+                        if (cfg.risk.martingaleMultiplier) setMartingaleMultiplier(cfg.risk.martingaleMultiplier);
+                        if (cfg.risk.martingaleMaxSteps) setMartingaleMaxSteps(cfg.risk.martingaleMaxSteps);
+                        if (cfg.risk.takeProfit) setTakeProfit(cfg.risk.takeProfit);
+                        if (cfg.risk.stopLoss) setStopLoss(cfg.risk.stopLoss);
+                        // Strategy
+                        if (cfg.strategy) {
+                          if (cfg.strategy.m1Enabled !== undefined) setStrategyM1Enabled(cfg.strategy.m1Enabled);
+                          if (cfg.strategy.m2Enabled !== undefined) setStrategyEnabled(cfg.strategy.m2Enabled);
+                          if (cfg.strategy.m1Mode) setM1StrategyMode(cfg.strategy.m1Mode);
+                          if (cfg.strategy.m2Mode) setM2StrategyMode(cfg.strategy.m2Mode);
+                          if (cfg.strategy.m1Pattern !== undefined) setM1Pattern(cfg.strategy.m1Pattern);
+                          if (cfg.strategy.m1DigitCondition) setM1DigitCondition(cfg.strategy.m1DigitCondition);
+                          if (cfg.strategy.m1DigitCompare) setM1DigitCompare(cfg.strategy.m1DigitCompare);
+                          if (cfg.strategy.m1DigitWindow) setM1DigitWindow(cfg.strategy.m1DigitWindow);
+                          if (cfg.strategy.m2Pattern !== undefined) setM2Pattern(cfg.strategy.m2Pattern);
+                          if (cfg.strategy.m2DigitCondition) setM2DigitCondition(cfg.strategy.m2DigitCondition);
+                          if (cfg.strategy.m2DigitCompare) setM2DigitCompare(cfg.strategy.m2DigitCompare);
+                          if (cfg.strategy.m2DigitWindow) setM2DigitWindow(cfg.strategy.m2DigitWindow);
+                        }
+                        // Scanner & Turbo
+                        if (cfg.scanner?.active !== undefined) setScannerActive(cfg.scanner.active);
+                        if (cfg.turbo?.enabled !== undefined) setTurboMode(cfg.turbo.enabled);
+                        toast.success('Config loaded successfully!');
+                      } catch {
+                        toast.error('Failed to parse config file');
+                      }
+                    };
+                    reader.readAsText(file);
+                  };
+                  input.click();
+                }}
+              >
+                <Upload className="w-3 h-3" /> Load Config
+              </Button>
+            </div>
+          </div>
         </div>
 
         {/* ═══ RIGHT: Digit Stream + Activity Log ═══ */}
