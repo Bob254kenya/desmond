@@ -1006,20 +1006,6 @@ export default function ProScannerBot() {
             </div>
           )}
 
-          {/* Control */}
-          <div className="flex gap-2">
-            {!isRunning ? (
-              <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake)}
-                className="flex-1 h-11 font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
-                <Play className="w-4 h-4 mr-2" /> START BOT
-              </Button>
-            ) : (
-              <Button onClick={stopBot} variant="destructive" className="flex-1 h-11 font-bold">
-                <StopCircle className="w-4 h-4 mr-2" /> STOP BOT
-              </Button>
-            )}
-          </div>
-
           {isRunning && (
             <div className={`text-center text-xs font-semibold py-1.5 rounded-lg ${
               currentMarket === 1 ? 'bg-profit/10 text-profit' : 'bg-purple-500/10 text-purple-400'
