@@ -1,3 +1,5 @@
+import { motion } from "framer-motion";
+import { Activity } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -26,11 +28,102 @@ function AppRoutes() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-muted-foreground text-sm">Connecting...</p>
-        </div>
+      <div className="min-h-screen bg-background flex items-center justify-center overflow-hidden">
+        <motion.div
+          className="text-center flex flex-col items-center gap-6"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.5 }}
+        >
+          {/* Animated rings */}
+          <div className="relative w-24 h-24">
+            <motion.div
+              className="absolute inset-0 rounded-full border-2 border-primary/20"
+              animate={{ scale: [1, 1.3, 1], opacity: [0.3, 0, 0.3] }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+            />
+            <motion.div
+              className="absolute inset-2 rounded-full border-2 border-primary/30"
+              animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.1, 0.5] }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut', delay: 0.3 }}
+            />
+            <motion.div
+              className="absolute inset-0 rounded-full border-[3px] border-transparent border-t-primary border-r-primary/50"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
+            />
+            <motion.div
+              className="absolute inset-3 rounded-full border-[2px] border-transparent border-b-primary/70 border-l-primary/30"
+              animate={{ rotate: -360 }}
+              transition={{ duration: 1.8, repeat: Infinity, ease: 'linear' }}
+            />
+            {/* Center icon */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <motion.div
+                animate={{ scale: [1, 1.1, 1] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              >
+                <Activity className="w-8 h-8 text-primary" />
+              </motion.div>
+            </div>
+          </div>
+
+          {/* Welcome text */}
+          <div className="space-y-2">
+            <motion.h1
+              className="text-2xl font-bold text-foreground tracking-tight"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3, duration: 0.5 }}
+            >
+              Welcome to{' '}
+              <span className="text-primary">ramztrader.site</span>
+            </motion.h1>
+            <motion.div
+              className="flex items-center justify-center gap-2 text-muted-foreground text-sm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.6, duration: 0.5 }}
+            >
+              <motion.span
+                animate={{ opacity: [0.4, 1, 0.4] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              >
+                Initializing trading engine
+              </motion.span>
+              <motion.span
+                className="flex gap-0.5"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.8 }}
+              >
+                {[0, 1, 2].map(i => (
+                  <motion.span
+                    key={i}
+                    className="w-1 h-1 rounded-full bg-primary"
+                    animate={{ opacity: [0, 1, 0], y: [0, -4, 0] }}
+                    transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.2 }}
+                  />
+                ))}
+              </motion.span>
+            </motion.div>
+          </div>
+
+          {/* Progress bar */}
+          <motion.div
+            className="w-48 h-1 rounded-full bg-border overflow-hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.8 }}
+          >
+            <motion.div
+              className="h-full rounded-full bg-primary"
+              initial={{ width: '0%' }}
+              animate={{ width: '100%' }}
+              transition={{ duration: 3, ease: 'easeInOut', repeat: Infinity }}
+            />
+          </motion.div>
+        </motion.div>
       </div>
     );
   }
