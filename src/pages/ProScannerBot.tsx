@@ -948,11 +948,6 @@ export default function ProScannerBot() {
                   ✅ PATTERN MATCHED!
                 </div>
               )}
-              {botStatus === 'recovery_tuw' && (
-                <div className="bg-loss/10 border border-loss/30 rounded-lg p-2 text-[10px] text-loss text-center font-semibold animate-pulse">
-                  🔴 TRADE UNTIL WIN — Every tick
-                </div>
-              )}
             </div>
           )}
 
