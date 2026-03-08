@@ -230,11 +230,15 @@ export default function TradingChart() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Zoom & pan state
-  const [candleWidth, setCandleWidth] = useState(7); // px per candle (zoom)
-  const [scrollOffset, setScrollOffset] = useState(0); // candles from right edge
+  const [candleWidth, setCandleWidth] = useState(7);
+  const [scrollOffset, setScrollOffset] = useState(0);
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
   const dragStartOffset = useRef(0);
+  // Price axis drag for candle size
+  const isPriceAxisDragging = useRef(false);
+  const priceAxisStartY = useRef(0);
+  const priceAxisStartWidth = useRef(7);
 
   // Trade panel
   const [contractType, setContractType] = useState('CALL');
