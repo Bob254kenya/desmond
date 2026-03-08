@@ -309,7 +309,7 @@ export default function ProScannerBot() {
     setBotStatus('trading_m1');
     setCurrentStakeState(baseStake);
     setMartingaleStepState(0);
-    setVhFakeWins(0); setVhFakeLosses(0); setVhStatus('idle');
+    setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
 
     let cStake = baseStake;
     let mStep = 0;
