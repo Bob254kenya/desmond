@@ -149,38 +149,8 @@ export default function TopNavbar() {
             </div>
           )}
 
-          {/* Mobile hamburger */}
-          <Button
-            variant="ghost" size="sm"
-            className="md:hidden h-8 w-8 p-0"
-            onClick={() => setMobileOpen(!mobileOpen)}
-          >
-            {mobileOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
-          </Button>
         </div>
       </div>
-
-      {/* Mobile Nav Dropdown */}
-      {mobileOpen && (
-        <nav className="md:hidden border-t border-border bg-card p-2 space-y-1">
-          <div className="flex items-center justify-center gap-1 pb-2 border-b border-border/50 mb-1">
-            <SocialIcons />
-          </div>
-          {navItems.map(item => (
-            <NavLink
-              key={item.url}
-              to={item.url}
-              end={item.url === '/'}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-all"
-              activeClassName="!text-primary !bg-primary/10 font-semibold"
-              onClick={() => setMobileOpen(false)}
-            >
-              <item.icon className="w-4 h-4" />
-              <span>{item.title}</span>
-            </NavLink>
-          ))}
-        </nav>
-      )}
     </header>
   );
 }
