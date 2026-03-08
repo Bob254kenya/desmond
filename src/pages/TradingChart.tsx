@@ -243,18 +243,19 @@ export default function TradingChart() {
       if (!derivApi.isConnected) { setIsLoading(false); return; }
       setIsLoading(true);
       try {
-        const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 1000);
+        const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 5000);
         if (!active) return;
         setPrices(hist.history.prices || []);
         setTimes(hist.history.times || []);
+        setScrollOffset(0);
         setIsLoading(false);
 
         if (!subscribedRef.current) {
           subscribedRef.current = true;
           await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
             if (!active || !data.tick) return;
-            setPrices(prev => [...prev, data.tick.quote].slice(-1000));
-            setTimes(prev => [...prev, data.tick.epoch].slice(-1000));
+            setPrices(prev => [...prev, data.tick.quote].slice(-5000));
+            setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
           });
         }
       } catch (err) {
