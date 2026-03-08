@@ -935,8 +935,13 @@ export default function ProScannerBot() {
                     </label>
                     <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
                       <input type="radio" name="pAction" checked={patternAction === 'tradeUntilWin'} onChange={() => setPatternAction('tradeUntilWin')} disabled={isRunning} />
-                      Trade Until Win
+                      Trade Until Win (on loss → ignore pattern, trade every tick until win)
                     </label>
+                  </div>
+                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
+                    {strategyEnabled && strategyM1Enabled ? '⚡ Strategy active on M1 & M2' :
+                     strategyEnabled ? '⚡ Strategy active on M2 only' :
+                     '⚡ Strategy active on M1 only'}
                   </div>
                 </div>
               ) : (
