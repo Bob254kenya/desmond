@@ -425,15 +425,29 @@ export default function TradingChart() {
 
     if (visibleCandles.length < 1) return;
 
-    // ── Price scale ──
+    // ── Price scale — center candles in view ──
     const allPrices = visibleCandles.flatMap(c => [c.high, c.low]);
+    // Include BB bounds for proper centering
+    for (let i = 0; i < visibleCandles.length; i++) {
+      const idx = visibleEndIndices[i];
+      if (idx === undefined) continue;
+      const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
+      const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
+      if (u !== null) allPrices.push(u);
+      if (l !== null) allPrices.push(l);
+    }
     const rawMin = Math.min(...allPrices);
     const rawMax = Math.max(...allPrices);
-    const padding = (rawMax - rawMin) * 0.08 || 0.001;
+    const priceRange = rawMax - rawMin;
+    const padding = priceRange * 0.12 || 0.001;
     const minP = rawMin - padding;
     const maxP = rawMax + padding;
     const range = maxP - minP || 1;
-    const toY = (p: number) => 10 + ((maxP - p) / range) * (H - 20);
+    // Center the visible price range
+    const chartPadTop = 20;
+    const chartPadBot = 20;
+    const drawH = H - chartPadTop - chartPadBot;
+    const toY = (p: number) => chartPadTop + ((maxP - p) / range) * drawH;
 
     // ── Grid ──
     ctx.strokeStyle = '#21262D';
