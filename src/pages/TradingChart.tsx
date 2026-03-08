@@ -374,14 +374,31 @@ export default function TradingChart() {
       }
     };
 
+    const priceAxisX = rect.width - 70;
+
     const onMouseDown = (e: MouseEvent) => {
-      isDragging.current = true;
-      dragStartX.current = e.clientX;
-      dragStartOffset.current = scrollOffset;
-      canvas.style.cursor = 'grabbing';
+      const localX = e.clientX - rect.left;
+      if (localX >= priceAxisX) {
+        // Price axis drag — vertical drag to resize candles
+        isPriceAxisDragging.current = true;
+        priceAxisStartY.current = e.clientY;
+        priceAxisStartWidth.current = candleWidth;
+        canvas.style.cursor = 'ns-resize';
+      } else {
+        isDragging.current = true;
+        dragStartX.current = e.clientX;
+        dragStartOffset.current = scrollOffset;
+        canvas.style.cursor = 'grabbing';
+      }
     };
 
     const onMouseMove = (e: MouseEvent) => {
+      if (isPriceAxisDragging.current) {
+        const dy = priceAxisStartY.current - e.clientY;
+        const newWidth = Math.max(2, Math.min(24, priceAxisStartWidth.current + Math.round(dy / 8)));
+        setCandleWidth(newWidth);
+        return;
+      }
       if (!isDragging.current) return;
       const dx = dragStartX.current - e.clientX;
       const candlesPerPx = 1 / (candleWidth + 1);
@@ -391,6 +408,7 @@ export default function TradingChart() {
 
     const onMouseUp = () => {
       isDragging.current = false;
+      isPriceAxisDragging.current = false;
       canvas.style.cursor = 'crosshair';
     };
 
