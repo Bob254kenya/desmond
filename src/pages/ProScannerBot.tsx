@@ -126,17 +126,18 @@ export default function ProScannerBot() {
 
   /* ── Virtual Hook M1 ── */
   const [m1HookEnabled, setM1HookEnabled] = useState(false);
-  const [m1FakeCount, setM1FakeCount] = useState('3');
+  const [m1VirtualLossCount, setM1VirtualLossCount] = useState('3');
   const [m1RealCount, setM1RealCount] = useState('2');
 
   /* ── Virtual Hook M2 ── */
   const [m2HookEnabled, setM2HookEnabled] = useState(false);
-  const [m2FakeCount, setM2FakeCount] = useState('3');
+  const [m2VirtualLossCount, setM2VirtualLossCount] = useState('3');
   const [m2RealCount, setM2RealCount] = useState('2');
 
   /* ── Virtual Hook stats ── */
   const [vhFakeWins, setVhFakeWins] = useState(0);
   const [vhFakeLosses, setVhFakeLosses] = useState(0);
+  const [vhConsecLosses, setVhConsecLosses] = useState(0);
   const [vhStatus, setVhStatus] = useState<'idle' | 'waiting' | 'confirmed' | 'failed'>('idle');
 
   /* ── Risk ── */
@@ -290,7 +291,7 @@ export default function ProScannerBot() {
     setLogEntries([]);
     setWins(0); setLosses(0); setTotalStaked(0); setNetProfit(0);
     setMartingaleStepState(0);
-    setVhFakeWins(0); setVhFakeLosses(0); setVhStatus('idle');
+    setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
     setTicksCaptured(0); setTicksMissed(0);
   }, []);
 
@@ -308,7 +309,7 @@ export default function ProScannerBot() {
     setBotStatus('trading_m1');
     setCurrentStakeState(baseStake);
     setMartingaleStepState(0);
-    setVhFakeWins(0); setVhFakeLosses(0); setVhStatus('idle');
+    setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
 
     let cStake = baseStake;
     let mStep = 0;
@@ -333,7 +334,7 @@ export default function ProScannerBot() {
       let tradeSymbol: string;
       const cfg = getConfig(mkt);
       const hookEnabled = mkt === 1 ? m1HookEnabled : m2HookEnabled;
-      const fakeCount = parseInt(mkt === 1 ? m1FakeCount : m2FakeCount) || 3;
+      const requiredLosses = parseInt(mkt === 1 ? m1VirtualLossCount : m2VirtualLossCount) || 3;
       const realCount = parseInt(mkt === 1 ? m1RealCount : m2RealCount) || 2;
 
       /* ── TUW LOCKED: after pattern-matched loss, trade every tick until win ── */
@@ -378,49 +379,50 @@ export default function ProScannerBot() {
         tradeSymbol = cfg.symbol;
       }
 
-      /* ═══ VIRTUAL HOOK SEQUENCE ═══ */
+      /* ═══ VIRTUAL HOOK SEQUENCE — Loss-streak based ═══ */
       if (hookEnabled) {
         setBotStatus('virtual_hook');
         setVhStatus('waiting');
         setVhFakeWins(0);
         setVhFakeLosses(0);
-        let hookPassed = true;
+        setVhConsecLosses(0);
+        let consecLosses = 0;
+        let virtualTradeNum = 0;
 
-        for (let fi = 0; fi < fakeCount && runningRef.current; fi++) {
+        // Keep simulating virtual trades until we accumulate requiredLosses consecutive losses
+        while (consecLosses < requiredLosses && runningRef.current) {
+          virtualTradeNum++;
           const vLogId = ++logIdRef.current;
           const vNow = new Date().toLocaleTimeString();
           addLog(vLogId, {
             time: vNow, market: 'VH', symbol: tradeSymbol,
             contract: cfg.contract, stake: 0, martingaleStep: 0,
             exitDigit: '...', result: 'Pending', pnl: 0, balance: localBalance,
-            switchInfo: `Virtual ${fi + 1}/${fakeCount}`,
+            switchInfo: `Virtual #${virtualTradeNum} (losses: ${consecLosses}/${requiredLosses})`,
           });
 
           const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol);
           if (!runningRef.current) break;
 
           if (vResult.won) {
+            // Win resets the consecutive loss counter
+            consecLosses = 0;
+            setVhConsecLosses(0);
             setVhFakeWins(prev => prev + 1);
-            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN ${fi + 1}/${fakeCount}` });
+            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` });
           } else {
+            consecLosses++;
+            setVhConsecLosses(consecLosses);
             setVhFakeLosses(prev => prev + 1);
-            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS → Hook cancelled` });
-            hookPassed = false;
-            setVhStatus('failed');
-            break;
+            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` });
           }
         }
 
         if (!runningRef.current) break;
-        if (!hookPassed) {
-          setVhStatus('failed');
-          // Return to pattern scanner
-          if (!turboMode) await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
 
+        // Required consecutive losses reached → hook confirmed
         setVhStatus('confirmed');
-        toast.success(`🎣 Hook confirmed! Executing ${realCount} real trade(s)`);
+        toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
 
         /* Execute real trades batch */
         for (let ri = 0; ri < realCount && runningRef.current; ri++) {
@@ -439,7 +441,9 @@ export default function ProScannerBot() {
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
 
+        // Reset after real trades
         setVhStatus('idle');
+        setVhConsecLosses(0);
         if (!runningRef.current) break;
         continue;
       }
@@ -476,7 +480,7 @@ export default function ProScannerBot() {
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
     takeProfit, stopLoss, strategyEnabled, strategyMode, patternValid, patternAction,
     scannerActive, findScannerMatch, checkCondition, addLog, updateLog, turboMode,
-    m1HookEnabled, m2HookEnabled, m1FakeCount, m2FakeCount, m1RealCount, m2RealCount]);
+    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
 
   /* ── Execute a single real trade ── */
   const executeRealTrade = useCallback(async (
@@ -720,14 +724,19 @@ export default function ProScannerBot() {
                 <Switch checked={m1HookEnabled} onCheckedChange={setM1HookEnabled} disabled={isRunning} />
               </div>
               {m1HookEnabled && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[9px] text-muted-foreground">Fake Contracts</label>
-                    <Input type="number" min="1" max="10" value={m1FakeCount} onChange={e => setM1FakeCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] text-muted-foreground">Virtual Loss Count</label>
+                      <Input type="number" min="1" max="20" value={m1VirtualLossCount} onChange={e => setM1VirtualLossCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-muted-foreground">Real After Hook</label>
+                      <Input type="number" min="1" max="10" value={m1RealCount} onChange={e => setM1RealCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[9px] text-muted-foreground">Real After Hook</label>
-                    <Input type="number" min="1" max="10" value={m1RealCount} onChange={e => setM1RealCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
+                    Bot will simulate virtual trades until {m1VirtualLossCount} consecutive losses occur, then execute real trades.
                   </div>
                 </div>
               )}
@@ -763,14 +772,19 @@ export default function ProScannerBot() {
                 <Switch checked={m2HookEnabled} onCheckedChange={setM2HookEnabled} disabled={isRunning} />
               </div>
               {m2HookEnabled && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[9px] text-muted-foreground">Fake Contracts</label>
-                    <Input type="number" min="1" max="10" value={m2FakeCount} onChange={e => setM2FakeCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] text-muted-foreground">Virtual Loss Count</label>
+                      <Input type="number" min="1" max="20" value={m2VirtualLossCount} onChange={e => setM2VirtualLossCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-muted-foreground">Real After Hook</label>
+                      <Input type="number" min="1" max="10" value={m2RealCount} onChange={e => setM2RealCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[9px] text-muted-foreground">Real After Hook</label>
-                    <Input type="number" min="1" max="10" value={m2RealCount} onChange={e => setM2RealCount(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
+                    Bot will simulate virtual trades until {m2VirtualLossCount} consecutive losses occur, then execute real trades.
                   </div>
                 </div>
               )}
@@ -787,14 +801,18 @@ export default function ProScannerBot() {
               <h3 className="text-xs font-semibold text-primary flex items-center gap-1">
                 <Anchor className="w-3.5 h-3.5" /> Virtual Hook Status
               </h3>
-              <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="grid grid-cols-4 gap-2 text-center">
                 <div>
-                  <div className="text-[9px] text-muted-foreground">Fake Wins</div>
+                  <div className="text-[9px] text-muted-foreground">V-Wins</div>
                   <div className="font-mono text-sm font-bold text-profit">{vhFakeWins}</div>
                 </div>
                 <div>
-                  <div className="text-[9px] text-muted-foreground">Fake Losses</div>
+                  <div className="text-[9px] text-muted-foreground">V-Losses</div>
                   <div className="font-mono text-sm font-bold text-loss">{vhFakeLosses}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-muted-foreground">Loss Streak</div>
+                  <div className="font-mono text-sm font-bold text-warning">{vhConsecLosses}</div>
                 </div>
                 <div>
                   <div className="text-[9px] text-muted-foreground">Status</div>
