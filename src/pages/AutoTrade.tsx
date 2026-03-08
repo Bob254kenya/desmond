@@ -170,7 +170,7 @@ export default function AutoTrade() {
 
         if (config.martingale) {
           if (won) stake = parseFloat(config.stake);
-          else stake *= mult;
+          else stake = Math.round(stake * mult * 100) / 100;
         } else { stake = parseFloat(config.stake); }
         setCurrentStake(stake);
 
