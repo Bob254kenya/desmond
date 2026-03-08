@@ -152,11 +152,18 @@ export default function ProScannerBot() {
   const [strategyEnabled, setStrategyEnabled] = useState(false);
   const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
   const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
-  const [pattern, setPattern] = useState('');
-  
-  const [digitCondition, setDigitCondition] = useState('==');
-  const [digitCompare, setDigitCompare] = useState('5');
-  const [digitWindow, setDigitWindow] = useState('3');
+
+  /* ── M1 pattern/digit config ── */
+  const [m1Pattern, setM1Pattern] = useState('');
+  const [m1DigitCondition, setM1DigitCondition] = useState('==');
+  const [m1DigitCompare, setM1DigitCompare] = useState('5');
+  const [m1DigitWindow, setM1DigitWindow] = useState('3');
+
+  /* ── M2 pattern/digit config ── */
+  const [m2Pattern, setM2Pattern] = useState('');
+  const [m2DigitCondition, setM2DigitCondition] = useState('==');
+  const [m2DigitCompare, setM2DigitCompare] = useState('5');
+  const [m2DigitWindow, setM2DigitWindow] = useState('3');
 
   /* ── Scanner ── */
   const [scannerActive, setScannerActive] = useState(false);
@@ -227,60 +234,62 @@ export default function ProScannerBot() {
   }, []);
 
   /* ── Pattern validation ── */
-  const cleanPattern = pattern.toUpperCase().replace(/[^EO]/g, '');
-  const patternValid = cleanPattern.length >= 2;
+  const cleanM1Pattern = m1Pattern.toUpperCase().replace(/[^EO]/g, '');
+  const m1PatternValid = cleanM1Pattern.length >= 2;
+  const cleanM2Pattern = m2Pattern.toUpperCase().replace(/[^EO]/g, '');
+  const m2PatternValid = cleanM2Pattern.length >= 2;
 
-  /* ── Check pattern match for a symbol ── */
-  const checkPatternMatch = useCallback((symbol: string): boolean => {
+  /* ── Check pattern match for a symbol with specific pattern ── */
+  const checkPatternMatchWith = useCallback((symbol: string, cleanPat: string): boolean => {
     const digits = tickMapRef.current.get(symbol) || [];
-    if (digits.length < cleanPattern.length) return false;
-    const recent = digits.slice(-cleanPattern.length);
-    for (let i = 0; i < cleanPattern.length; i++) {
-      const expected = cleanPattern[i];
+    if (digits.length < cleanPat.length) return false;
+    const recent = digits.slice(-cleanPat.length);
+    for (let i = 0; i < cleanPat.length; i++) {
+      const expected = cleanPat[i];
       const actual = recent[i] % 2 === 0 ? 'E' : 'O';
       if (expected !== actual) return false;
     }
     return true;
-  }, [cleanPattern]);
+  }, []);
 
-  /* ── Check digit condition for a symbol ── */
-  const checkDigitCondition = useCallback((symbol: string): boolean => {
+  /* ── Check digit condition for a symbol with specific config ── */
+  const checkDigitConditionWith = useCallback((symbol: string, condition: string, compare: string, window: string): boolean => {
     const digits = tickMapRef.current.get(symbol) || [];
-    const win = parseInt(digitWindow) || 3;
-    const compare = parseInt(digitCompare);
+    const win = parseInt(window) || 3;
+    const comp = parseInt(compare);
     if (digits.length < win) return false;
     const recent = digits.slice(-win);
     return recent.every(d => {
-      switch (digitCondition) {
-        case '>': return d > compare;
-        case '<': return d < compare;
-        case '>=': return d >= compare;
-        case '<=': return d <= compare;
-        case '==': return d === compare;
+      switch (condition) {
+        case '>': return d > comp;
+        case '<': return d < comp;
+        case '>=': return d >= comp;
+        case '<=': return d <= comp;
+        case '==': return d === comp;
         default: return false;
       }
     });
-  }, [digitCondition, digitCompare, digitWindow]);
+  }, []);
 
-  /* ── Check strategy condition (raw — ignores enabled flags) ── */
-  const checkStrategyCondition = useCallback((symbol: string): boolean => {
-    if (strategyMode === 'pattern') return checkPatternMatch(symbol);
-    return checkDigitCondition(symbol);
-  }, [strategyMode, checkPatternMatch, checkDigitCondition]);
+  /* ── Check strategy condition for a specific market ── */
+  const checkStrategyForMarket = useCallback((symbol: string, market: 1 | 2): boolean => {
+    if (strategyMode === 'pattern') {
+      const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern;
+      return checkPatternMatchWith(symbol, pat);
+    }
+    const cond = market === 1 ? m1DigitCondition : m2DigitCondition;
+    const comp = market === 1 ? m1DigitCompare : m2DigitCompare;
+    const win = market === 1 ? m1DigitWindow : m2DigitWindow;
+    return checkDigitConditionWith(symbol, cond, comp, win);
+  }, [strategyMode, cleanM1Pattern, cleanM2Pattern, checkPatternMatchWith, checkDigitConditionWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2DigitCondition, m2DigitCompare, m2DigitWindow]);
 
-  /* ── Check condition with M2 flag (legacy compat) ── */
-  const checkCondition = useCallback((symbol: string): boolean => {
-    if (!strategyEnabled) return true;
-    return checkStrategyCondition(symbol);
-  }, [strategyEnabled, checkStrategyCondition]);
-
-  /* ── Find scanner match across all markets ── */
-  const findScannerMatch = useCallback((): string | null => {
+  /* ── Find scanner match across all markets for a specific market ── */
+  const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => {
     for (const m of SCANNER_MARKETS) {
-      if (checkStrategyCondition(m.symbol)) return m.symbol;
+      if (checkStrategyForMarket(m.symbol, market)) return m.symbol;
     }
     return null;
-  }, [checkStrategyCondition]);
+  }, [checkStrategyForMarket]);
 
   /* ── Add log entry ── */
   const addLog = useCallback((id: number, entry: Omit<LogEntry, 'id'>) => {
@@ -307,7 +316,8 @@ export default function ProScannerBot() {
     const baseStake = parseFloat(stake);
     if (baseStake < 0.35) { toast.error('Min stake $0.35'); return; }
     if (!m1Enabled && !m2Enabled) { toast.error('Enable at least one market'); return; }
-    if ((strategyEnabled || strategyM1Enabled) && strategyMode === 'pattern' && !patternValid) { toast.error('Invalid pattern (min 2 E/O)'); return; }
+    if (strategyM1Enabled && strategyMode === 'pattern' && !m1PatternValid) { toast.error('Invalid M1 pattern (min 2 E/O)'); return; }
+    if (strategyEnabled && strategyMode === 'pattern' && !m2PatternValid) { toast.error('Invalid M2 pattern (min 2 E/O)'); return; }
 
     setIsRunning(true);
     runningRef.current = true;
@@ -350,10 +360,10 @@ export default function ProScannerBot() {
         let matchedSymbol = '';
         while (runningRef.current && !matched) {
           if (scannerActive) {
-            const found = findScannerMatch();
+            const found = findScannerMatchForMarket(2);
             if (found) { matched = true; matchedSymbol = found; }
           } else {
-            if (checkCondition(cfg.symbol)) { matched = true; matchedSymbol = cfg.symbol; }
+            if (checkStrategyForMarket(cfg.symbol, 2)) { matched = true; matchedSymbol = cfg.symbol; }
           }
           if (!matched) {
             await new Promise<void>(r => {
@@ -376,10 +386,10 @@ export default function ProScannerBot() {
         let matchedSymbol = '';
         while (runningRef.current && !matched) {
           if (scannerActive) {
-            const found = findScannerMatch();
+            const found = findScannerMatchForMarket(1);
             if (found) { matched = true; matchedSymbol = found; }
           } else {
-            if (checkStrategyCondition(cfg.symbol)) { matched = true; matchedSymbol = cfg.symbol; }
+            if (checkStrategyForMarket(cfg.symbol, 1)) { matched = true; matchedSymbol = cfg.symbol; }
           }
           if (!matched) {
             await new Promise<void>(r => {
@@ -488,8 +498,8 @@ export default function ProScannerBot() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Contract, m2Contract,
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
-    takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, strategyMode, patternValid,
-    scannerActive, findScannerMatch, checkCondition, addLog, updateLog, turboMode,
+    takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, strategyMode, m1PatternValid, m2PatternValid,
+    scannerActive, findScannerMatchForMarket, checkStrategyForMarket, addLog, updateLog, turboMode,
     m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
 
   /* ── Execute a single real trade ── */
@@ -901,45 +911,91 @@ export default function ProScannerBot() {
               </div>
 
               {strategyMode === 'pattern' ? (
-                <div className="space-y-2">
-                  <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={pattern}
-                    onChange={e => setPattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
-                    disabled={isRunning} className="h-16 text-xs font-mono" />
-                  <div className={`text-[10px] font-mono ${patternValid ? 'text-profit' : 'text-loss'}`}>
-                    {cleanPattern.length === 0 ? 'Enter pattern...' :
-                      patternValid ? `✓ ${cleanPattern} (${cleanPattern.length} chars)` :
-                        `✗ Too short (need 2+)`}
-                  </div>
+                <div className="space-y-3">
+                  {/* M1 Pattern */}
+                  {strategyM1Enabled && (
+                    <div className="space-y-1.5 border border-profit/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-profit">M1 Pattern</label>
+                      <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={m1Pattern}
+                        onChange={e => setM1Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-14 text-xs font-mono" />
+                      <div className={`text-[10px] font-mono ${m1PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM1Pattern.length === 0 ? 'Enter M1 pattern...' :
+                          m1PatternValid ? `✓ ${cleanM1Pattern} (${cleanM1Pattern.length} chars)` :
+                            `✗ Too short (need 2+)`}
+                      </div>
+                    </div>
+                  )}
+                  {/* M2 Pattern */}
+                  {strategyEnabled && (
+                    <div className="space-y-1.5 border border-destructive/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-destructive">M2 Pattern</label>
+                      <Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern}
+                        onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-14 text-xs font-mono" />
+                      <div className={`text-[10px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM2Pattern.length === 0 ? 'Enter M2 pattern...' :
+                          m2PatternValid ? `✓ ${cleanM2Pattern} (${cleanM2Pattern.length} chars)` :
+                            `✗ Too short (need 2+)`}
+                      </div>
+                    </div>
+                  )}
                   <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
                     Mode: Trade Once per match
                   </div>
-                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
-                    {strategyEnabled && strategyM1Enabled ? '⚡ Strategy active on M1 & M2' :
-                     strategyEnabled ? '⚡ Strategy active on M2 only' :
-                     '⚡ Strategy active on M1 only'}
-                  </div>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">Condition</label>
-                      <Select value={digitCondition} onValueChange={setDigitCondition} disabled={isRunning}>
-                        <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
+                <div className="space-y-3">
+                  {/* M1 Digit */}
+                  {strategyM1Enabled && (
+                    <div className="space-y-1.5 border border-profit/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-profit">M1 Digit Condition</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Condition</label>
+                          <Select value={m1DigitCondition} onValueChange={setM1DigitCondition} disabled={isRunning}>
+                            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Value</label>
+                          <Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Window</label>
+                          <Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">Value</label>
-                      <Input type="number" min="0" max="9" value={digitCompare} onChange={e => setDigitCompare(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                  )}
+                  {/* M2 Digit */}
+                  {strategyEnabled && (
+                    <div className="space-y-1.5 border border-destructive/20 rounded-lg p-2">
+                      <label className="text-[10px] font-semibold text-destructive">M2 Digit Condition</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Condition</label>
+                          <Select value={m2DigitCondition} onValueChange={setM2DigitCondition} disabled={isRunning}>
+                            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Value</label>
+                          <Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-muted-foreground">Window</label>
+                          <Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-muted-foreground">Window</label>
-                      <Input type="number" min="1" max="50" value={digitWindow} onChange={e => setDigitWindow(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
 
