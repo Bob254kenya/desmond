@@ -131,6 +131,16 @@ function calcEMASeries(prices: number[], period: number): (number | null)[] {
   return result;
 }
 
+function calcSMASeries(prices: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) { result.push(null); continue; }
+    const slice = prices.slice(i - period + 1, i + 1);
+    result.push(slice.reduce((a, b) => a + b, 0) / period);
+  }
+  return result;
+}
+
 function calcBBSeries(prices: number[], period: number, mult: number = 2) {
   const upper: (number | null)[] = [];
   const middle: (number | null)[] = [];
