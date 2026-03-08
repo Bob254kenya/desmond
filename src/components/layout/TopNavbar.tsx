@@ -21,6 +21,7 @@ import SocialIcons from './SocialIcons';
 
 const navItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
+  { title: 'Chart', url: '/chart', icon: Activity },
   { title: 'Live Scanner', url: '/markets', icon: BarChart3 },
   { title: 'Smart Signal Bot', url: '/smart-bot', icon: Zap },
   { title: 'Auto Trade', url: '/auto-trade', icon: Bot },

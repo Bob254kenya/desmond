@@ -51,6 +51,7 @@ function AppRoutes() {
         <Route path="/bots" element={<BotsPage />} />
         <Route path="/smart-bot" element={<SmartBotPage />} />
         <Route path="/ramz-bot" element={<AdvancedRamzBot />} />
+        <Route path="/chart" element={<TradingChart />} />
         <Route path="/history" element={<TradeHistory />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
