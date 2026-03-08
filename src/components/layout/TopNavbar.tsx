@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLossRequirement } from '@/hooks/useLossRequirement';
 import {
   LayoutDashboard, BarChart3, Activity, Bot, Cpu, Zap,
-  History, Settings, LogOut, ChevronDown, Menu, X, RefreshCw,
+  History, Settings, LogOut, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
