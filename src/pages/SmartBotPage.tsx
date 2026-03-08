@@ -18,8 +18,9 @@ import { Badge } from '@/components/ui/badge';
 import {
   Zap, Play, StopCircle, Shield, TrendingUp, AlertTriangle,
   CheckCircle, XCircle, Loader2, Volume2, VolumeX, Settings2,
-  BarChart3, Activity,
+  BarChart3, Activity, Gift,
 } from 'lucide-react';
+import type { BotConfig } from '@/components/bot-config/ConfigPreview';
 import { type TradeLog } from '@/components/auto-trade/types';
 import TradeLogComponent from '@/components/auto-trade/TradeLog';
 import DigitDisplay from '@/components/auto-trade/DigitDisplay';
