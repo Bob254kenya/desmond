@@ -705,7 +705,7 @@ export default function TradingChart() {
         <div className="xl:col-span-8 space-y-3">
           {/* Candlestick Chart */}
           <div className="bg-[#0D1117] border border-[#30363D] rounded-xl overflow-hidden">
-            <canvas ref={canvasRef} className="w-full" style={{ height: 520 }} />
+            <canvas ref={canvasRef} className="w-full" style={{ height: 520, cursor: 'crosshair' }} />
           </div>
 
           {/* Price Info Panel */}
