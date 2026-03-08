@@ -1,4 +1,7 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Share2 } from 'lucide-react';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 const socials = [
   {
@@ -54,6 +57,39 @@ const socials = [
 ];
 
 export default function SocialIcons() {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button className="p-1.5 rounded-md text-muted-foreground hover:text-foreground transition-colors">
+            <Share2 className="w-4 h-4" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-auto p-2">
+          <div className="flex items-center gap-1">
+            {socials.map(s => (
+              <Tooltip key={s.name}>
+                <TooltipTrigger asChild>
+                  <a
+                    href={s.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`p-2 rounded-md text-muted-foreground transition-all duration-200 ${s.hoverClass}`}
+                  >
+                    {s.icon}
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">{s.name}</TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+    );
+  }
+
   return (
     <div className="flex items-center gap-1">
       {socials.map(s => (
