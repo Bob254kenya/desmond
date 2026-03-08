@@ -379,7 +379,7 @@ export default function ProScannerBot() {
             const found = findScannerMatch();
             if (found) { matched = true; matchedSymbol = found; }
           } else {
-            if (checkCondition(cfg.symbol)) { matched = true; matchedSymbol = cfg.symbol; }
+            if (checkStrategyCondition(cfg.symbol)) { matched = true; matchedSymbol = cfg.symbol; }
           }
           if (!matched) {
             await new Promise<void>(r => {
