@@ -334,7 +334,7 @@ export default function ProScannerBot() {
       let tradeSymbol: string;
       const cfg = getConfig(mkt);
       const hookEnabled = mkt === 1 ? m1HookEnabled : m2HookEnabled;
-      const fakeCount = parseInt(mkt === 1 ? m1FakeCount : m2FakeCount) || 3;
+      const requiredLosses = parseInt(mkt === 1 ? m1VirtualLossCount : m2VirtualLossCount) || 3;
       const realCount = parseInt(mkt === 1 ? m1RealCount : m2RealCount) || 2;
 
       /* ── TUW LOCKED: after pattern-matched loss, trade every tick until win ── */
