@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLossRequirement } from '@/hooks/useLossRequirement';
 import {
   LayoutDashboard, BarChart3, Activity, Bot, Cpu, Zap,
-  History, Settings, LogOut, ChevronDown, Menu, X, RefreshCw,
+  History, Settings, LogOut, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -31,7 +31,7 @@ const navItems = [
 export default function TopNavbar() {
   const { activeAccount, accounts, balance, logout, switchAccount } = useAuth();
   const { isUnlocked, remaining } = useLossRequirement();
-  const [mobileOpen, setMobileOpen] = useState(false);
+  
 
   const handleResetBalance = async () => {
     try {
@@ -62,14 +62,14 @@ export default function TopNavbar() {
           </div>
         </div>
 
-        {/* Desktop Nav */}
-        <nav className="hidden md:flex items-center gap-1 flex-1">
+        {/* Nav - always visible with horizontal scroll */}
+        <nav className="flex items-center gap-1 flex-1 overflow-x-auto min-w-0 no-scrollbar">
           {navItems.map(item => (
             <NavLink
               key={item.url}
               to={item.url}
               end={item.url === '/'}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-all"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-all whitespace-nowrap shrink-0"
               activeClassName="!text-primary !bg-primary/10 font-semibold"
             >
               <item.icon className="w-3.5 h-3.5" />
@@ -149,38 +149,8 @@ export default function TopNavbar() {
             </div>
           )}
 
-          {/* Mobile hamburger */}
-          <Button
-            variant="ghost" size="sm"
-            className="md:hidden h-8 w-8 p-0"
-            onClick={() => setMobileOpen(!mobileOpen)}
-          >
-            {mobileOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
-          </Button>
         </div>
       </div>
-
-      {/* Mobile Nav Dropdown */}
-      {mobileOpen && (
-        <nav className="md:hidden border-t border-border bg-card p-2 space-y-1">
-          <div className="flex items-center justify-center gap-1 pb-2 border-b border-border/50 mb-1">
-            <SocialIcons />
-          </div>
-          {navItems.map(item => (
-            <NavLink
-              key={item.url}
-              to={item.url}
-              end={item.url === '/'}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-all"
-              activeClassName="!text-primary !bg-primary/10 font-semibold"
-              onClick={() => setMobileOpen(false)}
-            >
-              <item.icon className="w-4 h-4" />
-              <span>{item.title}</span>
-            </NavLink>
-          ))}
-        </nav>
-      )}
     </header>
   );
 }
