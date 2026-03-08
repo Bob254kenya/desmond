@@ -1228,55 +1228,6 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Quick Trade Panel */}
-          <div className="bg-card border border-primary/30 rounded-xl p-3 space-y-2">
-            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-              <Gauge className="w-3.5 h-3.5 text-primary" /> Quick Trade
-            </h3>
-            <Select value={contractType} onValueChange={setContractType}>
-              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
-            </Select>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[9px] text-muted-foreground">Prediction (0-9)</label>
-                <Input type="number" min="0" max="9" value={prediction} onChange={e => setPrediction(e.target.value)} className="h-7 text-xs" />
-              </div>
-              <div>
-                <label className="text-[9px] text-muted-foreground">Stake ($)</label>
-                <Input type="number" min="0.35" step="0.01" value={tradeStake} onChange={e => setTradeStake(e.target.value)} className="h-7 text-xs" />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[9px] text-muted-foreground">Duration</label>
-                <Input type="number" min="1" value={duration} onChange={e => setDuration(e.target.value)} className="h-7 text-xs" />
-              </div>
-              <div>
-                <label className="text-[9px] text-muted-foreground">Unit</label>
-                <Select value={durationUnit} onValueChange={setDurationUnit}>
-                  <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="t">Ticks</SelectItem>
-                    <SelectItem value="s">Seconds</SelectItem>
-                    <SelectItem value="m">Minutes</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            {selectedDigit !== null && (
-              <div className="text-[9px] text-primary">Auto-suggestion: Digit {selectedDigit} ({percentages[selectedDigit]?.toFixed(1)}%)</div>
-            )}
-            <div className="grid grid-cols-2 gap-2">
-              <Button onClick={() => handleBuy('buy')} disabled={isTrading} className="h-9 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
-                {isTrading ? <span className="animate-spin">⏳</span> : <ArrowUp className="w-3 h-3 mr-1" />} BUY
-              </Button>
-              <Button onClick={() => handleBuy('sell')} disabled={isTrading} className="h-9 text-xs font-bold bg-loss hover:bg-loss/90 text-loss-foreground">
-                {isTrading ? <span className="animate-spin">⏳</span> : <ArrowDown className="w-3 h-3 mr-1" />} SELL
-              </Button>
-            </div>
-          </div>
-
           {/* ═══ AUTO BOT PANEL ═══ */}
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
@@ -1406,9 +1357,17 @@ export default function TradingChart() {
 
           {/* Bot Progress */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
-            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-              <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
+              </h3>
+              {tradeHistory.length > 0 && (
+                <Button variant="ghost" size="sm" className="h-6 text-[9px] text-muted-foreground hover:text-loss"
+                  onClick={() => { setTradeHistory([]); setBotStats({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 }); }}>
+                  Clear
+                </Button>
+              )}
+            </div>
             <div className="grid grid-cols-4 gap-1.5">
               <div className="bg-muted/30 rounded-lg p-1.5 text-center">
                 <div className="text-[8px] text-muted-foreground">Trades</div>
