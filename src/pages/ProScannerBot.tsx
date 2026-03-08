@@ -474,7 +474,7 @@ export default function ProScannerBot() {
       if (result.shouldBreak) break;
 
       // Turbo: no delay between trades; normal: small delay
-      if (!turboMode && !tuwLocked) await new Promise(r => setTimeout(r, 400));
+      if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
 
     setIsRunning(false);
