@@ -29,7 +29,11 @@ function AppRoutes() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center overflow-hidden">
+      <div className="min-h-screen relative flex items-center justify-center overflow-hidden">
+        <div className="absolute inset-0 z-0">
+          <img src={bgHero} alt="" className="w-full h-full object-cover" />
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+        </div>
         <motion.div
           className="text-center flex flex-col items-center gap-6"
           initial={{ opacity: 0, scale: 0.9 }}
