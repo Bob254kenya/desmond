@@ -1,7 +1,7 @@
 import { NavLink } from '@/components/NavLink';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  LayoutDashboard, BarChart3, Activity, Bot, History, Settings, LogOut, ChevronDown, Cpu, Zap, Scan,
+  LayoutDashboard, BarChart3, Activity, Bot, History, Settings, LogOut, ChevronDown, Cpu, Zap, Scan, Gift,
 } from 'lucide-react';
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
