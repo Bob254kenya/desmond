@@ -150,6 +150,7 @@ export default function ProScannerBot() {
 
   /* ── Strategy ── */
   const [strategyEnabled, setStrategyEnabled] = useState(false);
+  const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
   const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
   const [pattern, setPattern] = useState('');
   const [patternAction, setPatternAction] = useState<'tradeOnce' | 'tradeUntilWin'>('tradeUntilWin');
@@ -301,7 +302,7 @@ export default function ProScannerBot() {
     const baseStake = parseFloat(stake);
     if (baseStake < 0.35) { toast.error('Min stake $0.35'); return; }
     if (!m1Enabled && !m2Enabled) { toast.error('Enable at least one market'); return; }
-    if (strategyEnabled && strategyMode === 'pattern' && !patternValid) { toast.error('Invalid pattern (min 2 E/O)'); return; }
+    if ((strategyEnabled || strategyM1Enabled) && strategyMode === 'pattern' && !patternValid) { toast.error('Invalid pattern (min 2 E/O)'); return; }
 
     setIsRunning(true);
     runningRef.current = true;
@@ -349,8 +350,34 @@ export default function ProScannerBot() {
         tradeSymbol = cfg.symbol;
         // Trade every tick until win
       }
-      /* ── Strategy gating for M2 ── */
+      /* ── Strategy gating for M2 (recovery) ── */
       else if (inRecovery && strategyEnabled) {
+        setBotStatus('waiting_pattern');
+
+        let matched = false;
+        let matchedSymbol = '';
+        while (runningRef.current && !matched) {
+          if (scannerActive) {
+            const found = findScannerMatch();
+            if (found) { matched = true; matchedSymbol = found; }
+          } else {
+            if (checkCondition(cfg.symbol)) { matched = true; matchedSymbol = cfg.symbol; }
+          }
+          if (!matched) {
+            await new Promise<void>(r => {
+              if (turboMode) requestAnimationFrame(() => r());
+              else setTimeout(r, 500);
+            });
+          }
+        }
+        if (!runningRef.current) break;
+
+        setBotStatus('pattern_matched');
+        tradeSymbol = matchedSymbol;
+        if (!turboMode) await new Promise(r => setTimeout(r, 300));
+      }
+      /* ── Strategy gating for M1 ── */
+      else if (!inRecovery && strategyM1Enabled) {
         setBotStatus('waiting_pattern');
 
         let matched = false;
@@ -462,7 +489,7 @@ export default function ProScannerBot() {
       /* TUW: after pattern-matched loss, lock to trade every tick until win */
       if (!result.inRecovery) {
         tuwLocked = false; // Won & recovered → clear lock
-      } else if (patternAction === 'tradeUntilWin' && strategyEnabled && inRecovery && !tuwLocked) {
+      } else if (patternAction === 'tradeUntilWin' && (strategyEnabled || strategyM1Enabled) && inRecovery && !tuwLocked) {
         tuwLocked = true; // First loss after pattern match → lock
       }
 
@@ -478,7 +505,7 @@ export default function ProScannerBot() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Contract, m2Contract,
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
-    takeProfit, stopLoss, strategyEnabled, strategyMode, patternValid, patternAction,
+    takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, strategyMode, patternValid, patternAction,
     scannerActive, findScannerMatch, checkCondition, addLog, updateLog, turboMode,
     m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
 
@@ -864,14 +891,20 @@ export default function ProScannerBot() {
                 <Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} disabled={isRunning} className="h-8 text-xs" />
               </div>
             </div>
-            <div className="flex items-center gap-2 pt-1">
-              <input type="checkbox" id="enableStrategy" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} className="rounded" />
-              <label htmlFor="enableStrategy" className="text-xs text-foreground">Enable Strategy (M2 only)</label>
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="enableStrategyM2" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} className="rounded" />
+                <label htmlFor="enableStrategyM2" className="text-xs text-foreground">Enable Strategy (M2)</label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="enableStrategyM1" checked={strategyM1Enabled} onChange={e => setStrategyM1Enabled(e.target.checked)} disabled={isRunning} className="rounded" />
+                <label htmlFor="enableStrategyM1" className="text-xs text-foreground">Enable Strategy (M1)</label>
+              </div>
             </div>
           </div>
 
           {/* Strategy Card */}
-          {strategyEnabled && (
+          {(strategyEnabled || strategyM1Enabled) && (
             <div className="bg-card border border-warning/30 rounded-xl p-3 space-y-2">
               <h3 className="text-sm font-semibold text-warning flex items-center gap-1"><Zap className="w-4 h-4" /> Pattern Strategy</h3>
               <div className="flex gap-1">
@@ -902,8 +935,13 @@ export default function ProScannerBot() {
                     </label>
                     <label className="flex items-center gap-2 text-[10px] text-muted-foreground cursor-pointer">
                       <input type="radio" name="pAction" checked={patternAction === 'tradeUntilWin'} onChange={() => setPatternAction('tradeUntilWin')} disabled={isRunning} />
-                      Trade Until Win
+                      Trade Until Win (on loss → ignore pattern, trade every tick until win)
                     </label>
+                  </div>
+                  <div className="text-[8px] text-muted-foreground bg-muted/30 rounded p-1.5">
+                    {strategyEnabled && strategyM1Enabled ? '⚡ Strategy active on M1 & M2' :
+                     strategyEnabled ? '⚡ Strategy active on M2 only' :
+                     '⚡ Strategy active on M1 only'}
                   </div>
                 </div>
               ) : (
