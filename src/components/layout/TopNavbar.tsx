@@ -56,7 +56,7 @@ export default function TopNavbar() {
             <Cpu className="w-3.5 h-3.5 text-primary-foreground" />
           </div>
           <span className="font-bold text-foreground text-sm">
-            RAMZTRADERS<span className="text-primary">Traders</span>
+            RAMZ<span className="text-primary">TRADERS</span>
           </span>
           <div className="ml-1">
             <SocialIcons />
@@ -71,7 +71,7 @@ export default function TopNavbar() {
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1.5 bg-muted rounded-lg px-3 py-1.5">
                 <span className="text-[10px] text-muted-foreground">
-                  {activeAccount.is_virtual ? '🎮' : '💰'}
+                  {activeAccount.is_virtual ? '💲' : '💵'}
                 </span>
                 <span className={`font-mono text-sm font-bold ${balance >= 0 ? 'text-profit' : 'text-loss'}`}>
                   ${balance.toFixed(2)}
