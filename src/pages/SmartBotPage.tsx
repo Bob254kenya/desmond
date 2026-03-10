@@ -12,6 +12,18 @@ interface FreeBotTemplate {
 
 const FREE_BOT_TEMPLATES: FreeBotTemplate[] = [
   {
+    config: {"version":1,"botName":"Matches bot","m1":{"enabled":true,"symbol":"1HZ50V","contract":"DIGITMATCH","barrier":"6","hookEnabled":true,"virtualLossCount":"6","realCount":"4"},"m2":{"enabled":false,"symbol":"R_50","contract":"DIGITODD","barrier":"5","hookEnabled":false,"virtualLossCount":"3","realCount":"2"},"risk":{"stake":"0.35","martingaleOn":true,"martingaleMultiplier":"1.6","martingaleMaxSteps":"5","takeProfit":"0.2","stopLoss":"16"},"strategy":{"m1Enabled":false,"m2Enabled":false,"m1Mode":"pattern","m2Mode":"pattern","m1Pattern":"","m1DigitCondition":"==","m1DigitCompare":"5","m1DigitWindow":"3","m2Pattern":"","m2DigitCondition":"==","m2DigitCompare":"5","m2DigitWindow":"3"},"scanner":{"active":true},"turbo":{"enabled":false}},
+    description: 'M1 trades Match 6 on V50 1s with Virtual Hook. Uses 6 virtual losses and 4 real counts for precise entries.',
+  },
+  {
+    config: {"version":1,"botName":"Over 6 bot","m1":{"enabled":true,"symbol":"1HZ50V","contract":"DIGITOVER","barrier":"6","hookEnabled":true,"virtualLossCount":"3","realCount":"1"},"m2":{"enabled":false,"symbol":"R_50","contract":"DIGITODD","barrier":"5","hookEnabled":false,"virtualLossCount":"3","realCount":"2"},"risk":{"stake":"0.35","martingaleOn":true,"martingaleMultiplier":"1.6","martingaleMaxSteps":"5","takeProfit":"0.2","stopLoss":"16"},"strategy":{"m1Enabled":false,"m2Enabled":false,"m1Mode":"pattern","m2Mode":"pattern","m1Pattern":"","m1DigitCondition":"==","m1DigitCompare":"5","m1DigitWindow":"3","m2Pattern":"","m2DigitCondition":"==","m2DigitCompare":"5","m2DigitWindow":"3"},"scanner":{"active":true},"turbo":{"enabled":false}},
+    description: 'M1 trades Over 6 on V50 1s with Virtual Hook. Conservative setup with 3 virtual losses and 1 real count.',
+  },
+  {
+    config: {"version":1,"botName":"ODD BOT Bes (2026)","m1":{"enabled":true,"symbol":"1HZ10V","contract":"DIGITODD","barrier":"7","hookEnabled":true,"virtualLossCount":"3","realCount":"4"},"m2":{"enabled":false,"symbol":"R_50","contract":"DIGITODD","barrier":"5","hookEnabled":false,"virtualLossCount":"3","realCount":"2"},"risk":{"stake":"0.35","martingaleOn":true,"martingaleMultiplier":"2","martingaleMaxSteps":"50","takeProfit":"55","stopLoss":"16"},"strategy":{"m1Enabled":false,"m2Enabled":false,"m1Mode":"pattern","m2Mode":"pattern","m1Pattern":"","m1DigitCondition":"==","m1DigitCompare":"5","m1DigitWindow":"3","m2Pattern":"","m2DigitCondition":"==","m2DigitCompare":"5","m2DigitWindow":"3"},"scanner":{"active":true},"turbo":{"enabled":false}},
+    description: 'M1 trades Odd on V10 1s with Virtual Hook. Extended martingale up to 50 steps with 55 TP and 16 SL.',
+  },
+  {
     config: {"version":1,"botName":"OVER 2 RECOVERY OVER 4 BOT","m1":{"enabled":true,"symbol":"1HZ100V","contract":"DIGITOVER","barrier":"2","hookEnabled":true,"virtualLossCount":"2","realCount":"1"},"m2":{"enabled":true,"symbol":"R_100","contract":"DIGITOVER","barrier":"4","hookEnabled":false,"virtualLossCount":"3","realCount":"2"},"risk":{"stake":"0.5","martingaleOn":true,"martingaleMultiplier":"2.0","martingaleMaxSteps":"5","takeProfit":"10","stopLoss":"5"},"strategy":{"m1Enabled":false,"m2Enabled":true,"m1Mode":"pattern","m2Mode":"digit","m1Pattern":"","m1DigitCondition":"==","m1DigitCompare":"5","m1DigitWindow":"3","m2Pattern":"EEEOEEOE","m2DigitCondition":"<=","m2DigitCompare":"4","m2DigitWindow":"6"},"scanner":{"active":true},"turbo":{"enabled":true}},
     description: 'M1 trades Over 2 on V100 1s with Virtual Hook. Recovery switches to Over 4 on Vol 100 with digit strategy.',
   },
