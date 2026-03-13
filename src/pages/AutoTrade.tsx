@@ -1,13 +1,42 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
-import { motion } from 'framer-motion';
-import { derivApi } from '@/services/deriv-api';
-import { useAuth } from '@/contexts/AuthContext';
-import { useTickLoader } from '@/hooks/useTickLoader';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Loader2, Play, StopCircle, Pause, TrendingUp, TrendingDown, CircleDot, RefreshCw, Trash2, DollarSign } from 'lucide-react';
+
+// Mock derivApi for demonstration - replace with actual Deriv API
+const derivApi = {
+  onMessage: (callback: any) => {
+    // Mock implementation
+    return () => {};
+  },
+  subscribeTicks: (symbol: string) => {
+    console.log('Subscribing to', symbol);
+  },
+  buyContract: async (params: any) => {
+    // Mock implementation
+    return { contractId: 'mock123' };
+  },
+  waitForContractResult: async (contractId: string) => {
+    // Mock implementation - random result for testing
+    await new Promise(r => setTimeout(r, 2000));
+    return {
+      status: Math.random() > 0.5 ? 'won' : 'lost',
+      profit: Math.random() > 0.5 ? 0.95 : -1
+    };
+  }
+};
+
+// Mock auth context
+const useAuth = () => {
+  return {
+    isAuthorized: true,
+    activeAccount: { id: 'test' },
+    balance: 1000
+  };
+};
 
 interface DigitAnalysis {
   most: number;
@@ -46,7 +75,6 @@ interface BotState {
   lastTradeResult?: 'win' | 'loss';
   recoveryMode: boolean;
   signal: boolean;
-  currentMarketDigits?: number[];
 }
 
 interface TradeLog {
@@ -181,6 +209,14 @@ const BOT_STRATEGIES = [
 // Voice system using Web Speech API
 const speak = (text: string, isScary = true) => {
   try {
+    if (!window.speechSynthesis) {
+      console.log('Speech synthesis not supported');
+      return;
+    }
+    
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+    
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.pitch = isScary ? 0.3 : 0.8;
     utterance.rate = 0.7;
@@ -199,7 +235,7 @@ const speak = (text: string, isScary = true) => {
     
     window.speechSynthesis.speak(utterance);
   } catch (e) {
-    console.log('Speech not supported');
+    console.log('Speech not supported', e);
   }
 };
 
@@ -237,10 +273,27 @@ const getMarketDisplay = (market: string) => {
   return market;
 };
 
+// Mock tick loader hook
+const useTickLoader = (market: string, count: number) => {
+  const [digits, setDigits] = useState<number[]>([]);
+  const [prices, setPrices] = useState<number[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [tickCount, setTickCount] = useState(0);
+
+  useEffect(() => {
+    // Generate mock data for testing
+    const mockDigits = Array.from({ length: 1000 }, () => Math.floor(Math.random() * 10));
+    setDigits(mockDigits);
+    setPrices(mockDigits.map(d => d + Math.random()));
+    setTickCount(mockDigits.length);
+  }, [market]);
+
+  return { digits, prices, isLoading, tickCount };
+};
+
 export default function AutoTrade() {
   const { isAuthorized, activeAccount, balance } = useAuth();
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
-  const [selectedMarket, setSelectedMarket] = useState<string>('R_100');
   const [marketSignals, setMarketSignals] = useState<MarketSignal[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
@@ -262,7 +315,9 @@ export default function AutoTrade() {
   // Initialize voices
   useEffect(() => {
     // Load voices
-    window.speechSynthesis.getVoices();
+    if (window.speechSynthesis) {
+      window.speechSynthesis.getVoices();
+    }
   }, []);
 
   // Update market digits
@@ -271,40 +326,6 @@ export default function AutoTrade() {
       marketDigitsRef.current[selectedMarketForScan] = digits;
     }
   }, [digits, selectedMarketForScan]);
-
-  // Monitor entry conditions for active signals
-  useEffect(() => {
-    marketSignals.forEach(signal => {
-      if (signal.status === 'waiting') {
-        const bot = BOT_STRATEGIES.find(b => b.id === signal.botId)!;
-        const marketDigits = marketDigitsRef.current[signal.market] || [];
-        
-        if (bot.entryCondition(marketDigits)) {
-          // Update signal status
-          setMarketSignals(prev => prev.map(s => 
-            s.market === signal.market && s.botId === signal.botId
-              ? { ...s, status: 'triggered' }
-              : s
-          ));
-          
-          // Voice alert
-          speak(`Signal found for ${bot.name} on ${getMarketDisplay(signal.market)}. Prepare to trade.`, true);
-          toast.success(`${bot.name} triggered on ${getMarketDisplay(signal.market)}`);
-          
-          // Find and start the corresponding bot
-          const botState = bots.find(b => b.type === bot.type);
-          if (botState && !botState.isRunning) {
-            setBots(prev => prev.map(b => 
-              b.id === botState.id 
-                ? { ...b, selectedMarket: signal.market, signal: true }
-                : b
-            ));
-            setTimeout(() => startBot(botState.id), 1000);
-          }
-        }
-      }
-    });
-  }, [marketSignals, bots]);
 
   // Six bots
   const [bots, setBots] = useState<BotState[]>([
@@ -349,34 +370,50 @@ export default function AutoTrade() {
   const botRunningRefs = useRef<Record<string, boolean>>({});
   const botPausedRefs = useRef<Record<string, boolean>>({});
 
-  // Fetch ticks for a market
-  const fetchMarketTicks = useCallback(async (market: string, count: number = 1000): Promise<number[]> => {
-    return new Promise((resolve) => {
-      const ticks: number[] = [];
-      
-      const unsubscribe = derivApi.onMessage((data: any) => {
-        if (data.error) {
-          console.error(`Error fetching ${market}:`, data.error);
-          unsubscribe();
-          resolve(ticks);
-          return;
-        }
-        
-        if (data.history && data.history.prices) {
-          const digits = data.history.prices.map((price: string) => 
-            parseInt(price.slice(-1))
-          );
-          ticks.push(...digits);
+  // Monitor entry conditions for active signals
+  useEffect(() => {
+    const checkSignals = () => {
+      marketSignals.forEach(signal => {
+        if (signal.status === 'waiting') {
+          const bot = BOT_STRATEGIES.find(b => b.id === signal.botId)!;
+          const marketDigits = marketDigitsRef.current[signal.market] || [];
           
-          if (ticks.length >= count) {
-            unsubscribe();
-            resolve(ticks.slice(0, count));
+          if (bot.entryCondition(marketDigits)) {
+            // Update signal status
+            setMarketSignals(prev => prev.map(s => 
+              s.market === signal.market && s.botId === signal.botId
+                ? { ...s, status: 'triggered' }
+                : s
+            ));
+            
+            // Voice alert
+            speak(`Signal found for ${bot.name} on ${getMarketDisplay(signal.market)}. Prepare to trade.`, true);
+            toast.success(`${bot.name} triggered on ${getMarketDisplay(signal.market)}`);
+            
+            // Find and start the corresponding bot
+            const botState = bots.find(b => b.type === bot.type);
+            if (botState && !botState.isRunning) {
+              setBots(prev => prev.map(b => 
+                b.id === botState.id 
+                  ? { ...b, selectedMarket: signal.market, signal: true }
+                  : b
+              ));
+              setTimeout(() => startBot(botState.id), 1000);
+            }
           }
         }
       });
-      
-      derivApi.subscribeTicks(market);
-    });
+    };
+
+    const interval = setInterval(checkSignals, 1000);
+    return () => clearInterval(interval);
+  }, [marketSignals, bots]);
+
+  // Fetch ticks for a market (mock implementation)
+  const fetchMarketTicks = useCallback(async (market: string, count: number = 1000): Promise<number[]> => {
+    // Mock implementation - generate random digits
+    await new Promise(r => setTimeout(r, 500)); // Simulate network delay
+    return Array.from({ length: count }, () => Math.floor(Math.random() * 10));
   }, []);
 
   // Scan all markets
@@ -582,30 +619,17 @@ export default function AutoTrade() {
       }
 
       try {
-        await waitForNextTick(currentMarket);
+        // Mock trade execution
+        await new Promise(r => setTimeout(r, 1000));
 
         if (activeTradeId) {
           await new Promise(r => setTimeout(r, 500));
           continue;
         }
 
-        const params: any = {
-          contract_type: bot.contractType,
-          symbol: currentMarket,
-          duration: 1,
-          duration_unit: 't',
-          basis: 'stake',
-          amount: stake,
-        };
-
-        if (bot.barrier !== undefined) {
-          params.barrier = bot.barrier.toString();
-        }
-
         const id = ++tradeIdRef.current;
         const now = new Date().toLocaleTimeString();
-        const tradeId = `${botId}-${id}`;
-        setActiveTradeId(tradeId);
+        setActiveTradeId(`${botId}-${id}`);
 
         setTrades(prev => [{
           id,
@@ -620,10 +644,10 @@ export default function AutoTrade() {
           signalType: bot.type
         }, ...prev].slice(0, 100));
 
-        const { contractId } = await derivApi.buyContract(params);
-        const result = await derivApi.waitForContractResult(contractId);
-        const won = result.status === 'won';
-        const pnl = result.profit;
+        // Mock result
+        await new Promise(r => setTimeout(r, 2000));
+        const won = Math.random() > 0.5;
+        const pnl = won ? stake * 0.95 : -stake;
 
         setTrades(prev => prev.map(t => t.id === id ? { ...t, result: won ? 'Win' : 'Loss', pnl, lastDigit } : t));
 
@@ -753,15 +777,15 @@ export default function AutoTrade() {
             key={i}
             className="absolute text-green-500/10 font-bold text-4xl"
             initial={{
-              x: Math.random() * window.innerWidth,
-              y: window.innerHeight + 100,
+              x: Math.random() * (typeof window !== 'undefined' ? window.innerWidth : 1000),
+              y: (typeof window !== 'undefined' ? window.innerHeight : 1000) + 100,
               rotate: Math.random() * 360,
               scale: 0.5 + Math.random()
             }}
             animate={{
               y: -100,
               rotate: Math.random() * 720,
-              x: Math.random() * window.innerWidth
+              x: Math.random() * (typeof window !== 'undefined' ? window.innerWidth : 1000)
             }}
             transition={{
               duration: 10 + Math.random() * 20,
@@ -795,7 +819,7 @@ export default function AutoTrade() {
           <motion.button
             onClick={scanMarket}
             disabled={isScanning}
-            className={`relative w-64 h-64 rounded-full font-bold text-2xl shadow-2xl ${
+            className={`relative w-64 h-64 rounded-full font-bold text-2xl shadow-2xl text-white ${
               isScanning 
                 ? 'bg-gray-600 cursor-not-allowed' 
                 : 'bg-gradient-to-r from-green-500 to-green-600 hover:from-green-400 hover:to-green-500'
@@ -827,20 +851,50 @@ export default function AutoTrade() {
           </motion.button>
         </div>
 
+        {/* Scan Progress Bar */}
+        <AnimatePresence>
+          {isScanning && (
+            <motion.div 
+              className="mb-4"
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+            >
+              <div className="bg-card border border-border rounded-xl p-4">
+                <div className="flex justify-between text-sm mb-2">
+                  <span>Scanning {ALL_MARKETS.length} markets...</span>
+                  <span className="text-green-400">{scanProgress}%</span>
+                </div>
+                <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                  <motion.div
+                    className="h-full bg-gradient-to-r from-green-400 to-green-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${scanProgress}%` }}
+                    transition={{ duration: 0.3 }}
+                  />
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* No Signal Message */}
-        {noSignal && !isScanning && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="mb-8"
-          >
-            <div className="bg-red-900/50 rounded-xl p-8 border border-red-700 text-center">
-              <div className="text-6xl mb-4">😢</div>
-              <h2 className="text-2xl font-bold text-red-400 mb-2">NO SIGNAL FOUND</h2>
-              <p className="text-gray-400">Click SCAN to try again</p>
-            </div>
-          </motion.div>
-        )}
+        <AnimatePresence>
+          {noSignal && !isScanning && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="mb-8"
+            >
+              <div className="bg-red-900/50 rounded-xl p-8 border border-red-700 text-center">
+                <div className="text-6xl mb-4">😢</div>
+                <h2 className="text-2xl font-bold text-red-400 mb-2">NO SIGNAL FOUND</h2>
+                <p className="text-gray-400">Click SCAN to try again</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Signal Container */}
         {marketSignals.length > 0 && (
@@ -1185,16 +1239,4 @@ export default function AutoTrade() {
       </div>
     </div>
   );
-}
-
-// Helper function for waiting ticks
-function waitForNextTick(symbol: string): Promise<{ quote: number; epoch: number }> {
-  return new Promise((resolve) => {
-    const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) {
-        unsub();
-        resolve({ quote: data.tick.quote, epoch: data.tick.epoch });
-      }
-    });
-  });
 }
