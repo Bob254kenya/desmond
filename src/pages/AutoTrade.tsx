@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { derivApi, MARKETS, type MarketSymbol } from '@/services/deriv-api';
@@ -18,7 +18,21 @@ import { Slider } from '@/components/ui/slider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Play, StopCircle, Pause } from 'lucide-react';
+import { Loader2, Play, StopCircle, Pause, Bot, Activity, TrendingUp, TrendingDown, CircleDot } from 'lucide-react';
+
+interface BotState {
+  id: string;
+  name: string;
+  type: 'over3' | 'under6' | 'even' | 'odd';
+  isRunning: boolean;
+  isPaused: boolean;
+  currentStake: number;
+  totalPnl: number;
+  trades: number;
+  contractType: string;
+  barrier?: number;
+  lastSignal?: string;
+}
 
 function waitForNextTick(symbol: string): Promise<{ quote: number; epoch: number }> {
   return new Promise((resolve) => {
@@ -35,427 +49,524 @@ function speakMessage(text: string) {
   try { if ('speechSynthesis' in window) { window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } } catch {}
 }
 
-type RecoveryBotType = 'over' | 'under' | 'even_odd' | 'matches_differs' | 'rise_fall';
+// Analysis functions for each bot
+const analyzeOver3 = (digits: number[]): boolean => {
+  if (digits.length < 100) return false;
+  const last100 = digits.slice(-100);
+  const over3Count = last100.filter(d => d > 3).length;
+  const underOrEqual3Count = last100.filter(d => d <= 3).length;
+  return over3Count > underOrEqual3Count + 5; // 5 more over 3 than under/equal 3
+};
 
-interface RecoveryBotConfig {
-  type: RecoveryBotType;
-  label: string;
-  description: string;
-  primaryContract: string;
-  recoveryContracts: string[];
-  needsBarrier: boolean;
-}
+const analyzeUnder6 = (digits: number[]): boolean => {
+  if (digits.length < 100) return false;
+  const last100 = digits.slice(-100);
+  const under6Count = last100.filter(d => d < 6).length;
+  const over5Count = last100.filter(d => d > 5).length;
+  return under6Count > over5Count + 5; // 5 more under 6 than over 5
+};
 
-const RECOVERY_BOTS: RecoveryBotConfig[] = [
-  {
-    type: 'over', label: 'Over + Recovery',
-    description: 'OVER → On loss, recover with EVEN or ODD',
-    primaryContract: 'DIGITOVER', recoveryContracts: ['DIGITEVEN', 'DIGITODD'], needsBarrier: true,
-  },
-  {
-    type: 'under', label: 'Under + Recovery',
-    description: 'UNDER → On loss, recover with EVEN or ODD',
-    primaryContract: 'DIGITUNDER', recoveryContracts: ['DIGITEVEN', 'DIGITODD'], needsBarrier: true,
-  },
-  {
-    type: 'even_odd', label: 'Even/Odd Bot',
-    description: 'EVEN → On loss, switch to ODD and vice versa',
-    primaryContract: 'DIGITEVEN', recoveryContracts: ['DIGITODD'], needsBarrier: false,
-  },
-  {
-    type: 'matches_differs', label: 'Match/Differs Bot',
-    description: 'MATCH → On loss, switch to DIFFERS and vice versa',
-    primaryContract: 'DIGITMATCH', recoveryContracts: ['DIGITDIFF'], needsBarrier: true,
-  },
-  {
-    type: 'rise_fall', label: 'Rise/Fall Bot',
-    description: 'RISE → On loss, switch to FALL and vice versa',
-    primaryContract: 'CALL', recoveryContracts: ['PUT'], needsBarrier: false,
-  },
-];
+const analyzeEven = (digits: number[]): boolean => {
+  if (digits.length < 100) return false;
+  const last100 = digits.slice(-100);
+  const evenCount = last100.filter(d => d % 2 === 0).length;
+  const oddCount = last100.filter(d => d % 2 === 1).length;
+  return evenCount > oddCount + 10; // at least 10 more even than odd
+};
+
+const analyzeOdd = (digits: number[]): boolean => {
+  if (digits.length < 100) return false;
+  const last100 = digits.slice(-100);
+  const oddCount = last100.filter(d => d % 2 === 1).length;
+  const evenCount = last100.filter(d => d % 2 === 0).length;
+  return oddCount > evenCount + 10; // at least 10 more odd than even
+};
 
 export default function AutoTrade() {
   const { isAuthorized, activeAccount, balance } = useAuth();
+  const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
 
+  // Global settings
   const [config, setConfig] = useState<TradeConfigState>({
-    market: 'R_100', contractType: 'DIGITOVER', digit: '4', stake: '1',
-    martingale: false, multiplier: '2', stopLoss: '10', takeProfit: '20', maxTrades: '50',
+    market: 'R_100', contractType: 'DIGITOVER', digit: '4', stake: '0.5',
+    martingale: true, multiplier: '2', stopLoss: '30', takeProfit: '3', maxTrades: '100',
   });
 
   const [tickRange, setTickRange] = useState<number>(100);
-  const [isRunning, setIsRunning] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const [trades, setTrades] = useState<TradeLog[]>([]);
-  const [currentStake, setCurrentStake] = useState(1);
   const [soundEnabled, setSoundEnabled] = useState(false);
-
-  // Recovery bots state
-  const [activeBotType, setActiveBotType] = useState<RecoveryBotType>('over');
-  const [recoveryEnabled, setRecoveryEnabled] = useState(false);
-  const [recoveryRunning, setRecoveryRunning] = useState(false);
-  const recoveryRunningRef = useRef(false);
-  const recoveryPausedRef = useRef(false);
-  const [recoveryPaused, setRecoveryPaused] = useState(false);
-  const [recoveryDigit, setRecoveryDigit] = useState(4);
-  const [recoveryMode, setRecoveryMode] = useState<string>('DIGITEVEN');
-  const recoveryDigitRef = useRef(4);
-  const recoveryModeRef = useRef<string>('DIGITEVEN');
-
-  const runningRef = useRef(false);
-  const pausedRef = useRef(false);
   const tradeIdRef = useRef(0);
 
+  // Four independent bots
+  const [bots, setBots] = useState<BotState[]>([
+    { id: 'bot1', name: 'OVER 3 BOT', type: 'over3', isRunning: false, isPaused: false, currentStake: 0.5, totalPnl: 0, trades: 0, contractType: 'DIGITOVER', barrier: 3 },
+    { id: 'bot2', name: 'UNDER 6 BOT', type: 'under6', isRunning: false, isPaused: false, currentStake: 0.5, totalPnl: 0, trades: 0, contractType: 'DIGITUNDER', barrier: 6 },
+    { id: 'bot3', name: 'EVEN BOT', type: 'even', isRunning: false, isPaused: false, currentStake: 0.5, totalPnl: 0, trades: 0, contractType: 'DIGITEVEN' },
+    { id: 'bot4', name: 'ODD BOT', type: 'odd', isRunning: false, isPaused: false, currentStake: 0.5, totalPnl: 0, trades: 0, contractType: 'DIGITODD' },
+  ]);
+
+  // Refs for each bot's running state
+  const botRunningRefs = useRef<Record<string, boolean>>({});
+  const botPausedRefs = useRef<Record<string, boolean>>({});
+
   const { digits, prices, isLoading, tickCount } = useTickLoader(config.market, 1000);
-
   const analysisDigits = digits.slice(-tickRange);
-  const barrier = parseInt(config.digit);
+  const lastDigit = digits.length > 0 ? digits[digits.length - 1] : null;
 
-  const activeBotConfig = RECOVERY_BOTS.find(b => b.type === activeBotType)!;
+  // Update bot signals based on analysis
+  useEffect(() => {
+    if (digits.length < 100) return;
+
+    setBots(prev => prev.map(bot => {
+      let signal = false;
+      switch (bot.type) {
+        case 'over3': signal = analyzeOver3(digits); break;
+        case 'under6': signal = analyzeUnder6(digits); break;
+        case 'even': signal = analyzeEven(digits); break;
+        case 'odd': signal = analyzeOdd(digits); break;
+      }
+      return { ...bot, lastSignal: signal ? '✅ READY' : '⏳ WAITING' };
+    }));
+  }, [digits]);
+
+  // Trading loop for a specific bot
+  const runBot = useCallback(async (botId: string) => {
+    const bot = bots.find(b => b.id === botId);
+    if (!bot || !isAuthorized) return;
+
+    const stakeNum = parseFloat(config.stake);
+    if (balance < stakeNum) {
+      toast.error(`Insufficient balance for ${bot.name}`);
+      stopBot(botId);
+      return;
+    }
+
+    // Update bot running state
+    setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: true, isPaused: false, currentStake: stakeNum } : b));
+    botRunningRefs.current[botId] = true;
+    botPausedRefs.current[botId] = false;
+
+    let stake = stakeNum;
+    let totalPnl = 0;
+    let tradeCount = 0;
+    const maxTradeCount = parseInt(config.maxTrades);
+    const sl = parseFloat(config.stopLoss);
+    const tp = parseFloat(config.takeProfit);
+    const mult = parseFloat(config.multiplier);
+    const botConfig = bots.find(b => b.id === botId)!;
+
+    while (botRunningRefs.current[botId] && tradeCount < maxTradeCount) {
+      // Check if paused
+      if (botPausedRefs.current[botId]) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+
+      // Check stop loss / take profit
+      if (totalPnl <= -sl) {
+        toast.error(`${bot.name}: Stop Loss hit! $${totalPnl.toFixed(2)}`);
+        speakMessage(`${bot.name} stopped: loss limit reached`);
+        break;
+      }
+      if (totalPnl >= tp) {
+        toast.success(`${bot.name}: Take Profit hit! +$${totalPnl.toFixed(2)}`);
+        speakMessage(`${bot.name} take profit reached`);
+        break;
+      }
+
+      // Check if condition is met for this bot type
+      let conditionMet = false;
+      switch (botConfig.type) {
+        case 'over3': conditionMet = analyzeOver3(digits); break;
+        case 'under6': conditionMet = analyzeUnder6(digits); break;
+        case 'even': conditionMet = analyzeEven(digits); break;
+        case 'odd': conditionMet = analyzeOdd(digits); break;
+      }
+
+      if (!conditionMet) {
+        // Wait for next tick if condition not met
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+
+      // Wait for next tick before placing trade
+      try {
+        await waitForNextTick(config.market);
+
+        // Check if another bot is trading (prevent multiple simultaneous trades)
+        if (activeTradeId) {
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
+
+        // Prepare contract parameters
+        const params: any = {
+          contract_type: botConfig.contractType,
+          symbol: config.market,
+          duration: 1,
+          duration_unit: 't',
+          basis: 'stake',
+          amount: stake,
+        };
+
+        // Add barrier for Over/Under bots
+        if (botConfig.barrier !== undefined) {
+          params.barrier = botConfig.barrier.toString();
+        }
+
+        // Place trade
+        const id = ++tradeIdRef.current;
+        const now = new Date().toLocaleTimeString();
+        const tradeId = `${botId}-${id}`;
+        setActiveTradeId(tradeId);
+
+        setTrades(prev => [{
+          id,
+          time: now,
+          market: config.market,
+          contract: botConfig.contractType,
+          stake,
+          result: 'Pending',
+          pnl: 0,
+          bot: botConfig.name
+        }, ...prev].slice(0, 100));
+
+        const { contractId } = await derivApi.buyContract(params);
+        const result = await derivApi.waitForContractResult(contractId);
+        const won = result.status === 'won';
+        const pnl = result.profit;
+
+        // Update trade log
+        setTrades(prev => prev.map(t => t.id === id ? { ...t, result: won ? 'Win' : 'Loss', pnl } : t));
+
+        totalPnl += pnl;
+        tradeCount++;
+
+        // Update bot state
+        setBots(prev => prev.map(b => {
+          if (b.id === botId) {
+            return {
+              ...b,
+              totalPnl,
+              trades: tradeCount,
+              currentStake: config.martingale && !won ? Math.round(stake * mult * 100) / 100 : stakeNum
+            };
+          }
+          return b;
+        }));
+
+        // Martingale logic for next stake
+        if (config.martingale) {
+          if (won) stake = stakeNum;
+          else stake = Math.round(stake * mult * 100) / 100;
+        } else {
+          stake = stakeNum;
+        }
+
+        setActiveTradeId(null);
+        await new Promise(r => setTimeout(r, 500)); // Small delay between trades
+
+      } catch (err: any) {
+        setActiveTradeId(null);
+        if (err.message?.includes('Insufficient balance')) {
+          toast.error(`Insufficient balance for ${bot.name}`);
+          break;
+        } else {
+          console.error(`Trade error for ${bot.name}:`, err);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+
+    // Stop the bot
+    setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: false, isPaused: false } : b));
+    botRunningRefs.current[botId] = false;
+  }, [isAuthorized, config, balance, digits, activeTradeId, bots]);
+
+  // Bot control functions
+  const startBot = (botId: string) => {
+    const bot = bots.find(b => b.id === botId);
+    if (!bot || bot.isRunning) return;
+    
+    // Reset stake to initial value
+    setBots(prev => prev.map(b => b.id === botId ? { ...b, currentStake: parseFloat(config.stake) } : b));
+    
+    // Start the bot in a non-blocking way
+    setTimeout(() => runBot(botId), 0);
+  };
+
+  const pauseBot = (botId: string) => {
+    botPausedRefs.current[botId] = !botPausedRefs.current[botId];
+    setBots(prev => prev.map(b => b.id === botId ? { ...b, isPaused: botPausedRefs.current[botId] } : b));
+  };
+
+  const stopBot = (botId: string) => {
+    botRunningRefs.current[botId] = false;
+    setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: false, isPaused: false } : b));
+  };
+
+  const stopAllBots = () => {
+    bots.forEach(bot => {
+      botRunningRefs.current[bot.id] = false;
+    });
+    setBots(prev => prev.map(b => ({ ...b, isRunning: false, isPaused: false })));
+  };
 
   const handleConfigChange = useCallback(<K extends keyof TradeConfigState>(key: K, val: TradeConfigState[K]) => {
     setConfig(prev => ({ ...prev, [key]: val }));
   }, []);
 
-  // Main trading loop
-  const startTrading = useCallback(async () => {
-    if (!isAuthorized || isRunning) return;
-    const stakeNum = parseFloat(config.stake);
-    if (balance < stakeNum) { toast.error('Insufficient balance'); return; }
-
-    setIsRunning(true);
-    runningRef.current = true;
-    pausedRef.current = false;
-    setIsPaused(false);
-
-    let stake = stakeNum;
-    setCurrentStake(stake);
-    let totalPnl = 0;
-    let tradeCount = 0;
-    const maxTradeCount = parseInt(config.maxTrades);
-    const sl = parseFloat(config.stopLoss);
-    const tp = parseFloat(config.takeProfit);
-    const mult = parseFloat(config.multiplier);
-
-    while (runningRef.current && tradeCount < maxTradeCount) {
-      if (pausedRef.current) { await new Promise(r => setTimeout(r, 500)); continue; }
-
-      try {
-        const mkt = config.market;
-        await waitForNextTick(mkt);
-
-        const contractType = config.contractType;
-        const tradeBarrier = config.digit;
-        const needsBarrier = ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(contractType);
-
-        const params: any = {
-          contract_type: contractType, symbol: mkt,
-          duration: 1, duration_unit: 't', basis: 'stake', amount: stake,
-        };
-        if (needsBarrier && tradeBarrier !== undefined && tradeBarrier !== null) {
-          params.barrier = tradeBarrier;
-        }
-
-        const id = ++tradeIdRef.current;
-        const now = new Date().toLocaleTimeString();
-        setTrades(prev => [{ id, time: now, market: mkt, contract: contractType, stake, result: 'Pending' as const, pnl: 0 }, ...prev].slice(0, 100));
-
-        const { contractId } = await derivApi.buyContract(params);
-        const result = await derivApi.waitForContractResult(contractId);
-        const won = result.status === 'won';
-        const pnl = result.profit;
-
-        setTrades(prev => prev.map(t => t.id === id ? { ...t, result: won ? 'Win' : 'Loss', pnl } : t));
-        totalPnl += pnl;
-        tradeCount++;
-
-        if (config.martingale) {
-          if (won) stake = parseFloat(config.stake);
-          else stake = Math.round(stake * mult * 100) / 100;
-        } else { stake = parseFloat(config.stake); }
-        setCurrentStake(stake);
-
-        if (totalPnl <= -sl) { toast.error(`🛑 Stop Loss! $${totalPnl.toFixed(2)}`); speakMessage('Stop loss hit.'); runningRef.current = false; }
-        if (totalPnl >= tp) { toast.success(`🎊 Take Profit! +$${totalPnl.toFixed(2)}`); speakMessage('Take profit hit!'); runningRef.current = false; }
-        await new Promise(r => setTimeout(r, 500));
-      } catch (err: any) {
-        if (err.message?.includes('Insufficient balance')) { toast.error('Insufficient balance'); runningRef.current = false; }
-        else { console.error('Trade error:', err); await new Promise(r => setTimeout(r, 2000)); }
-      }
+  // Get bot icon based on type
+  const getBotIcon = (type: string) => {
+    switch(type) {
+      case 'over3': return <TrendingUp className="w-4 h-4" />;
+      case 'under6': return <TrendingDown className="w-4 h-4" />;
+      case 'even': return <CircleDot className="w-4 h-4" />;
+      case 'odd': return <CircleDot className="w-4 h-4" />;
+      default: return <Bot className="w-4 h-4" />;
     }
-    setIsRunning(false);
-    runningRef.current = false;
-  }, [isAuthorized, isRunning, config, balance]);
-
-  // Generic recovery bot loop
-  const startRecoveryBot = useCallback(async () => {
-    if (!isAuthorized || recoveryRunning) return;
-    const stakeNum = parseFloat(config.stake);
-    if (balance < stakeNum) { toast.error('Insufficient balance'); return; }
-
-    setRecoveryRunning(true);
-    recoveryRunningRef.current = true;
-    recoveryPausedRef.current = false;
-    setRecoveryPaused(false);
-
-    let stake = stakeNum;
-    let totalPnl = 0;
-    let tradeCount = 0;
-    const maxTradeCount = parseInt(config.maxTrades);
-    const sl = parseFloat(config.stopLoss);
-    const tp = parseFloat(config.takeProfit);
-    const mult = parseFloat(config.multiplier);
-    let inRecovery = false;
-    let alternateToggle = false; // for even_odd and matches_differs alternating
-
-    while (recoveryRunningRef.current && tradeCount < maxTradeCount) {
-      if (recoveryPausedRef.current) { await new Promise(r => setTimeout(r, 500)); continue; }
-
-      try {
-        const mkt = config.market;
-        await waitForNextTick(mkt);
-
-        let contractType: string;
-        let tradeBarrier: string | undefined;
-
-        if (activeBotType === 'over' || activeBotType === 'under') {
-          // Over/Under + Even/Odd recovery
-          if (!inRecovery) {
-            contractType = activeBotConfig.primaryContract;
-            tradeBarrier = String(recoveryDigitRef.current);
-          } else {
-            contractType = recoveryModeRef.current;
-            tradeBarrier = undefined;
-          }
-        } else if (activeBotType === 'even_odd') {
-          // Alternate Even/Odd
-          contractType = alternateToggle ? 'DIGITODD' : 'DIGITEVEN';
-          tradeBarrier = undefined;
-        } else if (activeBotType === 'matches_differs') {
-          // Alternate Match/Differs
-          if (!inRecovery) {
-            contractType = alternateToggle ? 'DIGITDIFF' : 'DIGITMATCH';
-            tradeBarrier = String(recoveryDigitRef.current);
-          } else {
-            contractType = alternateToggle ? 'DIGITMATCH' : 'DIGITDIFF';
-            tradeBarrier = String(recoveryDigitRef.current);
-          }
-        } else if (activeBotType === 'rise_fall') {
-          contractType = alternateToggle ? 'PUT' : 'CALL';
-          tradeBarrier = undefined;
-        } else {
-          contractType = activeBotConfig.primaryContract;
-          tradeBarrier = activeBotConfig.needsBarrier ? String(recoveryDigitRef.current) : undefined;
-        }
-
-        const params: any = {
-          contract_type: contractType, symbol: mkt,
-          duration: activeBotType === 'rise_fall' ? 5 : 1,
-          duration_unit: 't', basis: 'stake', amount: stake,
-        };
-        if (tradeBarrier !== undefined) params.barrier = tradeBarrier;
-
-        const id = ++tradeIdRef.current;
-        const now = new Date().toLocaleTimeString();
-        const label = inRecovery ? `${contractType} (Recovery)` : contractType;
-        setTrades(prev => [{ id, time: now, market: mkt, contract: label, stake, result: 'Pending' as const, pnl: 0 }, ...prev].slice(0, 100));
-
-        const { contractId } = await derivApi.buyContract(params);
-        const result = await derivApi.waitForContractResult(contractId);
-        const won = result.status === 'won';
-        const pnl = result.profit;
-
-        setTrades(prev => prev.map(t => t.id === id ? { ...t, result: won ? 'Win' : 'Loss', pnl } : t));
-        totalPnl += pnl;
-        tradeCount++;
-
-        if (won) {
-          stake = stakeNum;
-          inRecovery = false;
-          if (activeBotType === 'even_odd' || activeBotType === 'rise_fall') alternateToggle = false;
-        } else {
-          inRecovery = true;
-          if (activeBotType === 'even_odd' || activeBotType === 'matches_differs' || activeBotType === 'rise_fall') {
-            alternateToggle = !alternateToggle;
-          }
-          if (config.martingale) stake = Math.round(stake * mult * 100) / 100;
-        }
-        setCurrentStake(stake);
-
-        if (totalPnl <= -sl) { toast.error(`🛑 Stop Loss! $${totalPnl.toFixed(2)}`); speakMessage('Stop loss hit.'); recoveryRunningRef.current = false; }
-        if (totalPnl >= tp) { toast.success(`🎊 Take Profit! +$${totalPnl.toFixed(2)}`); speakMessage('Take profit hit!'); recoveryRunningRef.current = false; }
-        await new Promise(r => setTimeout(r, 500));
-      } catch (err: any) {
-        if (err.message?.includes('Insufficient balance')) { toast.error('Insufficient balance'); recoveryRunningRef.current = false; }
-        else { console.error('Recovery bot error:', err); await new Promise(r => setTimeout(r, 2000)); }
-      }
-    }
-    setRecoveryRunning(false);
-    recoveryRunningRef.current = false;
-  }, [isAuthorized, recoveryRunning, config, balance, activeBotType, activeBotConfig]);
-
-  const pauseTrading = () => { pausedRef.current = !pausedRef.current; setIsPaused(!isPaused); };
-  const stopTrading = () => { runningRef.current = false; setIsRunning(false); setIsPaused(false); };
-  const pauseRecovery = () => { recoveryPausedRef.current = !recoveryPausedRef.current; setRecoveryPaused(!recoveryPaused); };
-  const stopRecovery = () => { recoveryRunningRef.current = false; setRecoveryRunning(false); setRecoveryPaused(false); };
+  };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 p-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-foreground">Digit Trading Bot</h1>
-          <p className="text-xs text-muted-foreground">API-confirmed results • Standard martingale (LOSS → multiply)</p>
+          <h1 className="text-2xl font-bold text-foreground">🤖 Deriv 4‑Bot Digit Trading System</h1>
+          <p className="text-sm text-muted-foreground">Independent bots • Martingale • 1-tick duration • Shared API</p>
         </div>
-        {isLoading ? (
-          <div className="flex items-center gap-2 text-xs text-warning">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Fetching 1000 ticks...
-          </div>
-        ) : (
-          <Badge variant="outline" className="text-[10px]">{tickCount} ticks loaded</Badge>
-        )}
+        <div className="flex items-center gap-3">
+          {isLoading ? (
+            <div className="flex items-center gap-2 text-xs text-warning">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading ticks...
+            </div>
+          ) : (
+            <Badge variant="outline" className="text-xs">{tickCount} ticks • Last digit: {lastDigit ?? '—'}</Badge>
+          )}
+          <Button variant="destructive" size="sm" onClick={stopAllBots} disabled={!bots.some(b => b.isRunning)}>
+            <StopCircle className="w-4 h-4 mr-1" /> Stop All
+          </Button>
+        </div>
       </div>
 
-      <StatsPanel trades={trades} balance={balance} currentStake={currentStake} market={config.market} currency={activeAccount?.currency || 'USD'} />
+      {/* Stats Panel */}
+      <StatsPanel 
+        trades={trades} 
+        balance={balance} 
+        currentStake={parseFloat(config.stake)} 
+        market={config.market} 
+        currency={activeAccount?.currency || 'USD'} 
+      />
 
+      {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Left Column - Settings & Analysis Tools */}
         <div className="lg:col-span-3 space-y-4">
+          {/* Trading Config */}
           <TradeConfig
-            config={config} onChange={handleConfigChange}
-            isRunning={isRunning || recoveryRunning} isPaused={isPaused}
+            config={config} 
+            onChange={handleConfigChange}
+            isRunning={bots.some(b => b.isRunning)} 
+            isPaused={false}
             isAuthorized={isAuthorized && balance >= parseFloat(config.stake || '0')}
             currency={activeAccount?.currency || 'USD'}
-            onStart={startTrading} onPause={pauseTrading} onStop={stopTrading}
+            onStart={() => {}} // Disabled, using individual bot starts
+            onPause={() => {}}
+            onStop={stopAllBots}
           />
 
-          {/* Tick Range */}
+          {/* Analysis Window */}
           <div className="bg-card border border-border rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-foreground">Analysis Window</h3>
               <span className="text-xs font-mono text-primary">{tickRange} ticks</span>
             </div>
-            <Slider min={1} max={1000} step={1} value={[tickRange]}
-              onValueChange={([v]) => setTickRange(v)} disabled={isRunning || recoveryRunning} />
-            <div className="flex justify-between text-[10px] text-muted-foreground">
-              <span>1</span><span>500</span><span>1000</span>
-            </div>
+            <Slider 
+              min={1} 
+              max={1000} 
+              step={1} 
+              value={[tickRange]}
+              onValueChange={([v]) => setTickRange(v)} 
+              disabled={bots.some(b => b.isRunning)} 
+            />
           </div>
 
-          {/* Recovery Bot Selector */}
-          <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-foreground">Recovery Bots</h3>
-              <Switch checked={recoveryEnabled} onCheckedChange={setRecoveryEnabled} disabled={recoveryRunning} />
+          {/* Live Indicators */}
+          <div className="bg-card border border-border rounded-xl p-4">
+            <h3 className="text-sm font-semibold mb-3">Market Status</h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Active Trades:</span>
+                <span className="font-mono">{activeTradeId ? '🔴 1' : '⚫ 0'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connection:</span>
+                <span className="text-success">✅ Connected</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Running Bots:</span>
+                <span className="font-mono">{bots.filter(b => b.isRunning).length}/4</span>
+              </div>
             </div>
+          </div>
+        </div>
 
-            {recoveryEnabled && (
-              <>
-                {/* Bot Type Selector */}
-                <div>
-                  <label className="text-[10px] text-muted-foreground mb-1 block">Bot Type</label>
-                  <Select value={activeBotType} onValueChange={(v) => setActiveBotType(v as RecoveryBotType)} disabled={recoveryRunning}>
-                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {RECOVERY_BOTS.map(b => (
-                        <SelectItem key={b.type} value={b.type}>{b.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[10px] text-muted-foreground mt-1">{activeBotConfig.description}</p>
+        {/* Middle Column - Digit Display & Analysis */}
+        <div className="lg:col-span-4 space-y-4">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <DigitDisplay digits={analysisDigits.slice(-30)} barrier={parseInt(config.digit)} />
+          </motion.div>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
+            <PercentagePanel 
+              digits={analysisDigits} 
+              barrier={parseInt(config.digit)} 
+              selectedDigit={parseInt(config.digit)} 
+              onSelectDigit={d => handleConfigChange('digit', String(d))} 
+            />
+          </motion.div>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }}>
+            <SignalAlerts 
+              digits={analysisDigits} 
+              barrier={parseInt(config.digit)} 
+              soundEnabled={soundEnabled} 
+              onSoundToggle={setSoundEnabled} 
+            />
+          </motion.div>
+        </div>
+
+        {/* Right Column - Four Bots Grid */}
+        <div className="lg:col-span-5 space-y-4">
+          {/* Bots Grid */}
+          <div className="grid grid-cols-2 gap-3">
+            {bots.map((bot) => (
+              <motion.div
+                key={bot.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={`bg-card border rounded-xl p-3 space-y-2 ${
+                  bot.isRunning ? 'border-primary ring-1 ring-primary/20' : 'border-border'
+                }`}
+              >
+                {/* Bot Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-1.5 rounded-lg ${
+                      bot.type === 'over3' ? 'bg-blue-500/20 text-blue-400' :
+                      bot.type === 'under6' ? 'bg-orange-500/20 text-orange-400' :
+                      bot.type === 'even' ? 'bg-green-500/20 text-green-400' :
+                      'bg-purple-500/20 text-purple-400'
+                    }`}>
+                      {getBotIcon(bot.type)}
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm">{bot.name}</h4>
+                      <p className="text-[10px] text-muted-foreground">
+                        {bot.contractType} {bot.barrier !== undefined ? `| Barrier ${bot.barrier}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <Badge variant={bot.isRunning ? "default" : "secondary"} className="text-[9px]">
+                    {bot.isRunning ? (bot.isPaused ? '⏸️ PAUSED' : '▶️ RUN') : '⏹️ STOP'}
+                  </Badge>
                 </div>
 
-                {/* Barrier selector for bots that need it */}
-                {activeBotConfig.needsBarrier && (
+                {/* Bot Stats */}
+                <div className="grid grid-cols-2 gap-1 text-[10px]">
                   <div>
-                    <label className="text-[10px] text-muted-foreground">Digit (Barrier)</label>
-                    <div className="grid grid-cols-5 gap-1 mt-1">
-                      {Array.from({ length: 10 }, (_, i) => (
-                        <button key={i}
-                          onClick={() => { setRecoveryDigit(i); recoveryDigitRef.current = i; }}
-                          disabled={recoveryRunning}
-                          className={`h-7 rounded text-xs font-mono font-bold transition-all ${
-                            recoveryDigit === i ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'
-                          }`}>
-                          {i}
-                        </button>
-                      ))}
-                    </div>
+                    <span className="text-muted-foreground">P&L:</span>
+                    <span className={`ml-1 font-mono ${
+                      bot.totalPnl > 0 ? 'text-profit' : bot.totalPnl < 0 ? 'text-loss' : ''
+                    }`}>
+                      ${bot.totalPnl.toFixed(2)}
+                    </span>
                   </div>
-                )}
-
-                {/* Recovery mode selector for over/under bots */}
-                {(activeBotType === 'over' || activeBotType === 'under') && (
                   <div>
-                    <label className="text-[10px] text-muted-foreground">Recovery Mode</label>
-                    <div className="flex gap-1 mt-1">
-                      {['DIGITEVEN', 'DIGITODD'].map(mode => (
-                        <button key={mode}
-                          onClick={() => { setRecoveryMode(mode); recoveryModeRef.current = mode; }}
-                          disabled={recoveryRunning}
-                          className={`flex-1 h-7 rounded text-xs font-bold transition-all ${
-                            recoveryMode === mode ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'
-                          }`}>
-                          {mode === 'DIGITEVEN' ? 'Even' : 'Odd'}
-                        </button>
-                      ))}
-                    </div>
+                    <span className="text-muted-foreground">Trades:</span>
+                    <span className="ml-1 font-mono">{bot.trades}</span>
                   </div>
-                )}
+                  <div>
+                    <span className="text-muted-foreground">Stake:</span>
+                    <span className="ml-1 font-mono">${bot.currentStake.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Signal:</span>
+                    <span className={`ml-1 font-mono ${
+                      bot.lastSignal?.includes('✅') ? 'text-profit' : 'text-muted-foreground'
+                    }`}>
+                      {bot.lastSignal || '⏳'}
+                    </span>
+                  </div>
+                </div>
 
-                <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  {activeBotType === 'over' && (
-                    <>Starts with <span className="text-profit font-bold">OVER {recoveryDigit}</span>. On loss → <span className="text-primary font-bold">{recoveryMode === 'DIGITEVEN' ? 'EVEN' : 'ODD'}</span>. Win → resets.</>
-                  )}
-                  {activeBotType === 'under' && (
-                    <>Starts with <span className="text-profit font-bold">UNDER {recoveryDigit}</span>. On loss → <span className="text-primary font-bold">{recoveryMode === 'DIGITEVEN' ? 'EVEN' : 'ODD'}</span>. Win → resets.</>
-                  )}
-                  {activeBotType === 'even_odd' && (
-                    <>Starts with <span className="text-primary font-bold">EVEN</span>. On loss → switches to <span className="text-warning font-bold">ODD</span> and vice versa. Win → resets to EVEN.</>
-                  )}
-                  {activeBotType === 'matches_differs' && (
-                    <>Starts with <span className="text-primary font-bold">MATCH {recoveryDigit}</span>. On loss → <span className="text-warning font-bold">DIFFERS</span>. Win → resets.</>
-                  )}
-                  {activeBotType === 'rise_fall' && (
-                    <>Starts with <span className="text-profit font-bold">RISE</span>. On loss → <span className="text-loss font-bold">FALL</span>. Win → resets. Uses 5-tick duration.</>
-                  )}
-                </p>
-
-                <div className="flex gap-2">
-                  {!recoveryRunning ? (
-                    <Button onClick={startRecoveryBot}
-                      disabled={!isAuthorized || isRunning || balance < parseFloat(config.stake || '0')}
-                      className="flex-1 h-8 bg-profit hover:bg-profit/90 text-profit-foreground text-xs">
-                      <Play className="w-3 h-3 mr-1" /> Start {activeBotConfig.label}
+                {/* Bot Controls */}
+                <div className="flex gap-1 mt-2">
+                  {!bot.isRunning ? (
+                    <Button
+                      onClick={() => startBot(bot.id)}
+                      disabled={!isAuthorized || balance < parseFloat(config.stake) || activeTradeId !== null}
+                      size="sm"
+                      className="flex-1 h-7 text-xs"
+                      variant="default"
+                    >
+                      <Play className="w-3 h-3 mr-1" /> Start
                     </Button>
                   ) : (
                     <>
-                      <Button onClick={pauseRecovery} variant="outline" className="flex-1 h-8 text-xs">
-                        <Pause className="w-3 h-3 mr-1" /> {recoveryPaused ? 'Resume' : 'Pause'}
+                      <Button
+                        onClick={() => pauseBot(bot.id)}
+                        size="sm"
+                        variant="outline"
+                        className="flex-1 h-7 text-xs"
+                      >
+                        <Pause className="w-3 h-3 mr-1" /> {bot.isPaused ? 'Resume' : 'Pause'}
                       </Button>
-                      <Button onClick={stopRecovery} variant="destructive" className="flex-1 h-8 text-xs">
+                      <Button
+                        onClick={() => stopBot(bot.id)}
+                        size="sm"
+                        variant="destructive"
+                        className="flex-1 h-7 text-xs"
+                      >
                         <StopCircle className="w-3 h-3 mr-1" /> Stop
                       </Button>
                     </>
                   )}
                 </div>
-              </>
-            )}
+              </motion.div>
+            ))}
           </div>
-        </div>
 
-        <div className="lg:col-span-4 space-y-4">
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <DigitDisplay digits={analysisDigits.slice(-30)} barrier={barrier} />
-          </motion.div>
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
-            <PercentagePanel digits={analysisDigits} barrier={barrier} selectedDigit={barrier} onSelectDigit={d => handleConfigChange('digit', String(d))} />
-          </motion.div>
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }}>
-            <SignalAlerts digits={analysisDigits} barrier={barrier} soundEnabled={soundEnabled} onSoundToggle={setSoundEnabled} />
-          </motion.div>
-        </div>
-
-        <div className="lg:col-span-5">
+          {/* Trade Log */}
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.15 }}>
-            <TradeLogComponent trades={trades} />
+            <div className="bg-card border border-border rounded-xl p-3">
+              <h3 className="text-sm font-semibold mb-2">📋 Live Trade Log</h3>
+              <div className="space-y-1 max-h-[300px] overflow-y-auto">
+                {trades.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-4">No trades yet</p>
+                ) : (
+                  trades.map((trade, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-xs py-1 border-b border-border/50 last:border-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">{trade.time}</span>
+                        {trade.bot && (
+                          <Badge variant="outline" className="text-[8px] px-1 py-0">{trade.bot}</Badge>
+                        )}
+                        <span className="font-mono">{trade.contract}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono">${trade.stake.toFixed(2)}</span>
+                        <span className={`font-mono w-16 text-right ${
+                          trade.result === 'Win' ? 'text-profit' : trade.result === 'Loss' ? 'text-loss' : ''
+                        }`}>
+                          {trade.result === 'Win' ? `+$${trade.pnl.toFixed(2)}` : 
+                           trade.result === 'Loss' ? `-$${Math.abs(trade.pnl).toFixed(2)}` : 
+                           '⏳'}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </motion.div>
         </div>
       </div>
