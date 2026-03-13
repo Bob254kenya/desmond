@@ -9,8 +9,7 @@ import { Button } from '@/components/ui/button';
 import { 
   Loader2, Play, StopCircle, Pause, TrendingUp, TrendingDown, 
   CircleDot, RefreshCw, Trash2, Zap, Activity, BarChart3, 
-  LineChart, PieChart, Globe, Bell, Settings, Shield,
-  Sparkles, Target, Award, ZapOff, Layers, GitCompare
+  LineChart, PieChart, Globe, Bell, Target, Award, Layers, GitCompare
 } from 'lucide-react';
 
 interface DigitAnalysis {
@@ -76,6 +75,7 @@ interface TradeLog {
   result: 'Pending' | 'Win' | 'Loss';
   pnl: number;
   bot: string;
+  botId: string;
   lastDigit?: number;
   signalType?: string;
 }
@@ -88,11 +88,29 @@ const VOLATILITY_MARKETS = [
   'RDBEAR', 'RDBULL', 'JD10', 'JD25', 'JD50', 'JD75', 'JD100'
 ];
 
-// Simulated tick data for development
+// Simulated tick data generator with realistic patterns
 const generateMockTicks = (market: string, count: number): number[] => {
   const ticks: number[] = [];
+  let trend = 0;
+  
   for (let i = 0; i < count; i++) {
-    ticks.push(Math.floor(Math.random() * 10));
+    // Create some patterns based on market type
+    if (market.includes('BOOM')) {
+      // BOOM markets tend to have higher digits
+      trend = Math.random() > 0.7 ? 1 : -1;
+      const base = 6 + Math.floor(Math.random() * 4);
+      ticks.push(Math.min(9, Math.max(0, base + trend)));
+    } else if (market.includes('CRASH')) {
+      // CRASH markets tend to have lower digits
+      trend = Math.random() > 0.7 ? -1 : 1;
+      const base = Math.floor(Math.random() * 5);
+      ticks.push(Math.min(9, Math.max(0, base + trend)));
+    } else if (market.includes('R_')) {
+      // Random with slight bias
+      ticks.push(Math.floor(Math.random() * 10));
+    } else {
+      ticks.push(Math.floor(Math.random() * 10));
+    }
   }
   return ticks;
 };
@@ -186,35 +204,35 @@ const analyzeDigits = (digits: number[]): DigitAnalysis => {
   let signal: 'EVEN' | 'ODD' | 'OVER_3' | 'UNDER_6' | 'OVER_5' | 'UNDER_5' | 'OVER_7' | 'UNDER_7' | 'NONE' = 'NONE';
   let confidence = 0;
   
-  if (evenPercentage >= 58 && oddPercentage <= 42 && mostAppearing % 2 === 0 && lastThreeEven) {
+  if (evenPercentage >= 55 && mostAppearing % 2 === 0 && lastThreeEven) {
     signal = 'EVEN';
     confidence = evenPercentage;
   }
-  else if (oddPercentage >= 58 && evenPercentage <= 42 && mostAppearing % 2 === 1 && lastThreeOdd) {
+  else if (oddPercentage >= 55 && mostAppearing % 2 === 1 && lastThreeOdd) {
     signal = 'ODD';
     confidence = oddPercentage;
   }
-  else if (over3Percentage >= 60 && mostAppearing > 3 && lastThreeOver3) {
+  else if (over3Percentage >= 55 && mostAppearing > 3 && lastThreeOver3) {
     signal = 'OVER_3';
     confidence = over3Percentage;
   }
-  else if (under6Percentage >= 60 && mostAppearing < 6 && lastThreeUnder6) {
+  else if (under6Percentage >= 55 && mostAppearing < 6 && lastThreeUnder6) {
     signal = 'UNDER_6';
     confidence = under6Percentage;
   }
-  else if (over5Percentage >= 60 && mostAppearing > 5 && lastThreeOver5) {
+  else if (over5Percentage >= 55 && mostAppearing > 5 && lastThreeOver5) {
     signal = 'OVER_5';
     confidence = over5Percentage;
   }
-  else if (under5Percentage >= 60 && mostAppearing < 5 && lastThreeUnder5) {
+  else if (under5Percentage >= 55 && mostAppearing < 5 && lastThreeUnder5) {
     signal = 'UNDER_5';
     confidence = under5Percentage;
   }
-  else if (over7Percentage >= 60 && mostAppearing > 7 && lastThreeOver7) {
+  else if (over7Percentage >= 55 && mostAppearing > 7 && lastThreeOver7) {
     signal = 'OVER_7';
     confidence = over7Percentage;
   }
-  else if (under7Percentage >= 60 && mostAppearing < 7 && lastThreeUnder7) {
+  else if (under7Percentage >= 55 && mostAppearing < 7 && lastThreeUnder7) {
     signal = 'UNDER_7';
     confidence = under7Percentage;
   }
@@ -278,6 +296,7 @@ export default function AutoTrade() {
   const tradeIdRef = useRef(0);
   const marketDigitsRef = useRef<Record<string, number[]>>({});
   const analysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const botIntervalsRef = useRef<Record<string, NodeJS.Timeout>>({});
 
   // Initialize bots with colors and icons
   const [bots, setBots] = useState<BotState[]>([
@@ -329,7 +348,7 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 5,
       color: 'from-rose-500 to-pink-600',
-      icon: <Shield className="w-3.5 h-3.5" />
+      icon: <Award className="w-3.5 h-3.5" />
     },
     { 
       id: 'bot7', name: 'OVER 7', type: 'OVER_7', isRunning: false, isPaused: false, 
@@ -338,7 +357,7 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 7,
       color: 'from-indigo-500 to-purple-600',
-      icon: <Sparkles className="w-3.5 h-3.5" />
+      icon: <Zap className="w-3.5 h-3.5" />
     },
     { 
       id: 'bot8', name: 'UNDER 7', type: 'UNDER_7', isRunning: false, isPaused: false, 
@@ -347,7 +366,7 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 7,
       color: 'from-violet-500 to-purple-600',
-      icon: <Award className="w-3.5 h-3.5" />
+      icon: <Activity className="w-3.5 h-3.5" />
     }
   ]);
 
@@ -382,6 +401,15 @@ export default function AutoTrade() {
     };
   }, []);
 
+  // Cleanup bot intervals on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(botIntervalsRef.current).forEach(interval => {
+        clearInterval(interval);
+      });
+    };
+  }, []);
+
   // Analyze all markets
   const analyzeAllMarkets = useCallback(() => {
     setIsAnalyzing(true);
@@ -404,6 +432,7 @@ export default function AutoTrade() {
     setMarketsData(newMarketsData);
     setLastScanTime(new Date());
     
+    // Auto-switch bots to best markets
     setBots(prev => prev.map(bot => {
       const bestMarket = findBestMarketForBot(newMarketsData, bot.type);
       if (bestMarket && bestMarket.market !== bot.currentMarket) {
@@ -436,53 +465,255 @@ export default function AutoTrade() {
     }
   };
 
+  // Simulate a trade for a bot
+  const executeTrade = useCallback(async (botId: string) => {
+    const bot = bots.find(b => b.id === botId);
+    if (!bot || !bot.isRunning || bot.isPaused) return;
+
+    // Check stop loss / take profit
+    if (bot.totalPnl <= -globalStopLoss) {
+      toast.error(`${bot.name}: Stop Loss reached! Stopping bot.`);
+      stopBot(botId);
+      return;
+    }
+    if (bot.totalPnl >= globalTakeProfit) {
+      toast.success(`${bot.name}: Take Profit reached! Stopping bot.`);
+      stopBot(botId);
+      return;
+    }
+
+    // Get current market data
+    const marketData = marketsData[bot.currentMarket];
+    if (!marketData) return;
+
+    // Generate new tick to simulate market movement
+    const newDigit = Math.floor(Math.random() * 10);
+    marketDigitsRef.current[bot.currentMarket] = [
+      ...(marketDigitsRef.current[bot.currentMarket] || []),
+      newDigit
+    ].slice(-1000);
+
+    // Update market data with new analysis
+    const updatedDigits = marketDigitsRef.current[bot.currentMarket];
+    const newAnalysis = analyzeDigits(updatedDigits);
+    
+    setMarketsData(prev => ({
+      ...prev,
+      [bot.currentMarket]: {
+        ...prev[bot.currentMarket],
+        digits: updatedDigits.slice(-100),
+        analysis: newAnalysis,
+        lastUpdate: Date.now()
+      }
+    }));
+
+    // Check if current market still has signal for this bot
+    if (newAnalysis.signal !== bot.type) {
+      // Look for better market
+      const bestMarket = findBestMarketForBot(marketsData, bot.type);
+      if (bestMarket && bestMarket.market !== bot.currentMarket) {
+        setBots(prev => prev.map(b => 
+          b.id === botId ? {
+            ...b,
+            currentMarket: bestMarket.market,
+            marketSwitchCount: b.marketSwitchCount + 1,
+            status: 'switching_market'
+          } : b
+        ));
+        toast.info(`${bot.name} switched to ${bestMarket.market}`);
+      }
+      return;
+    }
+
+    // Check entry conditions based on last three ticks
+    const lastThree = newAnalysis.lastThreeTicks;
+    let shouldTrade = false;
+
+    switch (bot.type) {
+      case 'EVEN':
+        shouldTrade = lastThree.filter(d => d % 2 === 0).length >= 2;
+        break;
+      case 'ODD':
+        shouldTrade = lastThree.filter(d => d % 2 === 1).length >= 2;
+        break;
+      case 'OVER_3':
+        shouldTrade = lastThree.filter(d => d > 3).length >= 2;
+        break;
+      case 'UNDER_6':
+        shouldTrade = lastThree.filter(d => d < 6).length >= 2;
+        break;
+      case 'OVER_5':
+        shouldTrade = lastThree.filter(d => d > 5).length >= 2;
+        break;
+      case 'UNDER_5':
+        shouldTrade = lastThree.filter(d => d < 5).length >= 2;
+        break;
+      case 'OVER_7':
+        shouldTrade = lastThree.filter(d => d > 7).length >= 2;
+        break;
+      case 'UNDER_7':
+        shouldTrade = lastThree.filter(d => d < 7).length >= 2;
+        break;
+    }
+
+    if (!shouldTrade) return;
+
+    // Simulate trade execution
+    const id = ++tradeIdRef.current;
+    const now = new Date().toLocaleTimeString();
+    const won = Math.random() > 0.4; // 60% win rate for demo
+    const pnl = won ? bot.currentStake * 0.95 : -bot.currentStake; // 95% payout on win
+
+    // Create trade log
+    const newTrade: TradeLog = {
+      id,
+      time: now,
+      market: bot.currentMarket,
+      contract: getContractDetails(bot.type, bot.selectedDigit).contract,
+      stake: bot.currentStake,
+      result: won ? 'Win' : 'Loss',
+      pnl,
+      bot: bot.name,
+      botId: bot.id,
+      lastDigit: newDigit,
+      signalType: bot.type
+    };
+
+    setTrades(prev => [newTrade, ...prev].slice(0, 100));
+
+    // Update bot stats
+    setBots(prev => prev.map(b => {
+      if (b.id === botId) {
+        const newStake = won 
+          ? globalStake // Reset stake after win
+          : Math.round(b.currentStake * globalMultiplier * 100) / 100; // Increase stake after loss
+        
+        return {
+          ...b,
+          totalPnl: b.totalPnl + pnl,
+          trades: b.trades + 1,
+          wins: b.wins + (won ? 1 : 0),
+          losses: b.losses + (won ? 0 : 1),
+          currentStake: newStake,
+          consecutiveLosses: won ? 0 : b.consecutiveLosses + 1,
+          lastTradeResult: won ? 'win' : 'loss',
+          status: 'cooldown',
+          cooldownRemaining: 3
+        };
+      }
+      return b;
+    }));
+
+    // Show toast notification
+    if (won) {
+      toast.success(`${bot.name} won $${pnl.toFixed(2)}`, {
+        description: `Trade #${id} on ${bot.currentMarket}`,
+        icon: '🎯'
+      });
+    } else {
+      toast.error(`${bot.name} lost $${Math.abs(pnl).toFixed(2)}`, {
+        description: `Trade #${id} on ${bot.currentMarket}`,
+        icon: '📉'
+      });
+    }
+
+  }, [bots, marketsData, globalStake, globalMultiplier, globalStopLoss, globalTakeProfit]);
+
+  // Bot trading loop
+  const startBotTrading = useCallback((botId: string) => {
+    if (botIntervalsRef.current[botId]) {
+      clearInterval(botIntervalsRef.current[botId]);
+    }
+
+    // Execute trade every 5 seconds (simulated)
+    botIntervalsRef.current[botId] = setInterval(() => {
+      executeTrade(botId);
+    }, 5000);
+
+    // Update bot status
+    setBots(prev => prev.map(b => 
+      b.id === botId ? { ...b, status: 'analyzing', cooldownRemaining: 0 } : b
+    ));
+
+    toast.success(`${bots.find(b => b.id === botId)?.name} started trading`, {
+      description: 'Executing trades every 5 seconds',
+    });
+  }, [executeTrade, bots]);
+
   // Bot controls
   const startBot = (botId: string) => {
     const bot = bots.find(b => b.id === botId);
     if (!bot || bot.isRunning) return;
     
-    toast.success(`${bot.name} bot started`, {
-      description: `Trading on ${bot.currentMarket}`,
-      icon: '🚀'
-    });
-    
     setBots(prev => prev.map(b => b.id === botId ? { 
       ...b, 
       isRunning: true, 
+      isPaused: false,
       status: 'analyzing'
     } : b));
     
     botRunningRefs.current[botId] = true;
+    botPausedRefs.current[botId] = false;
+    
+    startBotTrading(botId);
   };
 
   const pauseBot = (botId: string) => {
-    botPausedRefs.current[botId] = !botPausedRefs.current[botId];
-    setBots(prev => prev.map(b => b.id === botId ? { ...b, isPaused: botPausedRefs.current[botId] } : b));
+    const bot = bots.find(b => b.id === botId);
+    if (!bot) return;
     
-    toast.info(`Bot ${botPausedRefs.current[botId] ? 'paused' : 'resumed'}`);
+    const newPausedState = !bot.isPaused;
+    botPausedRefs.current[botId] = newPausedState;
+    
+    setBots(prev => prev.map(b => b.id === botId ? { 
+      ...b, 
+      isPaused: newPausedState,
+      status: newPausedState ? 'idle' : 'analyzing'
+    } : b));
+    
+    toast.info(`${bot.name} ${newPausedState ? 'paused' : 'resumed'}`);
   };
 
   const stopBot = (botId: string) => {
+    const bot = bots.find(b => b.id === botId);
+    if (!bot) return;
+    
     botRunningRefs.current[botId] = false;
+    botPausedRefs.current[botId] = false;
+    
+    if (botIntervalsRef.current[botId]) {
+      clearInterval(botIntervalsRef.current[botId]);
+      delete botIntervalsRef.current[botId];
+    }
+    
     setBots(prev => prev.map(b => b.id === botId ? { 
       ...b, 
       isRunning: false, 
       isPaused: false,
-      status: 'idle'
+      status: 'idle',
+      cooldownRemaining: 0
     } : b));
     
-    toast.warning(`${bots.find(b => b.id === botId)?.name} stopped`);
+    toast.warning(`${bot.name} stopped`);
   };
 
   const stopAllBots = () => {
     bots.forEach(bot => {
       botRunningRefs.current[bot.id] = false;
+      botPausedRefs.current[bot.id] = false;
+      
+      if (botIntervalsRef.current[bot.id]) {
+        clearInterval(botIntervalsRef.current[bot.id]);
+        delete botIntervalsRef.current[bot.id];
+      }
     });
+    
     setBots(prev => prev.map(b => ({ 
       ...b, 
       isRunning: false, 
       isPaused: false,
-      status: 'idle'
+      status: 'idle',
+      cooldownRemaining: 0
     })));
     
     toast.warning('All bots stopped');
@@ -490,6 +721,9 @@ export default function AutoTrade() {
 
   // Clear all data
   const clearAll = () => {
+    // Stop all bots first
+    stopAllBots();
+    
     setTrades([]);
     setBots(prev => prev.map(bot => ({
       ...bot,
@@ -506,6 +740,7 @@ export default function AutoTrade() {
       signalStrength: 0
     })));
     tradeIdRef.current = 0;
+    
     toast.success('All data cleared');
   };
 
@@ -562,7 +797,7 @@ export default function AutoTrade() {
                 </h1>
                 <p className="text-sm text-gray-500 flex items-center gap-2">
                   <Globe className="w-3.5 h-3.5" />
-                  <span>8 Active Strategies • Auto Market Switching • Real-time Analysis</span>
+                  <span>8 Active Strategies • Auto Market Switching • Live Trading</span>
                   {lastScanTime && (
                     <>
                       <span className="w-1 h-1 bg-gray-600 rounded-full"></span>
@@ -810,6 +1045,24 @@ export default function AutoTrade() {
                     </div>
                   </div>
 
+                  {/* Status */}
+                  <div className="flex items-center justify-between text-[9px] mb-2">
+                    <span className="text-gray-600">Status</span>
+                    <span className={`font-mono ${
+                      bot.status === 'trading' ? 'text-green-400' :
+                      bot.status === 'analyzing' ? 'text-blue-400' :
+                      bot.status === 'cooldown' ? 'text-yellow-400' :
+                      bot.status === 'switching_market' ? 'text-purple-400' :
+                      'text-gray-500'
+                    }`}>
+                      {bot.status === 'trading' ? '📈 Trading' :
+                       bot.status === 'analyzing' ? '🔍 Analyzing' :
+                       bot.status === 'cooldown' ? `⏳ Cooldown ${bot.cooldownRemaining}` :
+                       bot.status === 'switching_market' ? '🔄 Switching' :
+                       '⚫ Idle'}
+                    </span>
+                  </div>
+
                   {/* Controls */}
                   <div className="flex gap-1">
                     {!bot.isRunning ? (
@@ -1028,7 +1281,7 @@ export default function AutoTrade() {
         </motion.div>
       </div>
 
-      <style jsx>{`
+      <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 4px;
         }
