@@ -30,6 +30,7 @@ interface DigitAnalysis {
   under7Percentage: number;
   lastTwelveTicks: number[];
   lastThreeTicks: number[];
+  lastTwoTicks: number[];
   lastThreeIdentical: boolean;
   signal: 'EVEN' | 'ODD' | 'OVER_3' | 'UNDER_6' | 'OVER_5' | 'UNDER_5' | 'OVER_7' | 'UNDER_7' | 'NONE';
   confidence: number;
@@ -64,6 +65,7 @@ interface BotState {
   selectedDigit?: number;
   color?: string;
   icon?: JSX.Element;
+  entryCondition: string;
 }
 
 interface TradeLog {
@@ -78,6 +80,7 @@ interface TradeLog {
   botId: string;
   lastDigit?: number;
   signalType?: string;
+  entryCondition?: string;
 }
 
 const VOLATILITY_MARKETS = [
@@ -136,6 +139,7 @@ const analyzeDigits = (digits: number[]): DigitAnalysis => {
       under7Percentage: 0,
       lastTwelveTicks: [],
       lastThreeTicks: [],
+      lastTwoTicks: [],
       lastThreeIdentical: false,
       signal: 'NONE',
       confidence: 0
@@ -145,6 +149,7 @@ const analyzeDigits = (digits: number[]): DigitAnalysis => {
   const last700 = digits.slice(-700);
   const lastTwelve = digits.slice(-12);
   const lastThree = digits.slice(-3);
+  const lastTwo = digits.slice(-2);
   const lastThreeIdentical = lastThree.length === 3 && lastThree.every(d => d === lastThree[0]);
   
   const counts: Record<number, number> = {};
@@ -192,47 +197,39 @@ const analyzeDigits = (digits: number[]): DigitAnalysis => {
   const over7Percentage = (over7Count / 700) * 100;
   const under7Percentage = (under7Count / 700) * 100;
   
-  const lastThreeOver3 = lastThree.filter(d => d > 3).length >= 2;
-  const lastThreeUnder6 = lastThree.filter(d => d < 6).length >= 2;
-  const lastThreeOver5 = lastThree.filter(d => d > 5).length >= 2;
-  const lastThreeUnder5 = lastThree.filter(d => d < 5).length >= 2;
-  const lastThreeOver7 = lastThree.filter(d => d > 7).length >= 2;
-  const lastThreeUnder7 = lastThree.filter(d => d < 7).length >= 2;
-  const lastThreeEven = lastThree.filter(d => d % 2 === 0).length >= 2;
-  const lastThreeOdd = lastThree.filter(d => d % 2 === 1).length >= 2;
-  
+  // Determine signal based on market conditions (for market analysis only)
   let signal: 'EVEN' | 'ODD' | 'OVER_3' | 'UNDER_6' | 'OVER_5' | 'UNDER_5' | 'OVER_7' | 'UNDER_7' | 'NONE' = 'NONE';
   let confidence = 0;
   
-  if (evenPercentage >= 55 && mostAppearing % 2 === 0 && lastThreeEven) {
+  if (evenPercentage >= 55 && mostAppearing % 2 === 0) {
     signal = 'EVEN';
     confidence = evenPercentage;
   }
-  else if (oddPercentage >= 55 && mostAppearing % 2 === 1 && lastThreeOdd) {
+  else if (oddPercentage >= 55 && mostAppearing % 2 === 1) {
     signal = 'ODD';
     confidence = oddPercentage;
   }
-  else if (over3Percentage >= 55 && mostAppearing > 3 && lastThreeOver3) {
+  else if (over3Percentage >= 55 && mostAppearing > 3) {
     signal = 'OVER_3';
     confidence = over3Percentage;
   }
-  else if (under6Percentage >= 55 && mostAppearing < 6 && lastThreeUnder6) {
+  else if (under6Percentage >= 55 && mostAppearing < 6) {
     signal = 'UNDER_6';
     confidence = under6Percentage;
   }
-  else if (over5Percentage >= 55 && mostAppearing > 5 && lastThreeOver5) {
+  else if (over5Percentage >= 55 && mostAppearing > 5) {
     signal = 'OVER_5';
     confidence = over5Percentage;
   }
-  else if (under5Percentage >= 55 && mostAppearing < 5 && lastThreeUnder5) {
+  else if (under5Percentage >= 55 && mostAppearing < 5) {
     signal = 'UNDER_5';
     confidence = under5Percentage;
   }
-  else if (over7Percentage >= 55 && mostAppearing > 7 && lastThreeOver7) {
+  else if (over7Percentage >= 55 && mostAppearing > 7) {
     signal = 'OVER_7';
     confidence = over7Percentage;
   }
-  else if (under7Percentage >= 55 && mostAppearing < 7 && lastThreeUnder7) {
+  else if (under7Percentage >= 55 && mostAppearing < 7) {
     signal = 'UNDER_7';
     confidence = under7Percentage;
   }
@@ -255,6 +252,7 @@ const analyzeDigits = (digits: number[]): DigitAnalysis => {
     under7Percentage,
     lastTwelveTicks: lastTwelve,
     lastThreeTicks: lastThree,
+    lastTwoTicks: lastTwo,
     lastThreeIdentical,
     signal,
     confidence
@@ -298,7 +296,7 @@ export default function AutoTrade() {
   const analysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const botIntervalsRef = useRef<Record<string, NodeJS.Timeout>>({});
 
-  // Initialize bots with colors and icons
+  // Initialize bots with colors and icons and entry conditions
   const [bots, setBots] = useState<BotState[]>([
     { 
       id: 'bot1', name: 'EVEN', type: 'EVEN', isRunning: false, isPaused: false, 
@@ -306,7 +304,8 @@ export default function AutoTrade() {
       currentMarket: 'R_100', status: 'idle', consecutiveLosses: 0, 
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       color: 'from-emerald-500 to-green-600',
-      icon: <CircleDot className="w-3.5 h-3.5" />
+      icon: <CircleDot className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 3 digits to be ODD'
     },
     { 
       id: 'bot2', name: 'ODD', type: 'ODD', isRunning: false, isPaused: false, 
@@ -314,7 +313,8 @@ export default function AutoTrade() {
       currentMarket: 'R_100', status: 'idle', consecutiveLosses: 0, 
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       color: 'from-purple-500 to-pink-600',
-      icon: <CircleDot className="w-3.5 h-3.5" />
+      icon: <CircleDot className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 3 digits to be EVEN'
     },
     { 
       id: 'bot3', name: 'OVER 3', type: 'OVER_3', isRunning: false, isPaused: false, 
@@ -322,7 +322,8 @@ export default function AutoTrade() {
       currentMarket: 'R_100', status: 'idle', consecutiveLosses: 0, 
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       color: 'from-blue-500 to-cyan-600',
-      icon: <TrendingUp className="w-3.5 h-3.5" />
+      icon: <TrendingUp className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 2 digits UNDER 2'
     },
     { 
       id: 'bot4', name: 'UNDER 6', type: 'UNDER_6', isRunning: false, isPaused: false, 
@@ -330,7 +331,8 @@ export default function AutoTrade() {
       currentMarket: 'R_100', status: 'idle', consecutiveLosses: 0, 
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       color: 'from-orange-500 to-amber-600',
-      icon: <TrendingDown className="w-3.5 h-3.5" />
+      icon: <TrendingDown className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 2 digits OVER 7'
     },
     { 
       id: 'bot5', name: 'OVER 5', type: 'OVER_5', isRunning: false, isPaused: false, 
@@ -339,7 +341,8 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 5,
       color: 'from-cyan-500 to-teal-600',
-      icon: <Target className="w-3.5 h-3.5" />
+      icon: <Target className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 2 digits UNDER 2'
     },
     { 
       id: 'bot6', name: 'UNDER 5', type: 'UNDER_5', isRunning: false, isPaused: false, 
@@ -348,7 +351,8 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 5,
       color: 'from-rose-500 to-pink-600',
-      icon: <Award className="w-3.5 h-3.5" />
+      icon: <Award className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 2 digits OVER 7'
     },
     { 
       id: 'bot7', name: 'OVER 7', type: 'OVER_7', isRunning: false, isPaused: false, 
@@ -357,7 +361,8 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 7,
       color: 'from-indigo-500 to-purple-600',
-      icon: <Zap className="w-3.5 h-3.5" />
+      icon: <Zap className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 2 digits UNDER 2'
     },
     { 
       id: 'bot8', name: 'UNDER 7', type: 'UNDER_7', isRunning: false, isPaused: false, 
@@ -366,7 +371,8 @@ export default function AutoTrade() {
       cooldownRemaining: 0, marketSwitchCount: 0, signalStrength: 0,
       selectedDigit: 7,
       color: 'from-violet-500 to-purple-600',
-      icon: <Activity className="w-3.5 h-3.5" />
+      icon: <Activity className="w-3.5 h-3.5" />,
+      entryCondition: 'Wait for last 2 digits OVER 7'
     }
   ]);
 
@@ -465,6 +471,34 @@ export default function AutoTrade() {
     }
   };
 
+  // Check entry conditions for each bot type
+  const checkEntryCondition = (botType: string, lastTwo: number[], lastThree: number[]): boolean => {
+    switch (botType) {
+      case 'EVEN':
+        // Wait for last 3 digits to be ODD before buying EVEN
+        return lastThree.length === 3 && lastThree.every(d => d % 2 === 1);
+      
+      case 'ODD':
+        // Wait for last 3 digits to be EVEN before buying ODD
+        return lastThree.length === 3 && lastThree.every(d => d % 2 === 0);
+      
+      case 'OVER_3':
+      case 'OVER_5':
+      case 'OVER_7':
+        // Wait for last 2 digits UNDER 2 before buying OVER
+        return lastTwo.length === 2 && lastTwo.every(d => d < 2);
+      
+      case 'UNDER_6':
+      case 'UNDER_5':
+      case 'UNDER_7':
+        // Wait for last 2 digits OVER 7 before buying UNDER
+        return lastTwo.length === 2 && lastTwo.every(d => d > 7);
+      
+      default:
+        return false;
+    }
+  };
+
   // Simulate a trade for a bot
   const executeTrade = useCallback(async (botId: string) => {
     const bot = bots.find(b => b.id === botId);
@@ -525,44 +559,44 @@ export default function AutoTrade() {
       return;
     }
 
-    // Check entry conditions based on last three ticks
-    const lastThree = newAnalysis.lastThreeTicks;
-    let shouldTrade = false;
+    // Check entry conditions based on bot type
+    const shouldTrade = checkEntryCondition(
+      bot.type, 
+      newAnalysis.lastTwoTicks, 
+      newAnalysis.lastThreeTicks
+    );
 
-    switch (bot.type) {
-      case 'EVEN':
-        shouldTrade = lastThree.filter(d => d % 2 === 0).length >= 2;
-        break;
-      case 'ODD':
-        shouldTrade = lastThree.filter(d => d % 2 === 1).length >= 2;
-        break;
-      case 'OVER_3':
-        shouldTrade = lastThree.filter(d => d > 3).length >= 2;
-        break;
-      case 'UNDER_6':
-        shouldTrade = lastThree.filter(d => d < 6).length >= 2;
-        break;
-      case 'OVER_5':
-        shouldTrade = lastThree.filter(d => d > 5).length >= 2;
-        break;
-      case 'UNDER_5':
-        shouldTrade = lastThree.filter(d => d < 5).length >= 2;
-        break;
-      case 'OVER_7':
-        shouldTrade = lastThree.filter(d => d > 7).length >= 2;
-        break;
-      case 'UNDER_7':
-        shouldTrade = lastThree.filter(d => d < 7).length >= 2;
-        break;
+    if (!shouldTrade) {
+      // Update status to waiting_entry
+      setBots(prev => prev.map(b => 
+        b.id === botId ? { ...b, status: 'waiting_entry' } : b
+      ));
+      return;
     }
 
-    if (!shouldTrade) return;
+    // Update status to trading
+    setBots(prev => prev.map(b => 
+      b.id === botId ? { ...b, status: 'trading' } : b
+    ));
 
     // Simulate trade execution
     const id = ++tradeIdRef.current;
     const now = new Date().toLocaleTimeString();
     const won = Math.random() > 0.4; // 60% win rate for demo
     const pnl = won ? bot.currentStake * 0.95 : -bot.currentStake; // 95% payout on win
+
+    // Determine entry condition description
+    let entryDesc = '';
+    switch (bot.type) {
+      case 'EVEN': entryDesc = '3 odds → EVEN'; break;
+      case 'ODD': entryDesc = '3 evens → ODD'; break;
+      case 'OVER_3':
+      case 'OVER_5':
+      case 'OVER_7': entryDesc = '2 under 2 → OVER'; break;
+      case 'UNDER_6':
+      case 'UNDER_5':
+      case 'UNDER_7': entryDesc = '2 over 7 → UNDER'; break;
+    }
 
     // Create trade log
     const newTrade: TradeLog = {
@@ -576,7 +610,8 @@ export default function AutoTrade() {
       bot: bot.name,
       botId: bot.id,
       lastDigit: newDigit,
-      signalType: bot.type
+      signalType: bot.type,
+      entryCondition: entryDesc
     };
 
     setTrades(prev => [newTrade, ...prev].slice(0, 100));
@@ -607,15 +642,34 @@ export default function AutoTrade() {
     // Show toast notification
     if (won) {
       toast.success(`${bot.name} won $${pnl.toFixed(2)}`, {
-        description: `Trade #${id} on ${bot.currentMarket}`,
+        description: `${entryDesc} | Trade #${id} on ${bot.currentMarket}`,
         icon: '🎯'
       });
     } else {
       toast.error(`${bot.name} lost $${Math.abs(pnl).toFixed(2)}`, {
-        description: `Trade #${id} on ${bot.currentMarket}`,
+        description: `${entryDesc} | Trade #${id} on ${bot.currentMarket}`,
         icon: '📉'
       });
     }
+
+    // Update cooldown countdown
+    const cooldownInterval = setInterval(() => {
+      setBots(prev => prev.map(b => {
+        if (b.id === botId && b.cooldownRemaining > 0) {
+          const newCooldown = b.cooldownRemaining - 1;
+          return {
+            ...b,
+            cooldownRemaining: newCooldown,
+            status: newCooldown === 0 ? 'analyzing' : 'cooldown'
+          };
+        }
+        return b;
+      }));
+    }, 1000);
+
+    setTimeout(() => {
+      clearInterval(cooldownInterval);
+    }, 3000);
 
   }, [bots, marketsData, globalStake, globalMultiplier, globalStopLoss, globalTakeProfit]);
 
@@ -625,10 +679,10 @@ export default function AutoTrade() {
       clearInterval(botIntervalsRef.current[botId]);
     }
 
-    // Execute trade every 5 seconds (simulated)
+    // Execute trade every 3 seconds (simulated)
     botIntervalsRef.current[botId] = setInterval(() => {
       executeTrade(botId);
-    }, 5000);
+    }, 3000);
 
     // Update bot status
     setBots(prev => prev.map(b => 
@@ -636,7 +690,7 @@ export default function AutoTrade() {
     ));
 
     toast.success(`${bots.find(b => b.id === botId)?.name} started trading`, {
-      description: 'Executing trades every 5 seconds',
+      description: 'Waiting for entry conditions...',
     });
   }, [executeTrade, bots]);
 
@@ -797,7 +851,7 @@ export default function AutoTrade() {
                 </h1>
                 <p className="text-sm text-gray-500 flex items-center gap-2">
                   <Globe className="w-3.5 h-3.5" />
-                  <span>8 Active Strategies • Auto Market Switching • Live Trading</span>
+                  <span>8 Bots • Smart Entry Conditions • Real-time Trading</span>
                   {lastScanTime && (
                     <>
                       <span className="w-1 h-1 bg-gray-600 rounded-full"></span>
@@ -993,6 +1047,12 @@ export default function AutoTrade() {
                     </div>
                   </div>
 
+                  {/* Entry Condition */}
+                  <div className="bg-gray-800/50 rounded-lg p-2 mb-2">
+                    <div className="text-[9px] text-gray-400 mb-1">Entry Condition</div>
+                    <div className="text-[10px] font-medium text-white">{bot.entryCondition}</div>
+                  </div>
+
                   {/* Market Info */}
                   <div className="bg-gray-800/50 rounded-lg p-2 mb-2">
                     <div className="flex items-center justify-between text-xs">
@@ -1010,12 +1070,16 @@ export default function AutoTrade() {
                           </span>
                         </div>
                         <div className="flex justify-between text-[10px]">
-                          <span className="text-gray-600">Most</span>
-                          <span className="text-white font-mono">{marketData.analysis.mostAppearing}</span>
+                          <span className="text-gray-600">Last 2</span>
+                          <span className="text-white font-mono">
+                            {marketData.analysis.lastTwoTicks.join(', ')}
+                          </span>
                         </div>
                         <div className="flex justify-between text-[10px]">
-                          <span className="text-gray-600">2nd Least</span>
-                          <span className="text-white font-mono">{marketData.analysis.secondLeast}</span>
+                          <span className="text-gray-600">Last 3</span>
+                          <span className="text-white font-mono">
+                            {marketData.analysis.lastThreeTicks.join(', ')}
+                          </span>
                         </div>
                       </>
                     )}
@@ -1051,12 +1115,14 @@ export default function AutoTrade() {
                     <span className={`font-mono ${
                       bot.status === 'trading' ? 'text-green-400' :
                       bot.status === 'analyzing' ? 'text-blue-400' :
-                      bot.status === 'cooldown' ? 'text-yellow-400' :
+                      bot.status === 'waiting_entry' ? 'text-yellow-400' :
+                      bot.status === 'cooldown' ? 'text-orange-400' :
                       bot.status === 'switching_market' ? 'text-purple-400' :
                       'text-gray-500'
                     }`}>
                       {bot.status === 'trading' ? '📈 Trading' :
                        bot.status === 'analyzing' ? '🔍 Analyzing' :
+                       bot.status === 'waiting_entry' ? '⏳ Waiting Entry' :
                        bot.status === 'cooldown' ? `⏳ Cooldown ${bot.cooldownRemaining}` :
                        bot.status === 'switching_market' ? '🔄 Switching' :
                        '⚫ Idle'}
@@ -1167,6 +1233,22 @@ export default function AutoTrade() {
                       </div>
                     </div>
                     
+                    {/* Last 2 and Last 3 */}
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <div className="bg-gray-800/50 rounded p-1.5">
+                        <div className="text-[8px] text-gray-600">Last 2</div>
+                        <div className="font-mono text-sm text-white">
+                          {data.analysis.lastTwoTicks.join(', ')}
+                        </div>
+                      </div>
+                      <div className="bg-gray-800/50 rounded p-1.5">
+                        <div className="text-[8px] text-gray-600">Last 3</div>
+                        <div className="font-mono text-sm text-white">
+                          {data.analysis.lastThreeTicks.join(', ')}
+                        </div>
+                      </div>
+                    </div>
+                    
                     {/* Stats Grid */}
                     <div className="grid grid-cols-3 gap-2 text-[9px]">
                       <div className="bg-gray-800/50 rounded p-1.5">
@@ -1254,9 +1336,9 @@ export default function AutoTrade() {
                       </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      {trade.signalType && (
+                      {trade.entryCondition && (
                         <Badge className="text-[7px] px-1.5 py-0 bg-blue-500/20 text-blue-400 border-blue-500/30">
-                          {trade.signalType}
+                          {trade.entryCondition}
                         </Badge>
                       )}
                       <span className="font-mono text-[9px] text-gray-400">
