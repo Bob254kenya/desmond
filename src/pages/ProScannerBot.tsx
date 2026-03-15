@@ -128,6 +128,9 @@ export default function ProScannerBot() {
   const [m2Barrier, setM2Barrier] = useState('5');
   const [m2Symbol, setM2Symbol] = useState('R_50');
 
+  /* ── NEW: Market 2 run count ── */
+  const [m2RunCount, setM2RunCount] = useState('3'); // Number of runs in recovery mode
+
   /* ── Virtual Hook M1 ── */
   const [m1HookEnabled, setM1HookEnabled] = useState(false);
   const [m1VirtualLossCount, setM1VirtualLossCount] = useState('3');
@@ -187,6 +190,11 @@ export default function ProScannerBot() {
   const [isRunning, setIsRunning] = useState(false);
   const runningRef = useRef(false);
   const [currentMarket, setCurrentMarket] = useState<1 | 2>(1);
+  
+  /* ── NEW: Market 2 run tracking ── */
+  const [m2RunsRemaining, setM2RunsRemaining] = useState(0);
+  const m2RunsCompletedRef = useRef(0);
+  
   const [wins, setWins] = useState(0);
   const [losses, setLosses] = useState(0);
   const [totalStaked, setTotalStaked] = useState(0);
@@ -313,6 +321,8 @@ export default function ProScannerBot() {
     setLogEntries([]);
     setWins(0); setLosses(0); setTotalStaked(0); setNetProfit(0);
     setMartingaleStepState(0);
+    setM2RunsRemaining(0);
+    m2RunsCompletedRef.current = 0;
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
     setTicksCaptured(0); setTicksMissed(0);
   }, []);
@@ -332,6 +342,8 @@ export default function ProScannerBot() {
     setBotStatus('trading_m1');
     setCurrentStakeState(baseStake);
     setMartingaleStepState(0);
+    setM2RunsRemaining(parseInt(m2RunCount) || 3);
+    m2RunsCompletedRef.current = 0;
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
 
     let cStake = baseStake;
@@ -457,7 +469,8 @@ export default function ProScannerBot() {
         /* Execute real trades batch */
         for (let ri = 0; ri < realCount && runningRef.current; ri++) {
           const result = await executeRealTrade(
-            cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
+            cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake, 
+            inRecovery, m2RunsRemaining, m2RunsCompletedRef.current
           );
           if (!result || !runningRef.current) break;
           localPnl = result.localPnl;
@@ -465,6 +478,8 @@ export default function ProScannerBot() {
           cStake = result.cStake;
           mStep = result.mStep;
           inRecovery = result.inRecovery;
+          setM2RunsRemaining(result.m2RunsRemaining);
+          m2RunsCompletedRef.current = result.m2RunsCompleted;
 
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
@@ -478,7 +493,8 @@ export default function ProScannerBot() {
 
       /* ═══ NORMAL REAL TRADE (no hook) ═══ */
       const result = await executeRealTrade(
-        cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
+        cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake,
+        inRecovery, m2RunsRemaining, m2RunsCompletedRef.current
       );
       if (!result || !runningRef.current) break;
       localPnl = result.localPnl;
@@ -486,6 +502,8 @@ export default function ProScannerBot() {
       cStake = result.cStake;
       mStep = result.mStep;
       inRecovery = result.inRecovery;
+      setM2RunsRemaining(result.m2RunsRemaining);
+      m2RunsCompletedRef.current = result.m2RunsCompleted;
 
       if (result.shouldBreak) break;
 
@@ -501,7 +519,7 @@ export default function ProScannerBot() {
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
     takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, m1StrategyMode, m2StrategyMode, m1PatternValid, m2PatternValid,
     scannerActive, findScannerMatchForMarket, checkStrategyForMarket, addLog, updateLog, turboMode,
-    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
+    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount, m2RunCount]);
 
   /* ── Execute a single real trade ── */
   const executeRealTrade = useCallback(async (
@@ -513,6 +531,9 @@ export default function ProScannerBot() {
     localBalance: number,
     localPnl: number,
     baseStake: number,
+    inRecovery: boolean,
+    m2RunsRemaining: number,
+    m2RunsCompleted: number,
   ) => {
     const logId = ++logIdRef.current;
     const now = new Date().toLocaleTimeString();
@@ -526,7 +547,9 @@ export default function ProScannerBot() {
       switchInfo: '',
     });
 
-    let inRecovery = mkt === 2;
+    let newInRecovery = inRecovery;
+    let newM2RunsRemaining = m2RunsRemaining;
+    let newM2RunsCompleted = m2RunsCompleted;
 
     try {
       // Turbo: skip waiting for next tick, trade immediately
@@ -559,36 +582,73 @@ export default function ProScannerBot() {
       const exitDigit = String(getLastDigit(result.sellPrice || 0));
 
       let switchInfo = '';
+      
       if (won) {
         setWins(prev => prev + 1);
-        if (inRecovery) {
-          switchInfo = '✓ Recovery WIN → Back to M1';
-          inRecovery = false;
+        
+        // UPDATED LOGIC FOR MARKET 2: If win occurs before runs complete, consider runs completed
+        if (mkt === 2) {
+          if (newM2RunsRemaining > 0) {
+            // Win achieved, so mark all remaining runs as completed
+            newM2RunsRemaining = 0;
+            newM2RunsCompleted = parseInt(m2RunCount) || 3;
+            switchInfo = `✓ M2 WIN → Runs completed early (0/${m2RunCount})`;
+          }
+          
+          // Check if all runs are completed
+          if (newM2RunsRemaining === 0) {
+            newInRecovery = false; // Exit recovery mode
+            switchInfo = '✓ Recovery WIN + Runs complete → Back to M1';
+          } else {
+            newInRecovery = true; // Stay in recovery
+            newM2RunsRemaining--;
+            newM2RunsCompleted++;
+            switchInfo = `✓ M2 WIN → Runs left: ${newM2RunsRemaining}`;
+          }
         } else {
-          switchInfo = '→ Continue M1';
+          // M1 logic (unchanged)
+          if (newInRecovery) {
+            switchInfo = '✓ Recovery WIN → Back to M1';
+            newInRecovery = false;
+          } else {
+            switchInfo = '→ Continue M1';
+          }
         }
+        
         mStep = 0;
         cStake = baseStake;
       } else {
         setLosses(prev => prev + 1);
+        
         // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
         if (activeAccount?.is_virtual) {
           recordLoss(cStake, tradeSymbol, 6000);
         }
-        if (!inRecovery && m2Enabled) {
-          inRecovery = true;
-          switchInfo = '✗ Loss → Switch to M2';
-        } else {
-          switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1';
-        }
-        if (martingaleOn) {
-          const maxS = parseInt(martingaleMaxSteps) || 5;
-          if (mStep < maxS) {
-            cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
-            mStep++;
+        
+        if (mkt === 1) {
+          // M1 loss logic (unchanged)
+          if (!newInRecovery && m2Enabled) {
+            newInRecovery = true;
+            // Initialize runs when entering recovery
+            newM2RunsRemaining = parseInt(m2RunCount) || 3;
+            newM2RunsCompleted = 0;
+            switchInfo = `✗ M1 Loss → Switch to M2 (${newM2RunsRemaining} runs)`;
           } else {
-            mStep = 0;
-            cStake = baseStake;
+            switchInfo = '→ Continue M1';
+          }
+        } else {
+          // M2 loss logic (unchanged)
+          switchInfo = `✗ M2 Loss → Runs left: ${newM2RunsRemaining}`;
+          
+          if (martingaleOn) {
+            const maxS = parseInt(martingaleMaxSteps) || 5;
+            if (mStep < maxS) {
+              cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
+              mStep++;
+            } else {
+              mStep = 0;
+              cStake = baseStake;
+            }
           }
         }
       }
@@ -613,13 +673,31 @@ export default function ProScannerBot() {
         shouldBreak = true;
       }
 
-      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
+      return { 
+        localPnl, 
+        localBalance, 
+        cStake, 
+        mStep, 
+        inRecovery: newInRecovery, 
+        shouldBreak,
+        m2RunsRemaining: newM2RunsRemaining,
+        m2RunsCompleted: newM2RunsCompleted
+      };
     } catch (err: any) {
       updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: `Error: ${err.message}` });
       if (!turboMode) await new Promise(r => setTimeout(r, 2000));
-      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
+      return { 
+        localPnl, 
+        localBalance, 
+        cStake, 
+        mStep, 
+        inRecovery: newInRecovery, 
+        shouldBreak: false,
+        m2RunsRemaining: newM2RunsRemaining,
+        m2RunsCompleted: newM2RunsCompleted
+      };
     }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode]);
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss, m2RunCount]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
@@ -644,12 +722,17 @@ export default function ProScannerBot() {
   const currentConfig = useMemo<BotConfig>(() => ({
     version: 1,
     m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
-    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
+    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount, runCount: m2RunCount },
     risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
     strategy: { m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled, m1Mode: m1StrategyMode, m2Mode: m2StrategyMode, m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow },
     scanner: { active: scannerActive },
     turbo: { enabled: turboMode },
-  }), [m1Enabled, m1Symbol, m1Contract, m1Barrier, m1HookEnabled, m1VirtualLossCount, m1RealCount, m2Enabled, m2Symbol, m2Contract, m2Barrier, m2HookEnabled, m2VirtualLossCount, m2RealCount, stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, strategyM1Enabled, strategyEnabled, m1StrategyMode, m2StrategyMode, m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow, scannerActive, turboMode]);
+  }), [m1Enabled, m1Symbol, m1Contract, m1Barrier, m1HookEnabled, m1VirtualLossCount, m1RealCount, 
+      m2Enabled, m2Symbol, m2Contract, m2Barrier, m2HookEnabled, m2VirtualLossCount, m2RealCount, m2RunCount,
+      stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, 
+      strategyM1Enabled, strategyEnabled, m1StrategyMode, m2StrategyMode, m1Pattern, m1DigitCondition, 
+      m1DigitCompare, m1DigitWindow, m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow, 
+      scannerActive, turboMode]);
 
   const handleLoadConfig = useCallback((cfg: BotConfig) => {
     if (cfg.m1) {
@@ -669,6 +752,7 @@ export default function ProScannerBot() {
       if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
       if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
       if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
+      if (cfg.m2.runCount) setM2RunCount(cfg.m2.runCount);
     }
     if (cfg.risk) {
       if (cfg.risk.stake) setStake(cfg.risk.stake);
@@ -727,6 +811,11 @@ export default function ProScannerBot() {
           {isRunning && (
             <Badge variant="outline" className={`text-[10px] ${currentMarket === 1 ? 'text-profit border-profit/50' : 'text-purple-400 border-purple-500/50'}`}>
               {currentMarket === 1 ? '🏠 M1' : '🔄 M2'}
+            </Badge>
+          )}
+          {isRunning && currentMarket === 2 && m2RunsRemaining > 0 && (
+            <Badge variant="outline" className="text-[10px] text-warning border-warning/50">
+              Runs: {m2RunsRemaining}
             </Badge>
           )}
         </div>
@@ -874,6 +963,22 @@ export default function ProScannerBot() {
                   <Switch checked={m2Enabled} onCheckedChange={setM2Enabled} disabled={isRunning} />
                 </div>
               </div>
+              
+              {/* NEW: Run Count Input */}
+              <div className="mb-1.5">
+                <label className="text-[8px] text-muted-foreground block mb-0.5">Recovery Runs</label>
+                <Input 
+                  type="number" 
+                  min="1" 
+                  max="20" 
+                  value={m2RunCount} 
+                  onChange={e => setM2RunCount(e.target.value)}
+                  disabled={isRunning}
+                  className="h-6 text-[10px]"
+                  placeholder="Number of recovery runs"
+                />
+              </div>
+              
               <Select value={m2Symbol} onValueChange={v => setM2Symbol(v)} disabled={isRunning}>
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
@@ -1124,7 +1229,7 @@ export default function ProScannerBot() {
                     version: 1,
                     botName: botName.trim(),
                     m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
-                    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
+                    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount, runCount: m2RunCount },
                     risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
                     strategy: {
                       m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled,
@@ -1181,6 +1286,7 @@ export default function ProScannerBot() {
                         if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
                         if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
                         if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
+                        if (cfg.m2.runCount) setM2RunCount(cfg.m2.runCount);
                         // Risk
                         if (cfg.risk.stake) setStake(cfg.risk.stake);
                         if (cfg.risk.martingaleOn !== undefined) setMartingaleOn(cfg.risk.martingaleOn);
@@ -1300,6 +1406,11 @@ export default function ProScannerBot() {
             <div className="px-2.5 py-2 border-b border-border flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold text-foreground">Activity Log</h3>
               <div className="flex items-center gap-1.5">
+                {isRunning && currentMarket === 2 && m2RunsRemaining > 0 && (
+                  <Badge variant="outline" className="text-[9px] text-warning border-warning/30">
+                    Runs left: {m2RunsRemaining}
+                  </Badge>
+                )}
                 {logEntries.length > 0 && logEntries[0].switchInfo && (
                   <span className="text-[9px] text-muted-foreground font-mono hidden md:inline truncate max-w-[200px]">
                     {logEntries[0].switchInfo}
