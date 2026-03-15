@@ -1,6 +1,14 @@
 import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
-import { TrendingUp, TrendingDown, Activity, DollarSign, BarChart3, Bot, ArrowRight } from 'lucide-react';
+import {
+  TrendingUp,
+  TrendingDown,
+  Activity,
+  DollarSign,
+  BarChart3,
+  Bot,
+  ArrowRight,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
@@ -9,7 +17,7 @@ export default function Dashboard() {
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
-    const handleMouseMove = (e) => {
+    const handleMouseMove = (e: MouseEvent) => {
       setMousePosition({ x: e.clientX, y: e.clientY });
     };
     window.addEventListener('mousemove', handleMouseMove);
@@ -52,10 +60,34 @@ export default function Dashboard() {
   ];
 
   const quickLinks = [
-    { title: 'Markets', desc: 'View live markets & digit analysis', url: '/markets', icon: BarChart3, color: 'blue' },
-    { title: 'Analyzer', desc: 'Deep digit analysis with signals', url: '/analyzer', icon: Activity, color: 'green' },
-    { title: 'Auto Trade', desc: 'Configure and run auto-trading', url: '/auto-trade', icon: Bot, color: 'emerald' },
-    { title: 'History', desc: 'View trade history & performance', url: '/history', icon: TrendingDown, color: 'amber' },
+    {
+      title: 'Markets',
+      desc: 'View live markets & digit analysis',
+      url: '/markets',
+      icon: BarChart3,
+      color: 'blue',
+    },
+    {
+      title: 'Analyzer',
+      desc: 'Deep digit analysis with signals',
+      url: '/analyzer',
+      icon: Activity,
+      color: 'green',
+    },
+    {
+      title: 'Auto Trade',
+      desc: 'Configure and run auto-trading',
+      url: '/auto-trade',
+      icon: Bot,
+      color: 'emerald',
+    },
+    {
+      title: 'History',
+      desc: 'View trade history & performance',
+      url: '/history',
+      icon: TrendingDown,
+      color: 'amber',
+    },
   ];
 
   // Generate floating dollar signs
@@ -73,14 +105,14 @@ export default function Dashboard() {
     <div className="relative min-h-screen overflow-hidden">
       {/* Animated background with dollars */}
       <div className="fixed inset-0 -z-10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
-        {/* Gradient orbs */}
-        <div 
+        {/* Gradient orb following mouse */}
+        <div
           className="absolute inset-0 opacity-30"
           style={{
             background: `radial-gradient(circle at ${mousePosition.x}px ${mousePosition.y}px, rgba(16, 185, 129, 0.15) 0%, transparent 50%)`,
           }}
         />
-        
+
         {/* Floating dollar signs */}
         {floatingDollars.map((dollar) => (
           <motion.div
@@ -102,19 +134,21 @@ export default function Dashboard() {
               duration: dollar.duration,
               delay: dollar.delay,
               repeat: Infinity,
-              ease: "easeInOut",
+              ease: 'easeInOut',
             }}
           >
             $
           </motion.div>
         ))}
 
-        {/* Additional decorative elements */}
+        {/* Additional decorative gradients */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-500/5 via-transparent to-transparent" />
         <div className="absolute inset-0 bg-[conic-gradient(from_0deg_at_50%_50%,rgba(16,185,129,0.02)_0deg,transparent_60deg,transparent_300deg,rgba(16,185,129,0.02)_360deg)]" />
-        
-        {/* Grid overlay */}
-        <div className="absolute inset-0 bg-[url('data:image/svg+xml,%3Csvg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"%3E%3Cpath d="M0 0 L60 0 L60 60 L0 60 Z" fill="none" stroke="rgba(16,185,129,0.03)" stroke-width="0.5"/%3E%3C/svg%3E')] opacity-20" />
+
+        {/* Grid overlay (fixed, Vite-compatible) */}
+        <div
+          className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml,%3Csvg width=%2260%22 height=%2260%22 viewBox=%220 0 60 60%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M0 0 L60 0 L60 60 L0 60 Z%22 fill=%22none%22 stroke=%22rgba(16,185,129,0.03)%22 stroke-width=%220.5%22/%3E%3C/svg%3E')]"
+        />
       </div>
 
       {/* Main content */}
@@ -127,7 +161,10 @@ export default function Dashboard() {
         >
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-white via-emerald-300 to-emerald-500 bg-clip-text text-transparent">
-              Welcome back, <span className="text-emerald-400">{accountInfo?.fullname || 'Trader'}</span>
+              Welcome back,{' '}
+              <span className="text-emerald-400">
+                {accountInfo?.fullname || 'Trader'}
+              </span>
             </h1>
             <p className="text-sm text-emerald-100/60 mt-1 flex items-center gap-2">
               <DollarSign className="w-4 h-4 text-emerald-400 animate-pulse" />
@@ -135,8 +172,14 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="hidden sm:flex items-center gap-3 bg-black/40 backdrop-blur-xl rounded-xl px-5 py-2.5 border border-emerald-500/20 shadow-lg">
-            <div className={`w-2.5 h-2.5 rounded-full ${activeAccount?.is_virtual ? 'bg-blue-400' : 'bg-emerald-400'} animate-pulse shadow-lg shadow-current/50`} />
-            <span className="text-xs font-medium text-emerald-100/80">{activeAccount?.is_virtual ? 'Demo Mode' : 'Live Trading'}</span>
+            <div
+              className={`w-2.5 h-2.5 rounded-full ${
+                activeAccount?.is_virtual ? 'bg-blue-400' : 'bg-emerald-400'
+              } animate-pulse shadow-lg shadow-current/50`}
+            />
+            <span className="text-xs font-medium text-emerald-100/80">
+              {activeAccount?.is_virtual ? 'Demo Mode' : 'Live Trading'}
+            </span>
           </div>
         </motion.div>
 
@@ -148,20 +191,27 @@ export default function Dashboard() {
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.1, duration: 0.4 }}
-              className={`group relative bg-gradient-to-br from-white/10 to-white/5 backdrop-blur-xl border border-white/10 rounded-xl p-5 hover:border-${stat.color.replace('text-', '')}/30 transition-all duration-300 shadow-xl hover:shadow-2xl ${stat.glow}`}
+              className={`group relative bg-gradient-to-br from-white/10 to-white/5 backdrop-blur-xl border border-white/10 rounded-xl p-5 hover:border-${stat.color.replace(
+                'text-',
+                ''
+              )}/30 transition-all duration-300 shadow-xl hover:shadow-2xl ${stat.glow}`}
               whileHover={{ scale: 1.02, y: -2 }}
             >
-              {/* Animated background effect */}
               <div className="absolute inset-0 rounded-xl bg-gradient-to-r from-transparent via-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 translate-x-[-100%] group-hover:translate-x-[100%]" />
-              
               <div className="flex items-center justify-between mb-4 relative">
-                <span className="text-xs font-medium text-emerald-100/60 uppercase tracking-wider">{stat.label}</span>
-                <div className={`w-10 h-10 rounded-xl ${stat.bg} flex items-center justify-center backdrop-blur-sm border border-white/5 group-hover:scale-110 transition-transform duration-300`}>
+                <span className="text-xs font-medium text-emerald-100/60 uppercase tracking-wider">
+                  {stat.label}
+                </span>
+                <div
+                  className={`w-10 h-10 rounded-xl ${stat.bg} flex items-center justify-center backdrop-blur-sm border border-white/5 group-hover:scale-110 transition-transform duration-300`}
+                >
                   <stat.icon className={`w-5 h-5 ${stat.color}`} />
                 </div>
               </div>
               <div className="font-mono text-2xl font-bold text-white truncate relative flex items-center gap-1">
-                {stat.label === 'Balance' && <DollarSign className="w-5 h-5 text-emerald-400" />}
+                {stat.label === 'Balance' && (
+                  <DollarSign className="w-5 h-5 text-emerald-400" />
+                )}
                 {stat.value}
               </div>
             </motion.div>
@@ -188,10 +238,10 @@ export default function Dashboard() {
                   to={link.url}
                   className="relative flex items-center gap-4 bg-gradient-to-br from-white/10 to-white/5 backdrop-blur-xl border border-white/10 rounded-xl p-5 hover:border-emerald-500/30 hover:from-white/15 hover:to-white/10 transition-all duration-300 overflow-hidden shadow-xl hover:shadow-2xl"
                 >
-                  {/* Animated background effect */}
                   <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/0 via-emerald-500/10 to-emerald-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-700 translate-x-[-100%] group-hover:translate-x-[100%]" />
-                  
-                  <div className={`w-12 h-12 rounded-xl bg-gradient-to-br from-${link.color}-500/20 to-${link.color}-500/5 flex items-center justify-center group-hover:scale-110 transition-transform duration-300 border border-white/5 backdrop-blur-sm relative`}>
+                  <div
+                    className={`w-12 h-12 rounded-xl bg-gradient-to-br from-${link.color}-500/20 to-${link.color}-500/5 flex items-center justify-center group-hover:scale-110 transition-transform duration-300 border border-white/5 backdrop-blur-sm relative`}
+                  >
                     <link.icon className={`w-6 h-6 text-${link.color}-400`} />
                   </div>
                   <div className="flex-1 min-w-0 relative">
@@ -201,7 +251,7 @@ export default function Dashboard() {
                     </div>
                     <div className="text-xs text-emerald-100/50">{link.desc}</div>
                   </div>
-                  <ArrowRight className={`w-4 h-4 text-emerald-400/50 group-hover:text-emerald-400 group-hover:translate-x-1 transition-all shrink-0 relative`} />
+                  <ArrowRight className="w-4 h-4 text-emerald-400/50 group-hover:text-emerald-400 group-hover:translate-x-1 transition-all shrink-0 relative" />
                 </Link>
               </motion.div>
             ))}
