@@ -128,9 +128,6 @@ export default function ProScannerBot() {
   const [m2Barrier, setM2Barrier] = useState('5');
   const [m2Symbol, setM2Symbol] = useState('R_50');
 
-  /* ── NEW: Market 2 run count ── */
-  const [m2RunCount, setM2RunCount] = useState('3'); // Number of runs in recovery mode
-
   /* ── Virtual Hook M1 ── */
   const [m1HookEnabled, setM1HookEnabled] = useState(false);
   const [m1VirtualLossCount, setM1VirtualLossCount] = useState('3');
@@ -190,11 +187,6 @@ export default function ProScannerBot() {
   const [isRunning, setIsRunning] = useState(false);
   const runningRef = useRef(false);
   const [currentMarket, setCurrentMarket] = useState<1 | 2>(1);
-  
-  /* ── NEW: Market 2 run tracking ── */
-  const [m2RunsRemaining, setM2RunsRemaining] = useState(0);
-  const m2RunsCompletedRef = useRef(0);
-  
   const [wins, setWins] = useState(0);
   const [losses, setLosses] = useState(0);
   const [totalStaked, setTotalStaked] = useState(0);
@@ -321,8 +313,6 @@ export default function ProScannerBot() {
     setLogEntries([]);
     setWins(0); setLosses(0); setTotalStaked(0); setNetProfit(0);
     setMartingaleStepState(0);
-    setM2RunsRemaining(0);
-    m2RunsCompletedRef.current = 0;
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
     setTicksCaptured(0); setTicksMissed(0);
   }, []);
@@ -342,8 +332,6 @@ export default function ProScannerBot() {
     setBotStatus('trading_m1');
     setCurrentStakeState(baseStake);
     setMartingaleStepState(0);
-    setM2RunsRemaining(parseInt(m2RunCount) || 3);
-    m2RunsCompletedRef.current = 0;
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
 
     let cStake = baseStake;
@@ -469,8 +457,7 @@ export default function ProScannerBot() {
         /* Execute real trades batch */
         for (let ri = 0; ri < realCount && runningRef.current; ri++) {
           const result = await executeRealTrade(
-            cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake, 
-            inRecovery, m2RunsRemaining, m2RunsCompletedRef.current
+            cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
           );
           if (!result || !runningRef.current) break;
           localPnl = result.localPnl;
@@ -478,8 +465,6 @@ export default function ProScannerBot() {
           cStake = result.cStake;
           mStep = result.mStep;
           inRecovery = result.inRecovery;
-          setM2RunsRemaining(result.m2RunsRemaining);
-          m2RunsCompletedRef.current = result.m2RunsCompleted;
 
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
@@ -493,8 +478,7 @@ export default function ProScannerBot() {
 
       /* ═══ NORMAL REAL TRADE (no hook) ═══ */
       const result = await executeRealTrade(
-        cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake,
-        inRecovery, m2RunsRemaining, m2RunsCompletedRef.current
+        cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
       );
       if (!result || !runningRef.current) break;
       localPnl = result.localPnl;
@@ -502,8 +486,6 @@ export default function ProScannerBot() {
       cStake = result.cStake;
       mStep = result.mStep;
       inRecovery = result.inRecovery;
-      setM2RunsRemaining(result.m2RunsRemaining);
-      m2RunsCompletedRef.current = result.m2RunsCompleted;
 
       if (result.shouldBreak) break;
 
@@ -519,7 +501,7 @@ export default function ProScannerBot() {
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
     takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, m1StrategyMode, m2StrategyMode, m1PatternValid, m2PatternValid,
     scannerActive, findScannerMatchForMarket, checkStrategyForMarket, addLog, updateLog, turboMode,
-    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount, m2RunCount]);
+    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
 
   /* ── Execute a single real trade ── */
   const executeRealTrade = useCallback(async (
@@ -531,9 +513,6 @@ export default function ProScannerBot() {
     localBalance: number,
     localPnl: number,
     baseStake: number,
-    inRecovery: boolean,
-    m2RunsRemaining: number,
-    m2RunsCompleted: number,
   ) => {
     const logId = ++logIdRef.current;
     const now = new Date().toLocaleTimeString();
@@ -547,9 +526,7 @@ export default function ProScannerBot() {
       switchInfo: '',
     });
 
-    let newInRecovery = inRecovery;
-    let newM2RunsRemaining = m2RunsRemaining;
-    let newM2RunsCompleted = m2RunsCompleted;
+    let inRecovery = mkt === 2;
 
     try {
       // Turbo: skip waiting for next tick, trade immediately
@@ -582,73 +559,36 @@ export default function ProScannerBot() {
       const exitDigit = String(getLastDigit(result.sellPrice || 0));
 
       let switchInfo = '';
-      
       if (won) {
         setWins(prev => prev + 1);
-        
-        // UPDATED LOGIC FOR MARKET 2: If win occurs before runs complete, consider runs completed
-        if (mkt === 2) {
-          if (newM2RunsRemaining > 0) {
-            // Win achieved, so mark all remaining runs as completed
-            newM2RunsRemaining = 0;
-            newM2RunsCompleted = parseInt(m2RunCount) || 3;
-            switchInfo = `✓ M2 WIN → Runs completed early (0/${m2RunCount})`;
-          }
-          
-          // Check if all runs are completed
-          if (newM2RunsRemaining === 0) {
-            newInRecovery = false; // Exit recovery mode
-            switchInfo = '✓ Recovery WIN + Runs complete → Back to M1';
-          } else {
-            newInRecovery = true; // Stay in recovery
-            newM2RunsRemaining--;
-            newM2RunsCompleted++;
-            switchInfo = `✓ M2 WIN → Runs left: ${newM2RunsRemaining}`;
-          }
+        if (inRecovery) {
+          switchInfo = '✓ Recovery WIN → Back to M1';
+          inRecovery = false;
         } else {
-          // M1 logic (unchanged)
-          if (newInRecovery) {
-            switchInfo = '✓ Recovery WIN → Back to M1';
-            newInRecovery = false;
-          } else {
-            switchInfo = '→ Continue M1';
-          }
+          switchInfo = '→ Continue M1';
         }
-        
         mStep = 0;
         cStake = baseStake;
       } else {
         setLosses(prev => prev + 1);
-        
         // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
         if (activeAccount?.is_virtual) {
           recordLoss(cStake, tradeSymbol, 6000);
         }
-        
-        if (mkt === 1) {
-          // M1 loss logic (unchanged)
-          if (!newInRecovery && m2Enabled) {
-            newInRecovery = true;
-            // Initialize runs when entering recovery
-            newM2RunsRemaining = parseInt(m2RunCount) || 3;
-            newM2RunsCompleted = 0;
-            switchInfo = `✗ M1 Loss → Switch to M2 (${newM2RunsRemaining} runs)`;
-          } else {
-            switchInfo = '→ Continue M1';
-          }
+        if (!inRecovery && m2Enabled) {
+          inRecovery = true;
+          switchInfo = '✗ Loss → Switch to M2';
         } else {
-          // M2 loss logic (unchanged)
-          switchInfo = `✗ M2 Loss → Runs left: ${newM2RunsRemaining}`;
-          
-          if (martingaleOn) {
-            const maxS = parseInt(martingaleMaxSteps) || 5;
-            if (mStep < maxS) {
-              cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
-              mStep++;
-            } else {
-              mStep = 0;
-              cStake = baseStake;
-            }
+          switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1';
+        }
+        if (martingaleOn) {
+          const maxS = parseInt(martingaleMaxSteps) || 5;
+          if (mStep < maxS) {
+            cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
+            mStep++;
+          } else {
+            mStep = 0;
+            cStake = baseStake;
           }
         }
       }
@@ -673,31 +613,13 @@ export default function ProScannerBot() {
         shouldBreak = true;
       }
 
-      return { 
-        localPnl, 
-        localBalance, 
-        cStake, 
-        mStep, 
-        inRecovery: newInRecovery, 
-        shouldBreak,
-        m2RunsRemaining: newM2RunsRemaining,
-        m2RunsCompleted: newM2RunsCompleted
-      };
+      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
     } catch (err: any) {
       updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: `Error: ${err.message}` });
       if (!turboMode) await new Promise(r => setTimeout(r, 2000));
-      return { 
-        localPnl, 
-        localBalance, 
-        cStake, 
-        mStep, 
-        inRecovery: newInRecovery, 
-        shouldBreak: false,
-        m2RunsRemaining: newM2RunsRemaining,
-        m2RunsCompleted: newM2RunsCompleted
-      };
+      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
     }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss, m2RunCount]);
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
@@ -722,17 +644,12 @@ export default function ProScannerBot() {
   const currentConfig = useMemo<BotConfig>(() => ({
     version: 1,
     m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
-    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount, runCount: m2RunCount },
+    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
     risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
     strategy: { m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled, m1Mode: m1StrategyMode, m2Mode: m2StrategyMode, m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow },
     scanner: { active: scannerActive },
     turbo: { enabled: turboMode },
-  }), [m1Enabled, m1Symbol, m1Contract, m1Barrier, m1HookEnabled, m1VirtualLossCount, m1RealCount, 
-      m2Enabled, m2Symbol, m2Contract, m2Barrier, m2HookEnabled, m2VirtualLossCount, m2RealCount, m2RunCount,
-      stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, 
-      strategyM1Enabled, strategyEnabled, m1StrategyMode, m2StrategyMode, m1Pattern, m1DigitCondition, 
-      m1DigitCompare, m1DigitWindow, m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow, 
-      scannerActive, turboMode]);
+  }), [m1Enabled, m1Symbol, m1Contract, m1Barrier, m1HookEnabled, m1VirtualLossCount, m1RealCount, m2Enabled, m2Symbol, m2Contract, m2Barrier, m2HookEnabled, m2VirtualLossCount, m2RealCount, stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, strategyM1Enabled, strategyEnabled, m1StrategyMode, m2StrategyMode, m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow, scannerActive, turboMode]);
 
   const handleLoadConfig = useCallback((cfg: BotConfig) => {
     if (cfg.m1) {
@@ -752,7 +669,6 @@ export default function ProScannerBot() {
       if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
       if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
       if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
-      if (cfg.m2.runCount) setM2RunCount(cfg.m2.runCount);
     }
     if (cfg.risk) {
       if (cfg.risk.stake) setStake(cfg.risk.stake);
@@ -795,27 +711,22 @@ export default function ProScannerBot() {
   const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
 
   return (
-    <div className="space-y-2 max-w-7xl mx-auto">
+    <div className="space-y-2 max-w-7xl mx-auto font-sans">
       {/* ── Compact Header ── */}
-      <div className="flex items-center justify-between gap-2 bg-card border border-border rounded-xl px-3 py-2">
-        <h1 className="text-base font-bold text-foreground flex items-center gap-2">
-          <Scan className="w-4 h-4 text-primary" /> Pro Scanner Bot
+      <div className="flex items-center justify-between gap-2 bg-gradient-to-r from-gray-900 to-gray-800 border border-gray-700/50 rounded-xl px-3 py-2 shadow-lg">
+        <h1 className="text-base font-semibold tracking-tight text-white flex items-center gap-2">
+          <Scan className="w-4 h-4 text-cyan-400" /> Pro Scanner Bot
         </h1>
         <div className="flex items-center gap-2">
-          <Badge className={`${status.color} text-[10px]`}>{status.icon} {status.label}</Badge>
+          <Badge className={`${status.color} text-[10px] font-medium bg-gray-800/80 border-gray-700`}>{status.icon} {status.label}</Badge>
           {isRunning && (
-            <Badge variant="outline" className="text-[10px] text-warning animate-pulse font-mono">
+            <Badge variant="outline" className="text-[10px] text-amber-400 animate-pulse font-mono bg-gray-800/80 border-gray-700">
               P/L: ${netProfit.toFixed(2)}
             </Badge>
           )}
           {isRunning && (
-            <Badge variant="outline" className={`text-[10px] ${currentMarket === 1 ? 'text-profit border-profit/50' : 'text-purple-400 border-purple-500/50'}`}>
+            <Badge variant="outline" className={`text-[10px] font-mono bg-gray-800/80 border-gray-700 ${currentMarket === 1 ? 'text-emerald-400' : 'text-purple-400'}`}>
               {currentMarket === 1 ? '🏠 M1' : '🔄 M2'}
-            </Badge>
-          )}
-          {isRunning && currentMarket === 2 && m2RunsRemaining > 0 && (
-            <Badge variant="outline" className="text-[10px] text-warning border-warning/50">
-              Runs: {m2RunsRemaining}
             </Badge>
           )}
         </div>
@@ -824,12 +735,12 @@ export default function ProScannerBot() {
       {/* ── Scanner + Turbo + Stats Compact Row ── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
         {/* Scanner */}
-        <div className="bg-card border border-border rounded-xl p-2.5">
+        <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-xl p-2.5 shadow-md">
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
-              <Eye className="w-3.5 h-3.5 text-primary" />
-              <span className="text-xs font-semibold text-foreground">Scanner</span>
-              <Badge variant={scannerActive ? 'default' : 'secondary'} className="text-[9px] h-4 px-1.5">
+              <Eye className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="text-xs font-medium text-gray-200">Scanner</span>
+              <Badge variant={scannerActive ? 'default' : 'secondary'} className="text-[9px] h-4 px-1.5 font-medium">
                 {scannerActive ? '🟢 ON' : '⚫ OFF'}
               </Badge>
             </div>
@@ -840,7 +751,7 @@ export default function ProScannerBot() {
               const count = tickCounts[m.symbol] || 0;
               return (
                 <Badge key={m.symbol} variant="outline"
-                  className={`text-[8px] h-4 px-1 font-mono ${count > 0 ? 'border-primary/50 text-primary' : 'text-muted-foreground'}`}>
+                  className={`text-[8px] h-4 px-1 font-mono ${count > 0 ? 'border-cyan-500/50 text-cyan-400 bg-cyan-950/20' : 'text-gray-500 border-gray-700'}`}>
                   {m.name}
                 </Badge>
               );
@@ -849,16 +760,16 @@ export default function ProScannerBot() {
         </div>
 
         {/* Turbo */}
-        <div className="bg-card border border-border rounded-xl p-2.5">
+        <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-xl p-2.5 shadow-md">
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
-              <Zap className={`w-3.5 h-3.5 ${turboMode ? 'text-profit animate-pulse' : 'text-muted-foreground'}`} />
-              <span className="text-xs font-semibold text-foreground">Turbo</span>
+              <Zap className={`w-3.5 h-3.5 ${turboMode ? 'text-emerald-400 animate-pulse' : 'text-gray-500'}`} />
+              <span className="text-xs font-medium text-gray-200">Turbo</span>
             </div>
             <Button
               size="sm"
               variant={turboMode ? 'default' : 'outline'}
-              className={`h-6 text-[9px] px-2 ${turboMode ? 'bg-profit hover:bg-profit/90 text-profit-foreground animate-pulse' : ''}`}
+              className={`h-6 text-[9px] px-2 font-medium ${turboMode ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-500' : 'bg-gray-800 border-gray-600 text-gray-300'}`}
               onClick={() => setTurboMode(!turboMode)}
               disabled={isRunning}
             >
@@ -866,39 +777,39 @@ export default function ProScannerBot() {
             </Button>
           </div>
           <div className="grid grid-cols-3 gap-1 text-center">
-            <div className="bg-muted/50 rounded p-1">
-              <div className="text-[8px] text-muted-foreground">Latency</div>
-              <div className="font-mono text-[10px] text-primary font-bold">{turboLatency}ms</div>
+            <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+              <div className="text-[8px] text-gray-500 font-medium">Latency</div>
+              <div className="font-mono text-[10px] text-cyan-400 font-bold">{turboLatency}ms</div>
             </div>
-            <div className="bg-muted/50 rounded p-1">
-              <div className="text-[8px] text-muted-foreground">Captured</div>
-              <div className="font-mono text-[10px] text-profit font-bold">{ticksCaptured}</div>
+            <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+              <div className="text-[8px] text-gray-500 font-medium">Captured</div>
+              <div className="font-mono text-[10px] text-emerald-400 font-bold">{ticksCaptured}</div>
             </div>
-            <div className="bg-muted/50 rounded p-1">
-              <div className="text-[8px] text-muted-foreground">Missed</div>
-              <div className="font-mono text-[10px] text-loss font-bold">{ticksMissed}</div>
+            <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+              <div className="text-[8px] text-gray-500 font-medium">Missed</div>
+              <div className="font-mono text-[10px] text-rose-400 font-bold">{ticksMissed}</div>
             </div>
           </div>
         </div>
 
         {/* Live Stats */}
-        <div className="bg-card border border-border rounded-xl p-2.5">
+        <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-xl p-2.5 shadow-md">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-semibold text-foreground">Stats</span>
-            <span className="font-mono text-sm font-bold text-foreground">${balance.toFixed(2)}</span>
+            <span className="text-xs font-medium text-gray-200">Stats</span>
+            <span className="font-mono text-sm font-bold text-white">${balance.toFixed(2)}</span>
           </div>
           <div className="grid grid-cols-3 gap-1 text-center">
-            <div className="bg-muted/50 rounded p-1">
-              <div className="text-[8px] text-muted-foreground">W/L</div>
-              <div className="font-mono text-[10px] font-bold"><span className="text-profit">{wins}</span>/<span className="text-loss">{losses}</span></div>
+            <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+              <div className="text-[8px] text-gray-500 font-medium">W/L</div>
+              <div className="font-mono text-[10px] font-bold"><span className="text-emerald-400">{wins}</span>/<span className="text-rose-400">{losses}</span></div>
             </div>
-            <div className="bg-muted/50 rounded p-1">
-              <div className="text-[8px] text-muted-foreground">Net P/L</div>
-              <div className={`font-mono text-[10px] font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>${netProfit.toFixed(2)}</div>
+            <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+              <div className="text-[8px] text-gray-500 font-medium">Net P/L</div>
+              <div className={`font-mono text-[10px] font-bold ${netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>${netProfit.toFixed(2)}</div>
             </div>
-            <div className="bg-muted/50 rounded p-1">
-              <div className="text-[8px] text-muted-foreground">Stake</div>
-              <div className="font-mono text-[10px] font-bold text-foreground">${currentStake.toFixed(2)}{martingaleStep > 0 && <span className="text-warning"> M{martingaleStep}</span>}</div>
+            <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+              <div className="text-[8px] text-gray-500 font-medium">Stake</div>
+              <div className="font-mono text-[10px] font-bold text-white">${currentStake.toFixed(2)}{martingaleStep > 0 && <span className="text-amber-400"> M{martingaleStep}</span>}</div>
             </div>
           </div>
         </div>
@@ -911,30 +822,30 @@ export default function ProScannerBot() {
           {/* Market 1 + Market 2 side by side on md */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-2">
             {/* Market 1 */}
-            <div className="bg-card border-2 border-profit/30 rounded-xl p-2.5 space-y-1.5">
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 border-2 border-emerald-500/30 rounded-xl p-2.5 space-y-1.5 shadow-lg">
               <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold text-profit flex items-center gap-1"><Home className="w-3.5 h-3.5" /> M1 — Home</h3>
+                <h3 className="text-xs font-semibold text-emerald-400 flex items-center gap-1"><Home className="w-3.5 h-3.5" /> M1 — Home</h3>
                 <div className="flex items-center gap-1.5">
-                  {currentMarket === 1 && isRunning && <span className="w-2 h-2 rounded-full bg-profit animate-pulse" />}
+                  {currentMarket === 1 && isRunning && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />}
                   <Switch checked={m1Enabled} onCheckedChange={setM1Enabled} disabled={isRunning} />
                 </div>
               </div>
               <Select value={m1Symbol} onValueChange={v => setM1Symbol(v)} disabled={isRunning}>
-                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
+                <SelectTrigger className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-gray-800 border-gray-700">{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200">{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
               </Select>
               <Select value={m1Contract} onValueChange={v => setM1Contract(v)} disabled={isRunning}>
-                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <SelectTrigger className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-gray-800 border-gray-700">{CONTRACT_TYPES.map(c => <SelectItem key={c} value={c} className="text-gray-200">{c}</SelectItem>)}</SelectContent>
               </Select>
               {needsBarrier(m1Contract) && (
                 <Input type="number" min="0" max="9" value={m1Barrier} onChange={e => setM1Barrier(e.target.value)}
-                  className="h-7 text-xs" placeholder="Barrier (0-9)" disabled={isRunning} />
+                  className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" placeholder="Barrier (0-9)" disabled={isRunning} />
               )}
               {/* Virtual Hook M1 */}
-              <div className="border-t border-border/30 pt-1.5">
+              <div className="border-t border-gray-700/50 pt-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-semibold text-primary flex items-center gap-1">
+                  <span className="text-[9px] font-medium text-cyan-400 flex items-center gap-1">
                     <Anchor className="w-3 h-3" /> Virtual Hook
                   </span>
                   <Switch checked={m1HookEnabled} onCheckedChange={setM1HookEnabled} disabled={isRunning} />
@@ -942,12 +853,12 @@ export default function ProScannerBot() {
                 {m1HookEnabled && (
                   <div className="grid grid-cols-2 gap-1.5 mt-1">
                     <div>
-                      <label className="text-[8px] text-muted-foreground">V-Losses</label>
-                      <Input type="number" min="1" max="20" value={m1VirtualLossCount} onChange={e => setM1VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                      <label className="text-[8px] text-gray-500 font-medium">V-Losses</label>
+                      <Input type="number" min="1" max="20" value={m1VirtualLossCount} onChange={e => setM1VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
                     </div>
                     <div>
-                      <label className="text-[8px] text-muted-foreground">Real Trades</label>
-                      <Input type="number" min="1" max="10" value={m1RealCount} onChange={e => setM1RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                      <label className="text-[8px] text-gray-500 font-medium">Real Trades</label>
+                      <Input type="number" min="1" max="10" value={m1RealCount} onChange={e => setM1RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
                     </div>
                   </div>
                 )}
@@ -955,46 +866,30 @@ export default function ProScannerBot() {
             </div>
 
             {/* Market 2 */}
-            <div className="bg-card border-2 border-purple-500/30 rounded-xl p-2.5 space-y-1.5">
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 border-2 border-purple-500/30 rounded-xl p-2.5 space-y-1.5 shadow-lg">
               <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold text-purple-400 flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> M2 — Recovery</h3>
+                <h3 className="text-xs font-semibold text-purple-400 flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> M2 — Recovery</h3>
                 <div className="flex items-center gap-1.5">
                   {currentMarket === 2 && isRunning && <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />}
                   <Switch checked={m2Enabled} onCheckedChange={setM2Enabled} disabled={isRunning} />
                 </div>
               </div>
-              
-              {/* NEW: Run Count Input */}
-              <div className="mb-1.5">
-                <label className="text-[8px] text-muted-foreground block mb-0.5">Recovery Runs</label>
-                <Input 
-                  type="number" 
-                  min="1" 
-                  max="20" 
-                  value={m2RunCount} 
-                  onChange={e => setM2RunCount(e.target.value)}
-                  disabled={isRunning}
-                  className="h-6 text-[10px]"
-                  placeholder="Number of recovery runs"
-                />
-              </div>
-              
               <Select value={m2Symbol} onValueChange={v => setM2Symbol(v)} disabled={isRunning}>
-                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
+                <SelectTrigger className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-gray-800 border-gray-700">{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200">{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
               </Select>
               <Select value={m2Contract} onValueChange={v => setM2Contract(v)} disabled={isRunning}>
-                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <SelectTrigger className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-gray-800 border-gray-700">{CONTRACT_TYPES.map(c => <SelectItem key={c} value={c} className="text-gray-200">{c}</SelectItem>)}</SelectContent>
               </Select>
               {needsBarrier(m2Contract) && (
                 <Input type="number" min="0" max="9" value={m2Barrier} onChange={e => setM2Barrier(e.target.value)}
-                  className="h-7 text-xs" placeholder="Barrier (0-9)" disabled={isRunning} />
+                  className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" placeholder="Barrier (0-9)" disabled={isRunning} />
               )}
               {/* Virtual Hook M2 */}
-              <div className="border-t border-border/30 pt-1.5">
+              <div className="border-t border-gray-700/50 pt-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-semibold text-primary flex items-center gap-1">
+                  <span className="text-[9px] font-medium text-cyan-400 flex items-center gap-1">
                     <Anchor className="w-3 h-3" /> Virtual Hook
                   </span>
                   <Switch checked={m2HookEnabled} onCheckedChange={setM2HookEnabled} disabled={isRunning} />
@@ -1002,12 +897,12 @@ export default function ProScannerBot() {
                 {m2HookEnabled && (
                   <div className="grid grid-cols-2 gap-1.5 mt-1">
                     <div>
-                      <label className="text-[8px] text-muted-foreground">V-Losses</label>
-                      <Input type="number" min="1" max="20" value={m2VirtualLossCount} onChange={e => setM2VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                      <label className="text-[8px] text-gray-500 font-medium">V-Losses</label>
+                      <Input type="number" min="1" max="20" value={m2VirtualLossCount} onChange={e => setM2VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
                     </div>
                     <div>
-                      <label className="text-[8px] text-muted-foreground">Real Trades</label>
-                      <Input type="number" min="1" max="10" value={m2RealCount} onChange={e => setM2RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                      <label className="text-[8px] text-gray-500 font-medium">Real Trades</label>
+                      <Input type="number" min="1" max="10" value={m2RealCount} onChange={e => setM2RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
                     </div>
                   </div>
                 )}
@@ -1017,29 +912,29 @@ export default function ProScannerBot() {
 
           {/* Virtual Hook Stats */}
           {(m1HookEnabled || m2HookEnabled) && (
-            <div className="bg-card border border-primary/30 rounded-xl p-2.5">
-              <h3 className="text-[10px] font-semibold text-primary flex items-center gap-1 mb-1">
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-cyan-500/30 rounded-xl p-2.5 shadow-md">
+              <h3 className="text-[10px] font-semibold text-cyan-400 flex items-center gap-1 mb-1">
                 <Anchor className="w-3 h-3" /> Hook Status
               </h3>
               <div className="grid grid-cols-4 gap-1 text-center">
-                <div className="bg-muted/50 rounded p-1">
-                  <div className="text-[8px] text-muted-foreground">V-Win</div>
-                  <div className="font-mono text-[10px] font-bold text-profit">{vhFakeWins}</div>
+                <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+                  <div className="text-[8px] text-gray-500 font-medium">V-Win</div>
+                  <div className="font-mono text-[10px] font-bold text-emerald-400">{vhFakeWins}</div>
                 </div>
-                <div className="bg-muted/50 rounded p-1">
-                  <div className="text-[8px] text-muted-foreground">V-Loss</div>
-                  <div className="font-mono text-[10px] font-bold text-loss">{vhFakeLosses}</div>
+                <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+                  <div className="text-[8px] text-gray-500 font-medium">V-Loss</div>
+                  <div className="font-mono text-[10px] font-bold text-rose-400">{vhFakeLosses}</div>
                 </div>
-                <div className="bg-muted/50 rounded p-1">
-                  <div className="text-[8px] text-muted-foreground">Streak</div>
-                  <div className="font-mono text-[10px] font-bold text-warning">{vhConsecLosses}</div>
+                <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+                  <div className="text-[8px] text-gray-500 font-medium">Streak</div>
+                  <div className="font-mono text-[10px] font-bold text-amber-400">{vhConsecLosses}</div>
                 </div>
-                <div className="bg-muted/50 rounded p-1">
-                  <div className="text-[8px] text-muted-foreground">State</div>
+                <div className="bg-gray-900/60 rounded p-1 border border-gray-700">
+                  <div className="text-[8px] text-gray-500 font-medium">State</div>
                   <div className={`text-[9px] font-bold ${
-                    vhStatus === 'confirmed' ? 'text-profit' :
-                    vhStatus === 'waiting' ? 'text-warning animate-pulse' :
-                    vhStatus === 'failed' ? 'text-loss' : 'text-muted-foreground'
+                    vhStatus === 'confirmed' ? 'text-emerald-400' :
+                    vhStatus === 'waiting' ? 'text-amber-400 animate-pulse' :
+                    vhStatus === 'failed' ? 'text-rose-400' : 'text-gray-500'
                   }`}>
                     {vhStatus === 'confirmed' ? '✓' : vhStatus === 'waiting' ? '⏳' : vhStatus === 'failed' ? '✗' : '—'}
                   </div>
@@ -1049,45 +944,45 @@ export default function ProScannerBot() {
           )}
 
           {/* Risk */}
-          <div className="bg-card border border-border rounded-xl p-2.5 space-y-1.5">
-            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1"><Shield className="w-3.5 h-3.5" /> Risk</h3>
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-2.5 space-y-1.5 shadow-md">
+            <h3 className="text-xs font-semibold text-gray-200 flex items-center gap-1"><Shield className="w-3.5 h-3.5 text-amber-400" /> Risk</h3>
             <div className="grid grid-cols-3 gap-1.5">
               <div>
-                <label className="text-[8px] text-muted-foreground">Stake ($)</label>
-                <Input type="number" min="0.35" step="0.01" value={stake} onChange={e => setStake(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                <label className="text-[8px] text-gray-500 font-medium">Stake ($)</label>
+                <Input type="number" min="0.35" step="0.01" value={stake} onChange={e => setStake(e.target.value)} disabled={isRunning} className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" />
               </div>
               <div>
-                <label className="text-[8px] text-muted-foreground">Take Profit</label>
-                <Input type="number" value={takeProfit} onChange={e => setTakeProfit(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                <label className="text-[8px] text-gray-500 font-medium">Take Profit</label>
+                <Input type="number" value={takeProfit} onChange={e => setTakeProfit(e.target.value)} disabled={isRunning} className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" />
               </div>
               <div>
-                <label className="text-[8px] text-muted-foreground">Stop Loss</label>
-                <Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                <label className="text-[8px] text-gray-500 font-medium">Stop Loss</label>
+                <Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} disabled={isRunning} className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" />
               </div>
             </div>
             <div className="flex items-center justify-between">
-              <label className="text-[10px] text-foreground">Martingale</label>
+              <label className="text-[10px] text-gray-200 font-medium">Martingale</label>
               <Switch checked={martingaleOn} onCheckedChange={setMartingaleOn} disabled={isRunning} />
             </div>
             {martingaleOn && (
               <div className="grid grid-cols-2 gap-1.5">
                 <div>
-                  <label className="text-[8px] text-muted-foreground">Multiplier</label>
-                  <Input type="number" min="1.1" step="0.1" value={martingaleMultiplier} onChange={e => setMartingaleMultiplier(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                  <label className="text-[8px] text-gray-500 font-medium">Multiplier</label>
+                  <Input type="number" min="1.1" step="0.1" value={martingaleMultiplier} onChange={e => setMartingaleMultiplier(e.target.value)} disabled={isRunning} className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" />
                 </div>
                 <div>
-                  <label className="text-[8px] text-muted-foreground">Max Steps</label>
-                  <Input type="number" min="1" max="10" value={martingaleMaxSteps} onChange={e => setMartingaleMaxSteps(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+                  <label className="text-[8px] text-gray-500 font-medium">Max Steps</label>
+                  <Input type="number" min="1" max="10" value={martingaleMaxSteps} onChange={e => setMartingaleMaxSteps(e.target.value)} disabled={isRunning} className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200" />
                 </div>
               </div>
             )}
             <div className="flex items-center gap-3 pt-0.5">
-              <label className="flex items-center gap-1 text-[10px] text-foreground">
-                <input type="checkbox" checked={strategyM1Enabled} onChange={e => setStrategyM1Enabled(e.target.checked)} disabled={isRunning} className="rounded w-3 h-3" />
+              <label className="flex items-center gap-1 text-[10px] text-gray-200">
+                <input type="checkbox" checked={strategyM1Enabled} onChange={e => setStrategyM1Enabled(e.target.checked)} disabled={isRunning} className="rounded w-3 h-3 accent-cyan-500" />
                 Strategy M1
               </label>
-              <label className="flex items-center gap-1 text-[10px] text-foreground">
-                <input type="checkbox" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} className="rounded w-3 h-3" />
+              <label className="flex items-center gap-1 text-[10px] text-gray-200">
+                <input type="checkbox" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} className="rounded w-3 h-3 accent-cyan-500" />
                 Strategy M2
               </label>
             </div>
@@ -1095,21 +990,21 @@ export default function ProScannerBot() {
 
           {/* Strategy Card */}
           {(strategyEnabled || strategyM1Enabled) && (
-            <div className="bg-card border border-warning/30 rounded-xl p-2.5 space-y-1.5">
-              <h3 className="text-xs font-semibold text-warning flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Strategy</h3>
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-amber-500/30 rounded-xl p-2.5 space-y-1.5 shadow-md">
+              <h3 className="text-xs font-semibold text-amber-400 flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Strategy</h3>
 
               {/* M1 Strategy */}
               {strategyM1Enabled && (
-                <div className="border border-profit/20 rounded-lg p-1.5 space-y-1">
+                <div className="border border-emerald-500/20 rounded-lg p-1.5 space-y-1 bg-gray-900/50">
                   <div className="flex items-center justify-between">
-                    <label className="text-[9px] font-semibold text-profit">M1 Strategy</label>
+                    <label className="text-[9px] font-semibold text-emerald-400">M1 Strategy</label>
                     <div className="flex gap-0.5">
                       <Button size="sm" variant={m1StrategyMode === 'pattern' ? 'default' : 'outline'}
-                        className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('pattern')} disabled={isRunning}>
+                        className="text-[9px] h-5 px-1.5 font-medium bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => setM1StrategyMode('pattern')} disabled={isRunning}>
                         Pattern
                       </Button>
                       <Button size="sm" variant={m1StrategyMode === 'digit' ? 'default' : 'outline'}
-                        className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('digit')} disabled={isRunning}>
+                        className="text-[9px] h-5 px-1.5 font-medium bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => setM1StrategyMode('digit')} disabled={isRunning}>
                         Digit
                       </Button>
                     </div>
@@ -1118,8 +1013,8 @@ export default function ProScannerBot() {
                     <>
                       <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={m1Pattern}
                         onChange={e => setM1Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
-                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
-                      <div className={`text-[9px] font-mono ${m1PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0 bg-gray-900 border-gray-700 text-gray-200" />
+                      <div className={`text-[9px] font-mono ${m1PatternValid ? 'text-emerald-400' : 'text-rose-400'}`}>
                         {cleanM1Pattern.length === 0 ? 'Enter pattern...' :
                           m1PatternValid ? `✓ ${cleanM1Pattern}` : `✗ Need 2+`}
                       </div>
@@ -1127,19 +1022,19 @@ export default function ProScannerBot() {
                   ) : (
                     <>
                       <div className="grid grid-cols-3 gap-1 mt-0.5">
-                        <label className="text-[8px] text-muted-foreground text-center">Condition</label>
-                        <label className="text-[8px] text-muted-foreground text-center">Digit</label>
-                        <label className="text-[8px] text-muted-foreground text-center">Ticks</label>
+                        <label className="text-[8px] text-gray-500 font-medium text-center">Condition</label>
+                        <label className="text-[8px] text-gray-500 font-medium text-center">Digit</label>
+                        <label className="text-[8px] text-gray-500 font-medium text-center">Ticks</label>
                       </div>
                       <div className="grid grid-cols-3 gap-1">
                         <Select value={m1DigitCondition} onValueChange={setM1DigitCondition} disabled={isRunning}>
-                          <SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          <SelectTrigger className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200"><SelectValue /></SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-700">
+                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c} className="text-gray-200">{c}</SelectItem>)}
                           </SelectContent>
                         </Select>
-                        <Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
-                        <Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                        <Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
+                        <Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
                       </div>
                     </>
                   )}
@@ -1148,16 +1043,16 @@ export default function ProScannerBot() {
 
               {/* M2 Strategy */}
               {strategyEnabled && (
-                <div className="border border-destructive/20 rounded-lg p-1.5 space-y-1">
+                <div className="border border-purple-500/20 rounded-lg p-1.5 space-y-1 bg-gray-900/50">
                   <div className="flex items-center justify-between">
-                    <label className="text-[9px] font-semibold text-destructive">M2 Strategy</label>
+                    <label className="text-[9px] font-semibold text-purple-400">M2 Strategy</label>
                     <div className="flex gap-0.5">
                       <Button size="sm" variant={m2StrategyMode === 'pattern' ? 'default' : 'outline'}
-                        className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('pattern')} disabled={isRunning}>
+                        className="text-[9px] h-5 px-1.5 font-medium bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => setM2StrategyMode('pattern')} disabled={isRunning}>
                         Pattern
                       </Button>
                       <Button size="sm" variant={m2StrategyMode === 'digit' ? 'default' : 'outline'}
-                        className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('digit')} disabled={isRunning}>
+                        className="text-[9px] h-5 px-1.5 font-medium bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700" onClick={() => setM2StrategyMode('digit')} disabled={isRunning}>
                         Digit
                       </Button>
                     </div>
@@ -1166,8 +1061,8 @@ export default function ProScannerBot() {
                     <>
                       <Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern}
                         onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
-                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
-                      <div className={`text-[9px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0 bg-gray-900 border-gray-700 text-gray-200" />
+                      <div className={`text-[9px] font-mono ${m2PatternValid ? 'text-emerald-400' : 'text-rose-400'}`}>
                         {cleanM2Pattern.length === 0 ? 'Enter pattern...' :
                           m2PatternValid ? `✓ ${cleanM2Pattern}` : `✗ Need 2+`}
                       </div>
@@ -1175,19 +1070,19 @@ export default function ProScannerBot() {
                   ) : (
                     <>
                       <div className="grid grid-cols-3 gap-1 mt-0.5">
-                        <label className="text-[8px] text-muted-foreground text-center">Condition</label>
-                        <label className="text-[8px] text-muted-foreground text-center">Digit</label>
-                        <label className="text-[8px] text-muted-foreground text-center">Ticks</label>
+                        <label className="text-[8px] text-gray-500 font-medium text-center">Condition</label>
+                        <label className="text-[8px] text-gray-500 font-medium text-center">Digit</label>
+                        <label className="text-[8px] text-gray-500 font-medium text-center">Ticks</label>
                       </div>
                       <div className="grid grid-cols-3 gap-1">
                         <Select value={m2DigitCondition} onValueChange={setM2DigitCondition} disabled={isRunning}>
-                          <SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          <SelectTrigger className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200"><SelectValue /></SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-700">
+                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c} className="text-gray-200">{c}</SelectItem>)}
                           </SelectContent>
                         </Select>
-                        <Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
-                        <Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                        <Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
+                        <Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px] bg-gray-900 border-gray-700 text-gray-200" />
                       </div>
                     </>
                   )}
@@ -1195,12 +1090,12 @@ export default function ProScannerBot() {
               )}
 
               {botStatus === 'waiting_pattern' && (
-                <div className="bg-warning/10 border border-warning/30 rounded p-1.5 text-[9px] text-warning animate-pulse text-center font-semibold">
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded p-1.5 text-[9px] text-amber-400 animate-pulse text-center font-semibold">
                   ⏳ WAITING FOR PATTERN...
                 </div>
               )}
               {botStatus === 'pattern_matched' && (
-                <div className="bg-profit/10 border border-profit/30 rounded p-1.5 text-[9px] text-profit text-center font-semibold animate-pulse">
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded p-1.5 text-[9px] text-emerald-400 text-center font-semibold animate-pulse">
                   ✅ PATTERN MATCHED!
                 </div>
               )}
@@ -1208,20 +1103,20 @@ export default function ProScannerBot() {
           )}
 
           {/* Save / Load Config */}
-          <div className="bg-card border border-border rounded-xl p-2.5 space-y-1.5">
-            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">💾 Bot Config</h3>
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-2.5 space-y-1.5 shadow-md">
+            <h3 className="text-xs font-semibold text-gray-200 flex items-center gap-1">💾 Bot Config</h3>
             <Input
               placeholder="Enter bot name before saving..."
               value={botName}
               onChange={e => setBotName(e.target.value)}
               disabled={isRunning}
-              className="h-7 text-xs"
+              className="h-7 text-xs bg-gray-900 border-gray-700 text-gray-200 placeholder:text-gray-600"
             />
             <div className="grid grid-cols-2 gap-1.5">
               <Button
                 size="sm"
                 variant="outline"
-                className="h-8 text-[10px] gap-1"
+                className="h-8 text-[10px] gap-1 font-medium bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700"
                 disabled={isRunning || !botName.trim()}
                 onClick={() => {
                   const safeName = botName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1229,7 +1124,7 @@ export default function ProScannerBot() {
                     version: 1,
                     botName: botName.trim(),
                     m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
-                    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount, runCount: m2RunCount },
+                    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
                     risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
                     strategy: {
                       m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled,
@@ -1255,7 +1150,7 @@ export default function ProScannerBot() {
               <Button
                 size="sm"
                 variant="outline"
-                className="h-8 text-[10px] gap-1"
+                className="h-8 text-[10px] gap-1 font-medium bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700"
                 disabled={isRunning}
                 onClick={() => {
                   const input = document.createElement('input');
@@ -1286,7 +1181,6 @@ export default function ProScannerBot() {
                         if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
                         if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
                         if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
-                        if (cfg.m2.runCount) setM2RunCount(cfg.m2.runCount);
                         // Risk
                         if (cfg.risk.stake) setStake(cfg.risk.stake);
                         if (cfg.risk.martingaleOn !== undefined) setMartingaleOn(cfg.risk.martingaleOn);
@@ -1332,22 +1226,22 @@ export default function ProScannerBot() {
         {/* ═══ RIGHT: Digit Stream + Activity Log ═══ */}
         <div className="lg:col-span-8 space-y-2">
           {/* Digit Stream */}
-          <div className="bg-card border border-border rounded-xl p-2.5">
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-2.5 shadow-md">
             <div className="flex items-center justify-between mb-1.5">
-              <h3 className="text-[10px] font-semibold text-foreground">Live Digits — {activeSymbol}</h3>
-              <span className="text-[9px] text-muted-foreground font-mono">Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)}</span>
+              <h3 className="text-[10px] font-semibold text-gray-200">Live Digits — {activeSymbol}</h3>
+              <span className="text-[9px] text-gray-500 font-mono font-medium">Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)}</span>
             </div>
             <div className="flex gap-1 justify-center">
               {activeDigits.length === 0 ? (
-                <span className="text-[10px] text-muted-foreground">Waiting for ticks...</span>
+                <span className="text-[10px] text-gray-500 font-medium">Waiting for ticks...</span>
               ) : activeDigits.map((d, i) => {
                 const isOver = d >= 5;
                 const isEven = d % 2 === 0;
                 const isLast = i === activeDigits.length - 1;
                 return (
                   <div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
-                    isLast ? 'ring-2 ring-primary' : ''
-                  } ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}>
+                    isLast ? 'ring-2 ring-cyan-400' : ''
+                  } ${isOver ? 'bg-rose-500/10 border-rose-500/30 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'}`}>
                     <span className="text-sm">{d}</span>
                     <span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
                   </div>
@@ -1358,27 +1252,27 @@ export default function ProScannerBot() {
 
           {/* Trade Summary Panel */}
           <div className="grid grid-cols-5 gap-1.5">
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Trades</div>
-              <div className="font-mono text-xs font-bold text-foreground">{wins + losses}</div>
+            <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-lg p-2 text-center shadow-md">
+              <div className="text-[8px] text-gray-500 font-medium">Trades</div>
+              <div className="font-mono text-xs font-bold text-white">{wins + losses}</div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Wins</div>
-              <div className="font-mono text-xs font-bold text-profit">{wins}</div>
+            <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-lg p-2 text-center shadow-md">
+              <div className="text-[8px] text-gray-500 font-medium">Wins</div>
+              <div className="font-mono text-xs font-bold text-emerald-400">{wins}</div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Losses</div>
-              <div className="font-mono text-xs font-bold text-loss">{losses}</div>
+            <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-lg p-2 text-center shadow-md">
+              <div className="text-[8px] text-gray-500 font-medium">Losses</div>
+              <div className="font-mono text-xs font-bold text-rose-400">{losses}</div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Profit/Loss</div>
-              <div className={`font-mono text-xs font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
+            <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-lg p-2 text-center shadow-md">
+              <div className="text-[8px] text-gray-500 font-medium">Profit/Loss</div>
+              <div className={`font-mono text-xs font-bold ${netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {netProfit >= 0 ? '+' : ''}{netProfit.toFixed(2)}
               </div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Total Staked</div>
-              <div className="font-mono text-xs font-bold text-primary">${totalStaked.toFixed(2)}</div>
+            <div className="bg-gray-800/60 backdrop-blur-sm border border-gray-700 rounded-lg p-2 text-center shadow-md">
+              <div className="text-[8px] text-gray-500 font-medium">Total Staked</div>
+              <div className="font-mono text-xs font-bold text-cyan-400">${totalStaked.toFixed(2)}</div>
             </div>
           </div>
 
@@ -1387,7 +1281,7 @@ export default function ProScannerBot() {
             <Button
               onClick={startBot}
               disabled={isRunning || !isAuthorized || balance < parseFloat(stake)}
-              className="h-14 text-base font-bold bg-profit hover:bg-profit/90 text-profit-foreground rounded-xl"
+              className="h-14 text-base font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white rounded-xl shadow-lg"
             >
               <Play className="w-5 h-5 mr-2" /> START M1
             </Button>
@@ -1395,45 +1289,40 @@ export default function ProScannerBot() {
               onClick={stopBot}
               disabled={!isRunning}
               variant="destructive"
-              className="h-14 text-base font-bold rounded-xl"
+              className="h-14 text-base font-bold bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-700 hover:to-rose-600 text-white rounded-xl shadow-lg"
             >
               <StopCircle className="w-5 h-5 mr-2" /> STOP
             </Button>
           </div>
 
           {/* Activity Log */}
-          <div className="bg-card border border-border rounded-xl overflow-hidden">
-            <div className="px-2.5 py-2 border-b border-border flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold text-foreground">Activity Log</h3>
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-md">
+            <div className="px-2.5 py-2 border-b border-gray-700 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold text-gray-200">Activity Log</h3>
               <div className="flex items-center gap-1.5">
-                {isRunning && currentMarket === 2 && m2RunsRemaining > 0 && (
-                  <Badge variant="outline" className="text-[9px] text-warning border-warning/30">
-                    Runs left: {m2RunsRemaining}
-                  </Badge>
-                )}
                 {logEntries.length > 0 && logEntries[0].switchInfo && (
-                  <span className="text-[9px] text-muted-foreground font-mono hidden md:inline truncate max-w-[200px]">
+                  <span className="text-[9px] text-gray-500 font-mono font-medium hidden md:inline truncate max-w-[200px]">
                     {logEntries[0].switchInfo}
                   </span>
                 )}
                 {!isRunning ? (
                   <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake)}
-                    size="sm" className="h-7 text-[10px] font-bold bg-profit hover:bg-profit/90 text-profit-foreground px-3">
+                    size="sm" className="h-7 text-[10px] font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white px-3">
                     <Play className="w-3 h-3 mr-1" /> START
                   </Button>
                 ) : (
-                  <Button onClick={stopBot} variant="destructive" size="sm" className="h-7 text-[10px] font-bold px-3">
+                  <Button onClick={stopBot} variant="destructive" size="sm" className="h-7 text-[10px] font-bold bg-rose-600 hover:bg-rose-700 text-white px-3">
                     <StopCircle className="w-3 h-3 mr-1" /> STOP
                   </Button>
                 )}
-                <Button variant="ghost" size="sm" onClick={clearLog} className="h-7 w-7 p-0 text-muted-foreground hover:text-loss">
+                <Button variant="ghost" size="sm" onClick={clearLog} className="h-7 w-7 p-0 text-gray-500 hover:text-rose-400 hover:bg-gray-800">
                   <Trash2 className="w-3 h-3" />
                 </Button>
               </div>
             </div>
             <div className="max-h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
               <table className="w-full text-[10px]">
-                <thead className="text-[9px] text-muted-foreground bg-muted/30 sticky top-0">
+                <thead className="text-[9px] text-gray-500 font-medium bg-gray-900/80 sticky top-0">
                   <tr>
                     <th className="text-left p-1.5">Time</th>
                     <th className="text-left p-1">Mkt</th>
@@ -1449,40 +1338,40 @@ export default function ProScannerBot() {
                 </thead>
                 <tbody>
                   {logEntries.length === 0 ? (
-                    <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No trades yet — configure and start the bot</td></tr>
+                    <tr><td colSpan={10} className="text-center text-gray-500 py-8 font-medium">No trades yet — configure and start the bot</td></tr>
                   ) : logEntries.map(e => (
-                    <tr key={e.id} className={`border-t border-border/30 hover:bg-muted/20 ${
-                      e.market === 'M1' ? 'border-l-2 border-l-profit' :
-                      e.market === 'VH' ? 'border-l-2 border-l-primary' :
+                    <tr key={e.id} className={`border-t border-gray-700/50 hover:bg-gray-800/30 ${
+                      e.market === 'M1' ? 'border-l-2 border-l-emerald-500' :
+                      e.market === 'VH' ? 'border-l-2 border-l-cyan-500' :
                       'border-l-2 border-l-purple-500'
                     }`}>
-                      <td className="p-1 font-mono text-[9px]">{e.time}</td>
+                      <td className="p-1 font-mono text-[9px] text-gray-300">{e.time}</td>
                       <td className={`p-1 font-bold ${
-                        e.market === 'M1' ? 'text-profit' :
-                        e.market === 'VH' ? 'text-primary' :
+                        e.market === 'M1' ? 'text-emerald-400' :
+                        e.market === 'VH' ? 'text-cyan-400' :
                         'text-purple-400'
                       }`}>{e.market}</td>
-                      <td className="p-1 font-mono text-[9px]">{e.symbol}</td>
-                      <td className="p-1 text-[9px]">{e.contract.replace('DIGIT', '')}</td>
-                      <td className="p-1 font-mono text-right text-[9px]">
+                      <td className="p-1 font-mono text-[9px] text-gray-300">{e.symbol}</td>
+                      <td className="p-1 text-[9px] text-gray-300">{e.contract.replace('DIGIT', '')}</td>
+                      <td className="p-1 font-mono text-right text-[9px] text-gray-300">
                         {e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}
-                        {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-warning ml-0.5">M{e.martingaleStep}</span>}
+                        {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-amber-400 ml-0.5">M{e.martingaleStep}</span>}
                       </td>
-                      <td className="p-1 text-center font-mono">{e.exitDigit}</td>
+                      <td className="p-1 text-center font-mono text-gray-300">{e.exitDigit}</td>
                       <td className="p-1 text-center">
                         <span className={`px-1 py-0.5 rounded-full text-[8px] font-bold ${
-                          e.result === 'Win' || e.result === 'V-Win' ? 'bg-profit/20 text-profit' :
-                          e.result === 'Loss' || e.result === 'V-Loss' ? 'bg-loss/20 text-loss' :
-                          'bg-warning/20 text-warning animate-pulse'
+                          e.result === 'Win' || e.result === 'V-Win' ? 'bg-emerald-500/20 text-emerald-400' :
+                          e.result === 'Loss' || e.result === 'V-Loss' ? 'bg-rose-500/20 text-rose-400' :
+                          'bg-amber-500/20 text-amber-400 animate-pulse'
                         }`}>{e.result === 'Pending' ? '...' : e.result}</span>
                       </td>
-                      <td className={`p-1 font-mono text-right text-[9px] ${e.pnl > 0 ? 'text-profit' : e.pnl < 0 ? 'text-loss' : ''}`}>
+                      <td className={`p-1 font-mono text-right text-[9px] ${e.pnl > 0 ? 'text-emerald-400' : e.pnl < 0 ? 'text-rose-400' : 'text-gray-500'}`}>
                         {e.result === 'Pending' ? '...' : e.market === 'VH' ? '-' : `${e.pnl > 0 ? '+' : ''}${e.pnl.toFixed(2)}`}
                       </td>
-                      <td className="p-1 font-mono text-right text-[9px]">{e.market === 'VH' ? '-' : `$${e.balance.toFixed(2)}`}</td>
+                      <td className="p-1 font-mono text-right text-[9px] text-gray-300">{e.market === 'VH' ? '-' : `$${e.balance.toFixed(2)}`}</td>
                       <td className="p-1 text-center">
                         {isRunning && (
-                          <button onClick={stopBot} className="px-1 py-0.5 rounded bg-destructive/80 hover:bg-destructive text-destructive-foreground text-[8px] font-bold transition-colors" title="Stop Bot">
+                          <button onClick={stopBot} className="px-1 py-0.5 rounded bg-rose-600/80 hover:bg-rose-600 text-white text-[8px] font-bold transition-colors" title="Stop Bot">
                             ■
                           </button>
                         )}
