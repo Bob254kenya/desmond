@@ -7,7 +7,7 @@ import { useTickLoader } from '@/hooks/useTickLoader';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Play, StopCircle, Pause, TrendingUp, TrendingDown, CircleDot, RefreshCw, Trash2, DollarSign, Sparkles, Scan, Brain, Zap, Shield, Award, Target, Flame, ChevronRight, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Loader2, Play, StopCircle, Pause, TrendingUp, TrendingDown, CircleDot, RefreshCw, Trash2, DollarSign, Sparkles, Scan, Brain, Zap, Shield, Award, Target, Flame, ChevronRight, AlertCircle, CheckCircle2, Rocket, Swords, Gauge, Crown, Skull, Flag, Timer, Radio, Activity } from 'lucide-react';
 
 interface MarketAnalysis {
   symbol: string;
@@ -54,6 +54,8 @@ interface BotState {
   currentMarketDigits?: number[];
   aiVolatilityScore?: number;
   aiRecommendedAction?: string;
+  isReadyToTrade?: boolean;
+  readyReason?: string;
 }
 
 interface TradeLog {
@@ -90,9 +92,16 @@ function waitForNextTick(symbol: string): Promise<{ quote: number; epoch: number
 }
 
 // AI Volatility Analysis Engine
-const analyzeWithAI = (digits: number[]): { volatilityScore: number; confidence: number; pattern: string; recommendation: string } => {
+const analyzeWithAI = (digits: number[]): { volatilityScore: number; confidence: number; pattern: string; recommendation: string; readinessScore: number; reason: string } => {
   if (digits.length < 700) {
-    return { volatilityScore: 0, confidence: 0, pattern: 'Insufficient data', recommendation: 'NEUTRAL' };
+    return { 
+      volatilityScore: 0, 
+      confidence: 0, 
+      pattern: 'Insufficient data', 
+      recommendation: 'NEUTRAL',
+      readinessScore: 0,
+      reason: 'Insufficient historical data'
+    };
   }
   
   const last700 = digits.slice(-700);
@@ -130,6 +139,8 @@ const analyzeWithAI = (digits: number[]): { volatilityScore: number; confidence:
   let pattern = 'NEUTRAL';
   let recommendation = 'NEUTRAL';
   let confidence = 0;
+  let readinessScore = 0;
+  let reason = '';
   
   // AI pattern recognition
   const recentDigits = last700.slice(-100);
@@ -137,51 +148,63 @@ const analyzeWithAI = (digits: number[]): { volatilityScore: number; confidence:
   const oddRecent = recentDigits.filter(d => d % 2 === 1).length / 100;
   const highRecent = recentDigits.filter(d => d > 5).length / 100;
   const lowRecent = recentDigits.filter(d => d < 5).length / 100;
+  const extremeLow = recentDigits.filter(d => d <= 1).length / 100;
+  const extremeHigh = recentDigits.filter(d => d >= 8).length / 100;
   
   if (evenRecent > 0.65) {
     pattern = 'STRONG EVEN BIAS';
     recommendation = 'EVEN';
     confidence = Math.min(100, evenRecent * 100);
+    readinessScore = confidence * (volatilityScore / 10);
+    reason = `Even numbers appearing ${(evenRecent * 100).toFixed(1)}% of time`;
   } else if (oddRecent > 0.65) {
     pattern = 'STRONG ODD BIAS';
     recommendation = 'ODD';
     confidence = Math.min(100, oddRecent * 100);
+    readinessScore = confidence * (volatilityScore / 10);
+    reason = `Odd numbers appearing ${(oddRecent * 100).toFixed(1)}% of time`;
   } else if (highRecent > 0.7) {
     pattern = 'HIGH NUMBER DOMINANCE';
     recommendation = 'OVER 3';
     confidence = Math.min(100, highRecent * 100);
+    readinessScore = confidence * (volatilityScore / 10);
+    reason = `High numbers (>5) appearing ${(highRecent * 100).toFixed(1)}% of time`;
   } else if (lowRecent > 0.7) {
     pattern = 'LOW NUMBER DOMINANCE';
     recommendation = 'UNDER 6';
     confidence = Math.min(100, lowRecent * 100);
+    readinessScore = confidence * (volatilityScore / 10);
+    reason = `Low numbers (<5) appearing ${(lowRecent * 100).toFixed(1)}% of time`;
+  } else if (extremeLow > 0.4) {
+    pattern = 'EXTREME LOW PATTERN';
+    recommendation = 'OVER 1';
+    confidence = Math.min(100, extremeLow * 100);
+    readinessScore = confidence * (volatilityScore / 10);
+    reason = `Extreme low numbers (0-1) appearing ${(extremeLow * 100).toFixed(1)}% of time`;
+  } else if (extremeHigh > 0.4) {
+    pattern = 'EXTREME HIGH PATTERN';
+    recommendation = 'UNDER 8';
+    confidence = Math.min(100, extremeHigh * 100);
+    readinessScore = confidence * (volatilityScore / 10);
+    reason = `Extreme high numbers (8-9) appearing ${(extremeHigh * 100).toFixed(1)}% of time`;
   } else {
-    // Check for extreme patterns
-    const extremeLow = recentDigits.filter(d => d <= 1).length / 100;
-    const extremeHigh = recentDigits.filter(d => d >= 8).length / 100;
-    
-    if (extremeLow > 0.4) {
-      pattern = 'EXTREME LOW PATTERN';
-      recommendation = 'OVER 1';
-      confidence = Math.min(100, extremeLow * 100);
-    } else if (extremeHigh > 0.4) {
-      pattern = 'EXTREME HIGH PATTERN';
-      recommendation = 'UNDER 8';
-      confidence = Math.min(100, extremeHigh * 100);
-    } else {
-      pattern = 'RANDOM DISTRIBUTION';
-      recommendation = 'NEUTRAL';
-      confidence = 50;
-    }
+    pattern = 'RANDOM DISTRIBUTION';
+    recommendation = 'NEUTRAL';
+    confidence = 50;
+    readinessScore = 30;
+    reason = 'No clear pattern detected';
   }
   
   // Adjust volatility score based on confidence
-  volatilityScore = volatilityScore * (confidence / 100);
+  volatilityScore = Math.min(10, volatilityScore * (confidence / 100));
   
   return {
     volatilityScore: Math.round(volatilityScore * 10) / 10,
     confidence: Math.round(confidence),
     pattern,
-    recommendation
+    recommendation,
+    readinessScore: Math.round(readinessScore),
+    reason
   };
 };
 
@@ -336,7 +359,7 @@ export default function AutoTrade() {
   const [selectedMarket, setSelectedMarket] = useState<string>('R_100');
   const [marketAnalysis, setMarketAnalysis] = useState<Record<string, MarketAnalysis>>({});
   const [marketSignals, setMarketSignals] = useState<Record<string, Record<string, boolean>>>({});
-  const [aiAnalysis, setAiAnalysis] = useState<Record<string, { volatilityScore: number; confidence: number; pattern: string; recommendation: string }>>({});
+  const [aiAnalysis, setAiAnalysis] = useState<Record<string, { volatilityScore: number; confidence: number; pattern: string; recommendation: string; readinessScore: number; reason: string }>>({});
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
   const [globalStake, setGlobalStake] = useState<number>(0.5);
@@ -347,6 +370,8 @@ export default function AutoTrade() {
   const [autoStartAll, setAutoStartAll] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(true);
   const [aiThinking, setAiThinking] = useState(false);
+  const [scanComplete, setScanComplete] = useState(false);
+  const [readyBotsCount, setReadyBotsCount] = useState(0);
   
   const [trades, setTrades] = useState<TradeLog[]>([]);
   const tradeIdRef = useRef(0);
@@ -379,63 +404,47 @@ export default function AutoTrade() {
       id: 'bot1', name: 'OVER 3 BOT', type: 'over3', isRunning: false, isPaused: false, 
       currentStake: 0.5, totalPnl: 0, trades: 0, wins: 0, losses: 0, contractType: 'DIGITOVER', barrier: 3,
       status: 'idle', consecutiveLosses: 0, entryTriggered: false, cooldownRemaining: 0, recoveryMode: false,
-      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL'
+      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL', isReadyToTrade: false, readyReason: ''
     },
     { 
       id: 'bot2', name: 'UNDER 6 BOT', type: 'under6', isRunning: false, isPaused: false, 
       currentStake: 0.5, totalPnl: 0, trades: 0, wins: 0, losses: 0, contractType: 'DIGITUNDER', barrier: 6,
       status: 'idle', consecutiveLosses: 0, entryTriggered: false, cooldownRemaining: 0, recoveryMode: false,
-      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL'
+      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL', isReadyToTrade: false, readyReason: ''
     },
     { 
       id: 'bot3', name: 'EVEN BOT', type: 'even', isRunning: false, isPaused: false, 
       currentStake: 0.5, totalPnl: 0, trades: 0, wins: 0, losses: 0, contractType: 'DIGITEVEN',
       status: 'idle', consecutiveLosses: 0, entryTriggered: false, cooldownRemaining: 0, recoveryMode: false,
-      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL'
+      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL', isReadyToTrade: false, readyReason: ''
     },
     { 
       id: 'bot4', name: 'ODD BOT', type: 'odd', isRunning: false, isPaused: false, 
       currentStake: 0.5, totalPnl: 0, trades: 0, wins: 0, losses: 0, contractType: 'DIGITODD',
       status: 'idle', consecutiveLosses: 0, entryTriggered: false, cooldownRemaining: 0, recoveryMode: false,
-      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL'
+      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL', isReadyToTrade: false, readyReason: ''
     },
     { 
       id: 'bot5', name: 'OVER 1 BOT', type: 'over1', isRunning: false, isPaused: false, 
       currentStake: 0.5, totalPnl: 0, trades: 0, wins: 0, losses: 0, contractType: 'DIGITOVER', barrier: 1,
       status: 'idle', consecutiveLosses: 0, entryTriggered: false, cooldownRemaining: 0, recoveryMode: false,
-      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL'
+      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL', isReadyToTrade: false, readyReason: ''
     },
     { 
       id: 'bot6', name: 'UNDER 8 BOT', type: 'under8', isRunning: false, isPaused: false, 
       currentStake: 0.5, totalPnl: 0, trades: 0, wins: 0, losses: 0, contractType: 'DIGITUNDER', barrier: 8,
       status: 'idle', consecutiveLosses: 0, entryTriggered: false, cooldownRemaining: 0, recoveryMode: false,
-      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL'
+      signal: false, aiVolatilityScore: 0, aiRecommendedAction: 'NEUTRAL', isReadyToTrade: false, readyReason: ''
     },
   ]);
 
   const botRunningRefs = useRef<Record<string, boolean>>({});
   const botPausedRefs = useRef<Record<string, boolean>>({});
 
-  // Auto-start all bots when markets are ready
+  // Update ready bots count
   useEffect(() => {
-    if (autoStartAll && !isScanning && Object.keys(marketAnalysis).length > 0) {
-      const readyBots = bots.filter(bot => bot.selectedMarket && !bot.isRunning);
-      readyBots.forEach(bot => {
-        setTimeout(() => startBot(bot.id), 100);
-      });
-      setAutoStartAll(false);
-      toast.success('All ready markets auto-started!');
-    }
-  }, [autoStartAll, isScanning, marketAnalysis, bots]);
-
-  // Auto-stop if bot is in profit
-  useEffect(() => {
-    bots.forEach(bot => {
-      if (bot.isRunning && bot.totalPnl > 0) {
-        stopBot(bot.id);
-        toast.success(`${bot.name} auto-stopped with +$${bot.totalPnl.toFixed(2)} profit!`);
-      }
-    });
+    const count = bots.filter(b => b.isReadyToTrade && !b.isRunning).length;
+    setReadyBotsCount(count);
   }, [bots]);
 
   const scanMarket = useCallback(async () => {
@@ -444,6 +453,7 @@ export default function AutoTrade() {
     setIsScanning(true);
     setScanProgress(0);
     setAiThinking(true);
+    setScanComplete(false);
     playScanSound();
     
     if (scanTimeoutRef.current) {
@@ -468,8 +478,8 @@ export default function AutoTrade() {
       
       const analysis: Record<string, MarketAnalysis> = {};
       const signals: Record<string, Record<string, boolean>> = {};
-      const aiResults: Record<string, { volatilityScore: number; confidence: number; pattern: string; recommendation: string }> = {};
-      const volatilityMarkets: Record<string, { score: number, type: string, aiScore: number }> = {};
+      const aiResults: Record<string, { volatilityScore: number; confidence: number; pattern: string; recommendation: string; readinessScore: number; reason: string }> = {};
+      const volatilityMarkets: Record<string, { score: number, type: string, aiScore: number, readiness: number }> = {};
       
       for (const market of VOLATILITY_MARKETS) {
         const marketDigits = marketDigitsRef.current[market] || [];
@@ -525,7 +535,8 @@ export default function AutoTrade() {
             volatilityMarkets[market] = { 
               score: combinedScore, 
               type: recommendedType || aiResult.recommendation,
-              aiScore: aiResult.confidence
+              aiScore: aiResult.confidence,
+              readiness: aiResult.readinessScore
             };
           }
         }
@@ -538,61 +549,83 @@ export default function AutoTrade() {
       setAiAnalysis(aiResults);
       
       // AI selects best markets based on volatility and confidence
-      const bestMarkets: Record<string, string> = {};
-      const aiOverMarkets = Object.entries(volatilityMarkets)
-        .filter(([_, data]) => data.type.includes('OVER'))
-        .sort((a, b) => (b[1].score * b[1].aiScore) - (a[1].score * a[1].aiScore));
+      const bestMarkets: Record<string, { market: string; readiness: number; reason: string }> = {};
       
-      const aiUnderMarkets = Object.entries(volatilityMarkets)
-        .filter(([_, data]) => data.type.includes('UNDER'))
-        .sort((a, b) => (b[1].score * b[1].aiScore) - (a[1].score * a[1].aiScore));
+      // Match bots with best markets based on AI recommendation
+      const botTypes = ['over3', 'under6', 'even', 'odd', 'over1', 'under8'];
+      const recommendationMap: Record<string, string[]> = {
+        'OVER 3': ['over3'],
+        'UNDER 6': ['under6'],
+        'EVEN': ['even'],
+        'ODD': ['odd'],
+        'OVER 1': ['over1'],
+        'UNDER 8': ['under8'],
+        'OVER': ['over3', 'over1'],
+        'UNDER': ['under6', 'under8'],
+        'NEUTRAL': ['over3', 'under6', 'even', 'odd', 'over1', 'under8']
+      };
       
-      const aiEvenMarkets = Object.entries(volatilityMarkets)
-        .filter(([_, data]) => data.type.includes('EVEN'))
-        .sort((a, b) => (b[1].score * b[1].aiScore) - (a[1].score * a[1].aiScore));
-      
-      const aiOddMarkets = Object.entries(volatilityMarkets)
-        .filter(([_, data]) => data.type.includes('ODD'))
-        .sort((a, b) => (b[1].score * b[1].aiScore) - (a[1].score * a[1].aiScore));
-      
-      // Assign best markets to bots based on AI recommendation
-      const overBots = ['over3', 'over1'];
-      overBots.forEach((botType, index) => {
-        if (aiOverMarkets[index]) {
-          bestMarkets[botType] = aiOverMarkets[index][0];
+      // Assign markets to bots based on AI recommendations
+      botTypes.forEach(botType => {
+        // Find markets that match this bot type
+        const matchingMarkets = Object.entries(volatilityMarkets)
+          .filter(([_, data]) => {
+            const recLower = data.type.toLowerCase();
+            return recLower.includes(botType) || 
+                   (botType.includes('over') && recLower.includes('over')) ||
+                   (botType.includes('under') && recLower.includes('under'));
+          })
+          .sort((a, b) => (b[1].readiness * b[1].aiScore) - (a[1].readiness * a[1].aiScore));
+        
+        if (matchingMarkets.length > 0) {
+          bestMarkets[botType] = {
+            market: matchingMarkets[0][0],
+            readiness: matchingMarkets[0][1].readiness,
+            reason: aiResults[matchingMarkets[0][0]]?.reason || 'Pattern match found'
+          };
         }
       });
       
-      const underBots = ['under6', 'under8'];
-      underBots.forEach((botType, index) => {
-        if (aiUnderMarkets[index]) {
-          bestMarkets[botType] = aiUnderMarkets[index][0];
+      // Fill remaining bots with best available markets
+      botTypes.forEach(botType => {
+        if (!bestMarkets[botType]) {
+          const availableMarkets = Object.entries(volatilityMarkets)
+            .filter(([market]) => !Object.values(bestMarkets).some(b => b.market === market))
+            .sort((a, b) => b[1].readiness - a[1].readiness);
+          
+          if (availableMarkets.length > 0) {
+            bestMarkets[botType] = {
+              market: availableMarkets[0][0],
+              readiness: availableMarkets[0][1].readiness,
+              reason: aiResults[availableMarkets[0][0]]?.reason || 'High volatility detected'
+            };
+          }
         }
       });
       
-      if (aiEvenMarkets[0]) {
-        bestMarkets['even'] = aiEvenMarkets[0][0];
-      }
-      
-      if (aiOddMarkets[0]) {
-        bestMarkets['odd'] = aiOddMarkets[0][0];
-      }
-      
-      // Update bots with AI-selected markets
+      // Update bots with AI-selected markets and readiness status
       setBots(prev => prev.map(bot => {
-        const market = bestMarkets[bot.type];
+        const bestMarket = bestMarkets[bot.type];
+        const market = bestMarket?.market || bot.selectedMarket || Object.keys(marketDigitsRef.current)[0];
         const aiInfo = market ? aiResults[market] : null;
+        const isReady = bestMarket ? bestMarket.readiness > 50 : false;
+        
         return {
           ...bot,
-          selectedMarket: market || bot.selectedMarket || Object.keys(marketDigitsRef.current)[0],
+          selectedMarket: market,
           aiVolatilityScore: aiInfo?.volatilityScore || 0,
-          aiRecommendedAction: aiInfo?.recommendation || 'NEUTRAL'
+          aiRecommendedAction: aiInfo?.recommendation || 'NEUTRAL',
+          isReadyToTrade: isReady,
+          readyReason: bestMarket?.reason || aiInfo?.reason || 'Ready for trading'
         };
       }));
       
       playScanSound();
       setAiThinking(false);
-      toast.success(`🤖 AI Scan complete! Found ${Object.keys(volatilityMarkets).length} high-probability markets`);
+      setScanComplete(true);
+      
+      const readyCount = botTypes.filter(type => bestMarkets[type]?.readiness > 50).length;
+      toast.success(`🤖 AI Scan complete! ${readyCount} bots ready to trade!`);
       
       // Auto-start all ready markets after scan
       setAutoStartAll(true);
@@ -626,10 +659,21 @@ export default function AutoTrade() {
       recoveryMode: false,
       signal: false,
       aiVolatilityScore: 0,
-      aiRecommendedAction: 'NEUTRAL'
+      aiRecommendedAction: 'NEUTRAL',
+      isReadyToTrade: false,
+      readyReason: ''
     })));
+    setScanComplete(false);
     tradeIdRef.current = 0;
     toast.success('All data cleared');
+  };
+
+  const startAllReadyBots = () => {
+    const readyBots = bots.filter(b => b.isReadyToTrade && !b.isRunning);
+    readyBots.forEach(bot => {
+      setTimeout(() => startBot(bot.id), 100);
+    });
+    toast.success(`Started ${readyBots.length} ready bots!`);
   };
 
   const runBot = useCallback(async (botId: string) => {
@@ -883,6 +927,7 @@ export default function AutoTrade() {
       cooldownRemaining: 0,
       signal: false
     })));
+    toast.success('All bots stopped');
   };
 
   const getMarketDisplay = (market: string) => {
@@ -901,7 +946,7 @@ export default function AutoTrade() {
   const activeSignals = bots.filter(b => b.signal).length;
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-gray-900 via-indigo-900 to-purple-900 font-sans">
+    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-900 via-indigo-900 to-purple-900 font-sans">
       {/* Animated Background Elements */}
       <div className="fixed inset-0 pointer-events-none">
         {/* Gradient Orbs */}
@@ -1019,18 +1064,6 @@ export default function AutoTrade() {
                     <Trash2 className="w-4 h-4 mr-2" /> Clear All
                   </Button>
                 </motion.div>
-
-                {/* Stop All Button */}
-                <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-                  <Button 
-                    variant="destructive" 
-                    onClick={stopAllBots} 
-                    disabled={!bots.some(b => b.isRunning)}
-                    className="bg-rose-500/20 hover:bg-rose-500/30 border-rose-500/30 text-rose-400 rounded-xl px-4 py-2"
-                  >
-                    <StopCircle className="w-4 h-4 mr-2" /> Stop All
-                  </Button>
-                </motion.div>
               </div>
             </div>
 
@@ -1119,10 +1152,77 @@ export default function AutoTrade() {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* Scan Complete & Ready Bots Indicator */}
+              <AnimatePresence>
+                {scanComplete && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="w-full max-w-2xl mt-4"
+                  >
+                    <div className="bg-gradient-to-r from-emerald-500/20 to-yellow-500/20 backdrop-blur border border-emerald-500/30 rounded-xl p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="relative">
+                            <motion.div
+                              animate={{ scale: [1, 1.2, 1] }}
+                              transition={{ duration: 2, repeat: Infinity }}
+                              className="absolute inset-0 bg-emerald-500/30 blur-md rounded-full"
+                            />
+                            <CheckCircle2 className="w-8 h-8 text-emerald-400 relative z-10" />
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-bold text-emerald-400">Scan Complete!</h3>
+                            <p className="text-sm text-emerald-400/60">
+                              {readyBotsCount} out of 6 bots ready to trade
+                            </p>
+                          </div>
+                        </div>
+                        
+                        {/* Start All Ready Bots Button */}
+                        {readyBotsCount > 0 && (
+                          <motion.div
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                          >
+                            <Button
+                              onClick={startAllReadyBots}
+                              className="bg-gradient-to-r from-emerald-500 to-green-500 hover:from-emerald-600 hover:to-green-600 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-emerald-500/30"
+                            >
+                              <Rocket className="w-4 h-4 mr-2" />
+                              START {readyBotsCount} READY BOTS
+                            </Button>
+                          </motion.div>
+                        )}
+                      </div>
+
+                      {/* Ready Bots List */}
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {bots.filter(b => b.isReadyToTrade && !b.isRunning).map(bot => (
+                          <motion.div
+                            key={bot.id}
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            className="bg-black/40 backdrop-blur border border-emerald-500/30 rounded-lg p-2 flex items-center gap-2"
+                          >
+                            <Activity className="w-3 h-3 text-emerald-400" />
+                            <span className="text-xs font-mono text-emerald-400">{bot.name}</span>
+                            <Badge className="bg-emerald-500/20 text-emerald-400 text-[8px] ml-auto">
+                              READY
+                            </Badge>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Global Stats Grid */}
-            <div className="grid grid-cols-6 gap-4">
+            <div className="grid grid-cols-6 gap-4 mb-4">
               {[
                 { 
                   icon: <DollarSign className="w-5 h-5" />,
@@ -1160,11 +1260,11 @@ export default function AutoTrade() {
                   bg: 'from-purple-500/20 to-purple-500/5'
                 },
                 { 
-                  icon: <Flame className="w-5 h-5" />,
-                  label: 'Signals', 
-                  value: activeSignals.toString(), 
-                  color: 'text-yellow-400',
-                  bg: 'from-yellow-500/20 to-yellow-500/5'
+                  icon: <Radio className="w-5 h-5" />,
+                  label: 'Ready', 
+                  value: `${readyBotsCount}`, 
+                  color: 'text-emerald-400',
+                  bg: 'from-emerald-500/20 to-emerald-500/5'
                 },
               ].map((stat, i) => (
                 <motion.div
@@ -1184,12 +1284,12 @@ export default function AutoTrade() {
             </div>
 
             {/* Settings Grid */}
-            <div className="grid grid-cols-4 gap-4 mt-4">
+            <div className="grid grid-cols-4 gap-4">
               {[
                 { icon: <DollarSign className="w-4 h-4" />, label: 'Stake ($)', value: globalStake, setter: setGlobalStake, step: '0.1', min: '0.1', color: 'emerald' },
                 { icon: <RefreshCw className="w-4 h-4" />, label: 'Multiplier', value: globalMultiplier, setter: setGlobalMultiplier, step: '0.1', min: '1.1', color: 'blue' },
                 { icon: <Shield className="w-4 h-4" />, label: 'Stop Loss ($)', value: globalStopLoss, setter: setGlobalStopLoss, step: '1', min: '1', color: 'rose' },
-                { icon: <Award className="w-4 h-4" />, label: 'Take Profit ($)', value: globalTakeProfit, setter: setGlobalTakeProfit, step: '1', min: '1', color: 'yellow' },
+                { icon: <Crown className="w-4 h-4" />, label: 'Take Profit ($)', value: globalTakeProfit, setter: setGlobalTakeProfit, step: '1', min: '1', color: 'yellow' },
               ].map((setting, i) => (
                 <motion.div
                   key={i}
@@ -1264,6 +1364,20 @@ export default function AutoTrade() {
                           {data.recommendation}
                         </span>
                       </div>
+                      {data.readinessScore > 0 && (
+                        <div className="mt-1 flex items-center gap-1">
+                          <Gauge className="w-3 h-3 text-emerald-400" />
+                          <div className="flex-1 h-1.5 bg-black/50 rounded-full overflow-hidden">
+                            <motion.div
+                              className="h-full bg-emerald-400"
+                              initial={{ width: 0 }}
+                              animate={{ width: `${data.readinessScore}%` }}
+                              transition={{ duration: 1 }}
+                            />
+                          </div>
+                          <span className="text-[7px] text-emerald-400">{data.readinessScore}%</span>
+                        </div>
+                      )}
                     </motion.div>
                   ))}
                 </div>
@@ -1290,18 +1404,19 @@ export default function AutoTrade() {
                 whileHover={{ scale: 1.02 }}
                 className={`relative bg-gradient-to-br from-gray-900/90 to-gray-800/90 backdrop-blur-xl border rounded-xl p-4 shadow-xl overflow-hidden ${
                   bot.isRunning ? 'border-emerald-400 ring-2 ring-emerald-400/20' : 
-                  bot.signal ? 'border-yellow-400 ring-2 ring-yellow-400/20' : 
+                  bot.signal ? 'border-yellow-400 ring-2 ring-yellow-400/20' :
+                  bot.isReadyToTrade && !bot.isRunning ? 'border-emerald-400 ring-2 ring-emerald-400/20 animate-pulse' :
                   'border-emerald-500/20'
                 }`}
               >
-                {/* Background Glow */}
-                <motion.div
-                  className="absolute inset-0 bg-gradient-to-r from-emerald-500/5 to-purple-500/5"
-                  animate={{
-                    opacity: bot.isRunning ? [0.3, 0.5, 0.3] : 0.1,
-                  }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                />
+                {/* Background Glow for Ready Bots */}
+                {bot.isReadyToTrade && !bot.isRunning && (
+                  <motion.div
+                    className="absolute inset-0 bg-gradient-to-r from-emerald-500/10 to-green-500/10"
+                    animate={{ opacity: [0.3, 0.6, 0.3] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                  />
+                )}
 
                 {/* Header */}
                 <div className="relative z-10 flex items-center justify-between mb-3">
@@ -1310,10 +1425,12 @@ export default function AutoTrade() {
                       animate={bot.isRunning ? { 
                         rotate: 360,
                         scale: [1, 1.2, 1],
+                      } : bot.isReadyToTrade && !bot.isRunning ? {
+                        scale: [1, 1.1, 1],
                       } : {}}
                       transition={{ 
                         rotate: { duration: 3, repeat: Infinity, ease: "linear" },
-                        scale: { duration: 2, repeat: Infinity }
+                        scale: { duration: 1, repeat: Infinity }
                       }}
                       className={`p-2.5 rounded-xl ${
                         bot.type === 'over3' || bot.type === 'over1' ? 'bg-blue-500/20 text-blue-400' :
@@ -1345,6 +1462,18 @@ export default function AutoTrade() {
                         </Badge>
                       </motion.div>
                     )}
+                    {bot.isReadyToTrade && !bot.isRunning && (
+                      <motion.div
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ type: "spring" }}
+                      >
+                        <Badge className="bg-emerald-500/20 text-emerald-400 text-[9px] px-2 py-0.5 border-emerald-500/30 font-bold flex items-center gap-1">
+                          <Rocket className="w-3 h-3" />
+                          READY
+                        </Badge>
+                      </motion.div>
+                    )}
                     <Badge className={`text-[9px] font-mono ${
                       bot.isRunning ? 'bg-emerald-500/20 text-emerald-400' : 'bg-gray-500/20 text-gray-400'
                     }`}>
@@ -1363,6 +1492,22 @@ export default function AutoTrade() {
                     <Badge className="bg-purple-500/20 text-purple-400 text-[8px] border-purple-500/30">
                       AI: {bot.aiVolatilityScore.toFixed(1)}
                     </Badge>
+                  </motion.div>
+                )}
+
+                {/* Ready Reason Tooltip */}
+                {bot.isReadyToTrade && bot.readyReason && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="absolute bottom-2 right-2 z-20"
+                  >
+                    <div className="group relative">
+                      <Flag className="w-3 h-3 text-emerald-400 cursor-help" />
+                      <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block w-48 bg-black/90 text-[8px] text-emerald-400 p-2 rounded-lg border border-emerald-500/30">
+                        {bot.readyReason}
+                      </div>
+                    </div>
                   </motion.div>
                 )}
 
@@ -1452,12 +1597,14 @@ export default function AutoTrade() {
                     bot.status === 'trading' ? 'text-emerald-400' :
                     bot.status === 'waiting' ? 'text-yellow-400' :
                     bot.status === 'cooldown' ? 'text-purple-400' :
+                    bot.isReadyToTrade && !bot.isRunning ? 'text-emerald-400 animate-pulse' :
                     'text-gray-400'
                   }`}>
                     {bot.status === 'trading' && <><Zap className="w-3 h-3" /> TRADING</>}
                     {bot.status === 'waiting' && <><Loader2 className="w-3 h-3 animate-spin" /> WAITING</>}
                     {bot.status === 'cooldown' && <><Shield className="w-3 h-3" /> COOLDOWN {bot.cooldownRemaining}</>}
-                    {bot.status === 'idle' && <>⚫ IDLE</>}
+                    {bot.status === 'idle' && bot.isReadyToTrade && <><Rocket className="w-3 h-3" /> READY TO TRADE</>}
+                    {bot.status === 'idle' && !bot.isReadyToTrade && <>⚫ IDLE</>}
                   </span>
                   <span className="text-emerald-400/60">Stake:</span>
                   <span className="font-mono text-emerald-400">${bot.currentStake.toFixed(2)}</span>
@@ -1470,9 +1617,21 @@ export default function AutoTrade() {
                       <Button
                         onClick={() => startBot(bot.id)}
                         disabled={!isAuthorized || balance < globalStake || activeTradeId !== null || !bot.selectedMarket}
-                        className="w-full h-8 text-xs bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white rounded-lg font-bold"
+                        className={`w-full h-8 text-xs rounded-lg font-bold ${
+                          bot.isReadyToTrade
+                            ? 'bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 text-white shadow-lg shadow-emerald-500/30'
+                            : 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30'
+                        }`}
                       >
-                        <Play className="w-3 h-3 mr-1" /> START
+                        {bot.isReadyToTrade ? (
+                          <>
+                            <Rocket className="w-3 h-3 mr-1" /> START READY
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3 h-3 mr-1" /> START
+                          </>
+                        )}
                       </Button>
                     </motion.div>
                   ) : (
@@ -1504,6 +1663,47 @@ export default function AutoTrade() {
             );
           })}
         </div>
+
+        {/* STOP ALL BOTS BUTTON - Prominently Styled */}
+        <motion.div
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          transition={{ type: "spring", delay: 0.5 }}
+          className="flex justify-center my-4"
+        >
+          <motion.div
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            className="relative"
+          >
+            {/* Animated rings */}
+            <motion.div
+              className="absolute inset-0 rounded-full bg-rose-500/30 blur-xl"
+              animate={{ scale: [1, 1.5, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            />
+            <motion.div
+              className="absolute inset-0 rounded-full border-4 border-rose-500/50"
+              animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            />
+            
+            <Button
+              onClick={stopAllBots}
+              disabled={!bots.some(b => b.isRunning)}
+              size="lg"
+              className="relative px-12 py-6 text-xl font-black bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white rounded-full shadow-2xl shadow-rose-500/50 border-2 border-rose-400"
+            >
+              <StopCircle className="w-8 h-8 mr-3" />
+              🛑 STOP ALL BOTS 🛑
+              {bots.filter(b => b.isRunning).length > 0 && (
+                <Badge className="absolute -top-2 -right-2 bg-white text-rose-600 text-sm font-bold px-2 py-1 rounded-full animate-pulse">
+                  {bots.filter(b => b.isRunning).length}
+                </Badge>
+              )}
+            </Button>
+          </motion.div>
+        </motion.div>
 
         {/* Live Signals Panel */}
         <motion.div 
@@ -1643,7 +1843,7 @@ export default function AutoTrade() {
           animate={{ opacity: 1 }}
           className="text-center text-[10px] text-emerald-400/40 py-2"
         >
-          🤖 AI-Powered Trading System v2.0 • Neural Network Active • Real-time Market Analysis
+          🤖 AI-Powered Trading System v2.0 • Neural Network Active • Real-time Market Analysis • {readyBotsCount} Bots Ready
         </motion.div>
       </div>
     </div>
