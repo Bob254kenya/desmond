@@ -12,28 +12,30 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Play, StopCircle, TrendingUp, TrendingDown, CircleDot, RefreshCw, 
   Loader2, Activity, Target, AlertCircle, CheckCircle2, Clock, Hash,
   Zap, Gauge, Volume2, VolumeX, Timer, XCircle, Settings, ChevronDown,
   ChevronUp, DollarSign, Percent, Plus, Minus, BarChart3, LineChart,
-  Brain, Scan, Trash2, Download, Upload, Copy, Eye, EyeOff
+  Brain, Scan, Trash2, Download, Upload, Copy, Eye, EyeOff, Rocket,
+  Flame, Snowflake, Wind, Sun, Moon, Cloud, Droplets, Award, Star
 } from 'lucide-react';
 
 // ==================== TYPES ====================
 
-interface MarketDigits {
-  [key: string]: number[];
+interface MarketData {
+  symbol: string;
+  ticks: number[];
+  digits: number[];
+  analysis: MarketAnalysis;
+  fetchedAt: Date;
 }
 
 interface MarketAnalysis {
-  symbol: string;
-  digits: {
-    count0: number; count1: number; count2: number; count3: number;
-    count4: number; count5: number; count6: number; count7: number;
-    count8: number; count9: number;
-  };
+  condition: 'LOW_012' | 'LOW_789' | 'EVEN_55' | 'ODD_4' | 'NONE';
+  confidence: number;
   percentages: {
     p0: number; p1: number; p2: number; p3: number; p4: number;
     p5: number; p6: number; p7: number; p8: number; p9: number;
@@ -44,41 +46,42 @@ interface MarketAnalysis {
   };
   mostFrequent: number;
   leastFrequent: number;
-  condition: 'LOW_012' | 'LOW_789' | 'EVEN_55' | 'ODD_4' | 'NONE';
-  confidence: number;
   recommendedEntry: number | 'EVEN' | 'ODD';
-  lastUpdated: Date;
+  digit4Frequency: number;
 }
 
-interface AutoBot {
+interface BotConfig {
   id: string;
   market: string;
   name: string;
   condition: 'LOW_012' | 'LOW_789' | 'EVEN_55' | 'ODD_4';
+  
+  // Entry settings
   entryType: 'digit' | 'even' | 'odd';
   entryDigit?: number;
   contractType: string;
-  duration: number;
   
-  // User configurable only (stake, tp, sl)
+  // User configurable settings
   stake: number;
-  takeProfit: number;
-  stopLoss: number;
+  duration: number; // in ticks
+  takeProfit: number; // in dollars
+  stopLoss: number; // in dollars
   
-  // Recovery settings (fixed)
-  recoveryMultiplier: 2;
-  maxRecoverySteps: 3;
+  // Martingale settings
+  martingaleMultiplier: number;
+  maxMartingaleSteps: number;
   
   // Bot state
   isRunning: boolean;
-  status: 'idle' | 'trading' | 'recovery' | 'stopped' | 'completed';
-  currentRun: number;
+  status: 'idle' | 'watching' | 'trading' | 'martingale' | 'completed' | 'stopped';
   currentStake: number;
   totalPnl: number;
   trades: number;
   wins: number;
   losses: number;
-  recoveryStep: number;
+  martingaleStep: number;
+  consecutiveWins: number;
+  consecutiveLosses: number;
   lastTradeResult?: 'win' | 'loss';
   
   // Market data
@@ -86,7 +89,6 @@ interface AutoBot {
   
   // UI
   expanded: boolean;
-  showSettings: boolean;
 }
 
 interface TradeLog {
@@ -99,7 +101,8 @@ interface TradeLog {
   stake: number;
   result: 'win' | 'loss' | 'pending';
   profit: number;
-  recoveryStep: number;
+  martingaleStep: number;
+  digit?: number;
 }
 
 // ==================== CONSTANTS ====================
@@ -134,125 +137,104 @@ const VOLATILITY_MARKETS = [
   { value: 'JB100', label: 'Jump Bear 100', icon: '🐻', group: 'Jump' }
 ];
 
-const CONDITION_CONFIG = {
+const CONDITION_STYLES = {
   LOW_012: {
     name: 'Low 0-1-2 Bot',
-    color: 'border-green-500 bg-green-500/5',
-    badge: 'bg-green-500/20 text-green-500',
+    border: 'border-emerald-500',
+    bg: 'bg-emerald-500/5',
+    badge: 'bg-emerald-500/20 text-emerald-500',
     icon: <TrendingDown className="w-4 h-4" />,
-    entryType: 'digit',
-    contractType: 'DIGITMATCH'
+    gradient: 'from-emerald-500/20 to-transparent'
   },
   LOW_789: {
     name: 'Low 7-8-9 Bot',
-    color: 'border-blue-500 bg-blue-500/5',
+    border: 'border-blue-500',
+    bg: 'bg-blue-500/5',
     badge: 'bg-blue-500/20 text-blue-500',
     icon: <TrendingUp className="w-4 h-4" />,
-    entryType: 'digit',
-    contractType: 'DIGITMATCH'
+    gradient: 'from-blue-500/20 to-transparent'
   },
   EVEN_55: {
     name: 'Even Dominant Bot',
-    color: 'border-purple-500 bg-purple-500/5',
+    border: 'border-purple-500',
+    bg: 'bg-purple-500/5',
     badge: 'bg-purple-500/20 text-purple-500',
     icon: <CircleDot className="w-4 h-4" />,
-    entryType: 'even',
-    contractType: 'DIGITEVEN'
+    gradient: 'from-purple-500/20 to-transparent'
   },
   ODD_4: {
     name: 'Odd with 4 Focus Bot',
-    color: 'border-orange-500 bg-orange-500/5',
+    border: 'border-orange-500',
+    bg: 'bg-orange-500/5',
     badge: 'bg-orange-500/20 text-orange-500',
     icon: <Hash className="w-4 h-4" />,
-    entryType: 'odd',
-    contractType: 'DIGITODD'
+    gradient: 'from-orange-500/20 to-transparent'
   }
 };
 
 // ==================== HELPER FUNCTIONS ====================
 
-const analyzeMarketDigits = (ticks: number[]): MarketAnalysis => {
-  if (ticks.length === 0) {
+const analyzeMarketFast = (ticks: number[]): MarketAnalysis => {
+  if (ticks.length < 100) {
     return {
-      symbol: '',
-      digits: {
-        count0: 0, count1: 0, count2: 0, count3: 0, count4: 0,
-        count5: 0, count6: 0, count7: 0, count8: 0, count9: 0
-      },
+      condition: 'NONE',
+      confidence: 0,
       percentages: {
         p0: 0, p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, p6: 0, p7: 0, p8: 0, p9: 0,
         low012: 0, high789: 0, even: 0, odd: 0
       },
       mostFrequent: 0,
       leastFrequent: 0,
-      condition: 'NONE',
-      confidence: 0,
       recommendedEntry: 0,
-      lastUpdated: new Date()
+      digit4Frequency: 0
     };
   }
 
   const last1000 = ticks.slice(-1000);
   const total = last1000.length;
   
-  // Initialize counters
-  const counts = {
-    count0: 0, count1: 0, count2: 0, count3: 0, count4: 0,
-    count5: 0, count6: 0, count7: 0, count8: 0, count9: 0
-  };
+  // Fast counting using array
+  const counts = new Array(10).fill(0);
   
-  // Count digits
   last1000.forEach(tick => {
     const digit = Math.floor(tick % 10);
-    switch(digit) {
-      case 0: counts.count0++; break;
-      case 1: counts.count1++; break;
-      case 2: counts.count2++; break;
-      case 3: counts.count3++; break;
-      case 4: counts.count4++; break;
-      case 5: counts.count5++; break;
-      case 6: counts.count6++; break;
-      case 7: counts.count7++; break;
-      case 8: counts.count8++; break;
-      case 9: counts.count9++; break;
-    }
+    counts[digit]++;
   });
   
   // Calculate percentages
   const percentages = {
-    p0: (counts.count0 / total) * 100,
-    p1: (counts.count1 / total) * 100,
-    p2: (counts.count2 / total) * 100,
-    p3: (counts.count3 / total) * 100,
-    p4: (counts.count4 / total) * 100,
-    p5: (counts.count5 / total) * 100,
-    p6: (counts.count6 / total) * 100,
-    p7: (counts.count7 / total) * 100,
-    p8: (counts.count8 / total) * 100,
-    p9: (counts.count9 / total) * 100,
-    low012: ((counts.count0 + counts.count1 + counts.count2) / total) * 100,
-    high789: ((counts.count7 + counts.count8 + counts.count9) / total) * 100,
-    even: ((counts.count0 + counts.count2 + counts.count4 + counts.count6 + counts.count8) / total) * 100,
-    odd: ((counts.count1 + counts.count3 + counts.count5 + counts.count7 + counts.count9) / total) * 100
+    p0: (counts[0] / total) * 100,
+    p1: (counts[1] / total) * 100,
+    p2: (counts[2] / total) * 100,
+    p3: (counts[3] / total) * 100,
+    p4: (counts[4] / total) * 100,
+    p5: (counts[5] / total) * 100,
+    p6: (counts[6] / total) * 100,
+    p7: (counts[7] / total) * 100,
+    p8: (counts[8] / total) * 100,
+    p9: (counts[9] / total) * 100,
+    low012: ((counts[0] + counts[1] + counts[2]) / total) * 100,
+    high789: ((counts[7] + counts[8] + counts[9]) / total) * 100,
+    even: ((counts[0] + counts[2] + counts[4] + counts[6] + counts[8]) / total) * 100,
+    odd: ((counts[1] + counts[3] + counts[5] + counts[7] + counts[9]) / total) * 100
   };
   
   // Find most/least frequent
-  const countsArray = [
-    { digit: 0, count: counts.count0 },
-    { digit: 1, count: counts.count1 },
-    { digit: 2, count: counts.count2 },
-    { digit: 3, count: counts.count3 },
-    { digit: 4, count: counts.count4 },
-    { digit: 5, count: counts.count5 },
-    { digit: 6, count: counts.count6 },
-    { digit: 7, count: counts.count7 },
-    { digit: 8, count: counts.count8 },
-    { digit: 9, count: counts.count9 }
-  ];
+  let mostFrequent = 0;
+  let leastFrequent = 0;
+  let maxCount = 0;
+  let minCount = total;
   
-  countsArray.sort((a, b) => b.count - a.count);
-  const mostFrequent = countsArray[0].digit;
-  const leastFrequent = countsArray[9].digit;
+  for (let i = 0; i <= 9; i++) {
+    if (counts[i] > maxCount) {
+      maxCount = counts[i];
+      mostFrequent = i;
+    }
+    if (counts[i] < minCount) {
+      minCount = counts[i];
+      leastFrequent = i;
+    }
+  }
   
   // Determine condition
   let condition: 'LOW_012' | 'LOW_789' | 'EVEN_55' | 'ODD_4' | 'NONE' = 'NONE';
@@ -261,48 +243,94 @@ const analyzeMarketDigits = (ticks: number[]): MarketAnalysis => {
   
   if (percentages.low012 < 10) {
     condition = 'LOW_012';
-    confidence = Math.max(0, 100 - percentages.low012 * 2);
-    // Recommend most frequent among 0,1,2
-    const lowDigits = countsArray.filter(d => d.digit <= 2);
-    recommendedEntry = lowDigits[0]?.digit || 0;
+    confidence = 100 - percentages.low012 * 2;
+    // Recommend most frequent among low digits
+    const lowDigits = [0,1,2];
+    let bestLow = 0;
+    let bestLowCount = 0;
+    lowDigits.forEach(d => {
+      if (counts[d] > bestLowCount) {
+        bestLowCount = counts[d];
+        bestLow = d;
+      }
+    });
+    recommendedEntry = bestLow;
   }
   else if (percentages.high789 < 10) {
     condition = 'LOW_789';
-    confidence = Math.max(0, 100 - percentages.high789 * 2);
-    // Recommend most frequent among 7,8,9
-    const highDigits = countsArray.filter(d => d.digit >= 7);
-    recommendedEntry = highDigits[0]?.digit || 7;
+    confidence = 100 - percentages.high789 * 2;
+    // Recommend most frequent among high digits
+    const highDigits = [7,8,9];
+    let bestHigh = 7;
+    let bestHighCount = 0;
+    highDigits.forEach(d => {
+      if (counts[d] > bestHighCount) {
+        bestHighCount = counts[d];
+        bestHigh = d;
+      }
+    });
+    recommendedEntry = bestHigh;
   }
   else if (percentages.even > 55) {
     condition = 'EVEN_55';
     confidence = percentages.even;
     recommendedEntry = 'EVEN';
   }
-  else if (percentages.odd > 55 && counts.count4 > (total / 10) * 1.2) {
+  else if (percentages.odd > 55 && counts[4] > total / 12) { // Digit 4 appears more than average
     condition = 'ODD_4';
     confidence = percentages.odd;
     recommendedEntry = 4;
   }
   
   return {
-    symbol: '',
-    digits: counts,
+    condition,
+    confidence,
     percentages,
     mostFrequent,
     leastFrequent,
-    condition,
-    confidence,
     recommendedEntry,
-    lastUpdated: new Date()
+    digit4Frequency: (counts[4] / total) * 100
   };
 };
 
-const waitForNextTick = (symbol: string): Promise<{ quote: number; epoch: number }> => {
+// Fast parallel market data fetcher
+const fetchMarketDataParallel = async (markets: string[], timeoutMs = 15000): Promise<Record<string, number[]>> => {
+  const results: Record<string, number[]> = {};
+  
+  const fetchPromises = markets.map(async (market) => {
+    try {
+      // Get tick history directly (faster than subscribing)
+      const history = await derivApi.getTickHistory(market, 1000);
+      if (history && history.length > 0) {
+        const ticks = history.map((t: any) => t.quote);
+        results[market] = ticks;
+      }
+    } catch (error) {
+      console.error(`Error fetching ${market}:`, error);
+    }
+  });
+  
+  // Wait for all fetches with timeout
+  await Promise.race([
+    Promise.all(fetchPromises),
+    new Promise(resolve => setTimeout(resolve, timeoutMs))
+  ]);
+  
+  return results;
+};
+
+const waitForNextTick = (symbol: string): Promise<number> => {
   return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      unsub();
+      resolve(0);
+    }, 5000);
+    
     const unsub = derivApi.onMessage((data: any) => {
       if (data.tick && data.tick.symbol === symbol) {
+        clearTimeout(timeout);
         unsub();
-        resolve({ quote: data.tick.quote, epoch: data.tick.epoch });
+        resolve(data.tick.quote);
       }
     });
   });
@@ -318,189 +346,209 @@ const formatPercentage = (value: number): string => {
 
 // ==================== MAIN COMPONENT ====================
 
-export default function AutoBotGenerator() {
+export default function FastBotGenerator() {
   const { isAuthorized, balance } = useAuth();
   
   // ==================== STATE ====================
   
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
-  const [currentScanMarket, setCurrentScanMarket] = useState('');
+  const [scanTimer, setScanTimer] = useState(20);
+  const [marketsScanned, setMarketsScanned] = useState(0);
   const [lastScanTime, setLastScanTime] = useState<Date | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
   
-  const [marketTicks, setMarketTicks] = useState<MarketDigits>({});
-  const [marketAnalyses, setMarketAnalyses] = useState<Record<string, MarketAnalysis>>({});
-  const [autoBots, setAutoBots] = useState<AutoBot[]>([]);
+  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
+  const [bots, setBots] = useState<BotConfig[]>([]);
   const [tradeLogs, setTradeLogs] = useState<TradeLog[]>([]);
   
-  const [globalStake, setGlobalStake] = useState(1.00);
-  const [globalTakeProfit, setGlobalTakeProfit] = useState(10);
-  const [globalStopLoss, setGlobalStopLoss] = useState(25);
-  
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
+  
+  // User configurable global defaults
+  const [defaultStake, setDefaultStake] = useState(1.00);
+  const [defaultDuration, setDefaultDuration] = useState(5); // ticks
+  const [defaultTakeProfit, setDefaultTakeProfit] = useState(10);
+  const [defaultStopLoss, setDefaultStopLoss] = useState(25);
+  const [defaultMartingaleMultiplier, setDefaultMartingaleMultiplier] = useState(2.0);
+  const [defaultMaxMartingaleSteps, setDefaultMaxMartingaleSteps] = useState(3);
   
   // Refs
   const botRunningRefs = useRef<Record<string, boolean>>({});
-  const scanIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const marketDataRef = useRef<MarketDigits>({});
+  const scanTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const marketCacheRef = useRef<Record<string, number[]>>({});
 
-  // ==================== AUTO SCAN ON LOAD ====================
+  // ==================== FAST SCAN (UNDER 20 SECONDS) ====================
   
-  useEffect(() => {
-    // Auto-scan on page load
-    scanAllMarkets();
-    
-    // Set up auto-scan every 5 minutes
-    scanIntervalRef.current = setInterval(() => {
-      scanAllMarkets();
-    }, 300000); // 5 minutes
-    
-    return () => {
-      if (scanIntervalRef.current) {
-        clearInterval(scanIntervalRef.current);
-      }
-    };
-  }, []);
-
-  // ==================== SCAN ALL MARKETS ====================
-  
-  const scanAllMarkets = useCallback(async () => {
+  const scanAllMarketsFast = useCallback(async () => {
     if (isScanning) return;
     
     setIsScanning(true);
     setScanProgress(0);
+    setScanTimer(20);
+    setMarketsScanned(0);
     
     const markets = VOLATILITY_MARKETS.map(m => m.value);
     const totalMarkets = markets.length;
-    const newAnalyses: Record<string, MarketAnalysis> = {};
+    
+    // Start countdown timer
+    if (scanTimerRef.current) clearInterval(scanTimerRef.current);
+    scanTimerRef.current = setInterval(() => {
+      setScanTimer(prev => {
+        if (prev <= 1) {
+          clearInterval(scanTimerRef.current!);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
     
     try {
-      // Connect to Deriv API
-      await derivApi.connect();
+      toast.info(`🚀 Fast scanning ${totalMarkets} markets...`);
       
-      for (let i = 0; i < markets.length; i++) {
-        const market = markets[i];
-        setCurrentScanMarket(market);
-        setScanProgress(Math.round(((i + 1) / totalMarkets) * 100));
-        
-        try {
-          // Subscribe to ticks
-          await derivApi.subscribeTicks(market);
+      // Fetch all markets in parallel
+      const startTime = Date.now();
+      const fetchedData = await fetchMarketDataParallel(markets, 15000);
+      const elapsed = Date.now() - startTime;
+      
+      // Update cache
+      Object.assign(marketCacheRef.current, fetchedData);
+      
+      // Process each market
+      const newMarketData: Record<string, MarketData> = {};
+      const processedMarkets = Object.keys(fetchedData).length;
+      
+      setMarketsScanned(processedMarkets);
+      setScanProgress(Math.round((processedMarkets / totalMarkets) * 100));
+      
+      for (const [market, ticks] of Object.entries(fetchedData)) {
+        if (ticks.length >= 100) {
+          // Extract digits
+          const digits = ticks.map(t => Math.floor(t % 10));
           
-          // Wait to collect 1000 ticks
-          let ticks: number[] = [];
-          let tickCount = 0;
+          // Fast analysis
+          const analysis = analyzeMarketFast(ticks);
           
-          while (ticks.length < 1000 && tickCount < 1200) {
-            await new Promise(r => setTimeout(r, 100));
-            const history = await derivApi.getTickHistory(market, 1000);
-            if (history && history.length > 0) {
-              ticks = history.map((t: any) => t.quote);
-            }
-            tickCount++;
+          newMarketData[market] = {
+            symbol: market,
+            ticks,
+            digits,
+            analysis,
+            fetchedAt: new Date()
+          };
+          
+          // Auto-create bot if condition met with good confidence
+          if (analysis.condition !== 'NONE' && analysis.confidence > 65) {
+            createBotFromMarket(market, analysis);
           }
-          
-          if (ticks.length >= 100) {
-            marketDataRef.current[market] = ticks;
-            setMarketTicks(prev => ({ ...prev, [market]: ticks }));
-            
-            // Analyze market
-            const analysis = analyzeMarketDigits(ticks);
-            analysis.symbol = market;
-            newAnalyses[market] = analysis;
-            
-            // Auto-create bot if condition met
-            if (analysis.condition !== 'NONE' && analysis.confidence > 70) {
-              createBotFromAnalysis(market, analysis);
-            }
-          }
-          
-          // Unsubscribe
-          await derivApi.unsubscribeTicks(market);
-          
-        } catch (error) {
-          console.error(`Error scanning ${market}:`, error);
         }
       }
       
-      setMarketAnalyses(prev => ({ ...prev, ...newAnalyses }));
+      setMarketData(prev => ({ ...prev, ...newMarketData }));
       setLastScanTime(new Date());
       
       // Remove bots for markets that no longer qualify
-      setAutoBots(prev => prev.filter(bot => {
-        const analysis = newAnalyses[bot.market];
-        return analysis && analysis.condition === bot.condition && analysis.confidence > 70;
+      setBots(prev => prev.filter(bot => {
+        const data = newMarketData[bot.market];
+        return data && data.analysis.condition === bot.condition && data.analysis.confidence > 65;
       }));
+      
+      const qualifyingCount = Object.values(newMarketData).filter(d => d.analysis.condition !== 'NONE').length;
       
       if (soundEnabled) {
         playSound('success');
       }
       
-      toast.success(`✅ Scanned ${totalMarkets} markets, ${Object.keys(newAnalyses).filter(m => newAnalyses[m].condition !== 'NONE').length} conditions met`);
+      toast.success(`✅ Scan complete in ${(elapsed / 1000).toFixed(1)}s! ${qualifyingCount} qualifying markets found`);
       
     } catch (error) {
       console.error('Scan error:', error);
-      toast.error('Scan failed');
+      toast.error('Scan failed - check connection');
     } finally {
       setIsScanning(false);
-      setScanProgress(100);
-      setCurrentScanMarket('');
+      if (scanTimerRef.current) {
+        clearInterval(scanTimerRef.current);
+        scanTimerRef.current = null;
+      }
     }
   }, [isScanning, soundEnabled]);
 
-  // ==================== CREATE BOT FROM ANALYSIS ====================
+  // ==================== CREATE BOT FROM MARKET ====================
   
-  const createBotFromAnalysis = useCallback((market: string, analysis: MarketAnalysis) => {
+  const createBotFromMarket = useCallback((market: string, analysis: MarketAnalysis) => {
     // Check if bot already exists
-    const existingBot = autoBots.find(b => b.market === market && b.condition === analysis.condition);
+    const existingBot = bots.find(b => b.market === market && b.condition === analysis.condition);
     if (existingBot) return;
     
-    const config = CONDITION_CONFIG[analysis.condition];
+    const style = CONDITION_STYLES[analysis.condition];
     
-    const newBot: AutoBot = {
-      id: `bot-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    // Determine entry settings based on condition
+    let entryType: 'digit' | 'even' | 'odd' = 'digit';
+    let entryDigit: number | undefined;
+    let contractType = '';
+    
+    switch (analysis.condition) {
+      case 'LOW_012':
+        entryType = 'digit';
+        entryDigit = typeof analysis.recommendedEntry === 'number' ? analysis.recommendedEntry : 0;
+        contractType = 'DIGITMATCH';
+        break;
+      case 'LOW_789':
+        entryType = 'digit';
+        entryDigit = typeof analysis.recommendedEntry === 'number' ? analysis.recommendedEntry : 7;
+        contractType = 'DIGITMATCH';
+        break;
+      case 'EVEN_55':
+        entryType = 'even';
+        contractType = 'DIGITEVEN';
+        break;
+      case 'ODD_4':
+        entryType = 'odd';
+        entryDigit = 4;
+        contractType = 'DIGITODD';
+        break;
+    }
+    
+    const newBot: BotConfig = {
+      id: `bot-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       market,
-      name: `${market} - ${config.name}`,
+      name: `${market} - ${style.name}`,
       condition: analysis.condition,
-      entryType: config.entryType as 'digit' | 'even' | 'odd',
-      entryDigit: typeof analysis.recommendedEntry === 'number' ? analysis.recommendedEntry : undefined,
-      contractType: config.contractType,
-      duration: 5,
+      
+      entryType,
+      entryDigit,
+      contractType,
       
       // User configurable
-      stake: globalStake,
-      takeProfit: globalTakeProfit,
-      stopLoss: globalStopLoss,
+      stake: defaultStake,
+      duration: defaultDuration,
+      takeProfit: defaultTakeProfit,
+      stopLoss: defaultStopLoss,
       
-      // Fixed recovery settings
-      recoveryMultiplier: 2,
-      maxRecoverySteps: 3,
+      // Martingale settings
+      martingaleMultiplier: defaultMartingaleMultiplier,
+      maxMartingaleSteps: defaultMaxMartingaleSteps,
       
       // Bot state
       isRunning: false,
       status: 'idle',
-      currentRun: 0,
-      currentStake: globalStake,
+      currentStake: defaultStake,
       totalPnl: 0,
       trades: 0,
       wins: 0,
       losses: 0,
-      recoveryStep: 0,
+      martingaleStep: 0,
+      consecutiveWins: 0,
+      consecutiveLosses: 0,
       
-      // Market data
       analysis,
       
-      // UI
-      expanded: true,
-      showSettings: false
+      expanded: true
     };
     
-    setAutoBots(prev => [...prev, newBot]);
+    setBots(prev => [...prev, newBot]);
     
     toast.success(`🤖 Auto-created ${newBot.name}`);
-  }, [autoBots, globalStake, globalTakeProfit, globalStopLoss]);
+  }, [bots, defaultStake, defaultDuration, defaultTakeProfit, defaultStopLoss, defaultMartingaleMultiplier, defaultMaxMartingaleSteps]);
 
   // ==================== PLAY SOUND ====================
   
@@ -541,10 +589,10 @@ export default function AutoBotGenerator() {
     }
   };
 
-  // ==================== RUN BOT ====================
+  // ==================== RUN BOT WITH MARTINGALE ====================
   
   const runBot = useCallback(async (botId: string) => {
-    const bot = autoBots.find(b => b.id === botId);
+    const bot = bots.find(b => b.id === botId);
     if (!bot || !isAuthorized) return;
     
     // Check balance
@@ -554,11 +602,11 @@ export default function AutoBotGenerator() {
       return;
     }
     
-    setAutoBots(prev => prev.map(b => 
+    setBots(prev => prev.map(b => 
       b.id === botId ? { 
         ...b, 
         isRunning: true, 
-        status: 'trading',
+        status: 'watching',
         currentStake: bot.stake
       } : b
     ));
@@ -570,46 +618,45 @@ export default function AutoBotGenerator() {
     let trades = bot.trades;
     let wins = bot.wins;
     let losses = bot.losses;
-    let currentRun = 0;
-    let recoveryStep = 0;
-    let inRecovery = false;
+    let martingaleStep = 0;
+    let inMartingale = false;
     
-    while (botRunningRefs.current[botId] && currentRun < 3) {
+    while (botRunningRefs.current[botId]) {
       // Check TP/SL
-      if (totalPnl <= -bot.stopLoss) {
-        toast.error(`${bot.name}: Stop Loss reached!`);
+      if (totalPnl >= bot.takeProfit) {
+        toast.success(`${bot.name}: Take Profit reached! +${formatCurrency(totalPnl)}`);
         break;
       }
-      if (totalPnl >= bot.takeProfit) {
-        toast.success(`${bot.name}: Take Profit reached!`);
+      if (totalPnl <= -bot.stopLoss) {
+        toast.error(`${bot.name}: Stop Loss reached! ${formatCurrency(totalPnl)}`);
         break;
       }
       
       // Wait for next tick
+      const tick = await waitForNextTick(bot.market);
+      if (tick === 0) continue;
+      
+      const currentDigit = Math.floor(tick % 10);
+      
+      // Check entry condition
+      let shouldEnter = false;
+      
+      if (bot.entryType === 'digit' && bot.entryDigit !== undefined) {
+        shouldEnter = currentDigit === bot.entryDigit;
+      } else if (bot.entryType === 'even') {
+        shouldEnter = currentDigit % 2 === 0;
+      } else if (bot.entryType === 'odd') {
+        shouldEnter = currentDigit % 2 === 1;
+      }
+      
+      setBots(prev => prev.map(b => 
+        b.id === botId ? { ...b, status: shouldEnter ? 'trading' : 'watching' } : b
+      ));
+      
+      if (!shouldEnter) continue;
+      
+      // Execute trade
       try {
-        await waitForNextTick(bot.market);
-        
-        // Check entry condition
-        const currentTick = marketDataRef.current[bot.market]?.slice(-1)[0];
-        if (!currentTick) continue;
-        
-        const currentDigit = Math.floor(currentTick % 10);
-        let shouldEnter = false;
-        
-        if (bot.entryType === 'digit' && bot.entryDigit !== undefined) {
-          shouldEnter = currentDigit === bot.entryDigit;
-        } else if (bot.entryType === 'even') {
-          shouldEnter = currentDigit % 2 === 0;
-        } else if (bot.entryType === 'odd') {
-          shouldEnter = currentDigit % 2 === 1;
-        }
-        
-        if (!shouldEnter) {
-          await new Promise(r => setTimeout(r, 100));
-          continue;
-        }
-        
-        // Execute trade
         const params: any = {
           contract_type: bot.contractType,
           symbol: bot.market,
@@ -623,10 +670,10 @@ export default function AutoBotGenerator() {
           params.barrier = bot.entryDigit.toString();
         }
         
-        const tradeId = `${botId}-${Date.now()}`;
+        const tradeId = `${botId}-${Date.now()}-${trades + 1}`;
         setActiveTradeId(tradeId);
         
-        // Add to trade log
+        // Log trade start
         const newTrade: TradeLog = {
           id: tradeId,
           timestamp: new Date(),
@@ -637,7 +684,8 @@ export default function AutoBotGenerator() {
           stake: currentStake,
           result: 'pending',
           profit: 0,
-          recoveryStep: inRecovery ? recoveryStep : 0
+          martingaleStep: inMartingale ? martingaleStep : 0,
+          digit: currentDigit
         };
         
         setTradeLogs(prev => [newTrade, ...prev].slice(0, 100));
@@ -660,45 +708,42 @@ export default function AutoBotGenerator() {
         
         if (won) {
           wins++;
-          if (inRecovery) {
-            // Recovery successful - stop bot
-            toast.success(`${bot.name}: Recovery successful! Stopping bot.`);
+          
+          if (inMartingale) {
+            // Martingale successful - reset and stop
+            toast.success(`${bot.name}: Martingale successful! Stopping bot.`);
             botRunningRefs.current[botId] = false;
             break;
           } else {
-            // Win on normal run - move to next run or stop
-            currentRun++;
-            currentStake = bot.stake; // Reset stake
-            inRecovery = false;
-            recoveryStep = 0;
-            
-            // Stop after any win (as per rules)
-            if (currentRun < 3) {
-              toast.success(`${bot.name}: Won on run ${currentRun}/3! Stopping bot.`);
-              botRunningRefs.current[botId] = false;
-              break;
-            }
+            // Normal win - stop bot immediately (as per rules)
+            toast.success(`${bot.name}: Won! Stopping bot.`);
+            botRunningRefs.current[botId] = false;
+            break;
           }
         } else {
           losses++;
           
-          if (!inRecovery) {
-            // First loss - start recovery
-            inRecovery = true;
-            recoveryStep = 1;
-            currentStake = bot.stake * bot.recoveryMultiplier;
+          if (!inMartingale) {
+            // First loss - start martingale
+            inMartingale = true;
+            martingaleStep = 1;
+            currentStake = bot.stake * bot.martingaleMultiplier;
             
-            setAutoBots(prev => prev.map(b => 
-              b.id === botId ? { ...b, status: 'recovery' } : b
+            setBots(prev => prev.map(b => 
+              b.id === botId ? { ...b, status: 'martingale' } : b
             ));
+            
+            toast.info(`${bot.name}: Loss - Starting martingale step ${martingaleStep}`);
           } else {
-            // Recovery loss - increase stake
-            recoveryStep++;
-            if (recoveryStep <= bot.maxRecoverySteps) {
-              currentStake = bot.stake * Math.pow(bot.recoveryMultiplier, recoveryStep);
+            // Martingale loss - increase stake
+            martingaleStep++;
+            
+            if (martingaleStep <= bot.maxMartingaleSteps) {
+              currentStake = bot.stake * Math.pow(bot.martingaleMultiplier, martingaleStep);
+              toast.info(`${bot.name}: Martingale step ${martingaleStep} - Stake: ${formatCurrency(currentStake)}`);
             } else {
-              // Max recovery steps reached - stop bot
-              toast.error(`${bot.name}: Max recovery steps reached. Stopping bot.`);
+              // Max martingale steps reached
+              toast.error(`${bot.name}: Max martingale steps reached. Stopping bot.`);
               botRunningRefs.current[botId] = false;
               break;
             }
@@ -708,7 +753,7 @@ export default function AutoBotGenerator() {
         setActiveTradeId(null);
         
         // Update bot state
-        setAutoBots(prev => prev.map(b => 
+        setBots(prev => prev.map(b => 
           b.id === botId ? {
             ...b,
             totalPnl,
@@ -716,23 +761,29 @@ export default function AutoBotGenerator() {
             wins,
             losses,
             currentStake,
-            currentRun,
-            recoveryStep,
+            martingaleStep: inMartingale ? martingaleStep : 0,
             lastTradeResult: won ? 'win' : 'loss'
           } : b
         ));
         
-        await new Promise(r => setTimeout(r, 500));
+        // Small delay between trades
+        await new Promise(r => setTimeout(r, 300));
         
       } catch (err: any) {
         setActiveTradeId(null);
         console.error('Trade error:', err);
+        
+        if (err.message?.includes('Insufficient balance')) {
+          toast.error(`Insufficient balance for ${bot.name}`);
+          break;
+        }
+        
         await new Promise(r => setTimeout(r, 2000));
       }
     }
     
     // Bot stopped
-    setAutoBots(prev => prev.map(b => 
+    setBots(prev => prev.map(b => 
       b.id === botId ? {
         ...b,
         isRunning: false,
@@ -741,12 +792,12 @@ export default function AutoBotGenerator() {
     ));
     
     botRunningRefs.current[botId] = false;
-  }, [isAuthorized, balance, autoBots]);
+  }, [isAuthorized, balance, bots]);
 
   // ==================== BOT CONTROLS ====================
   
   const startBot = (botId: string) => {
-    const bot = autoBots.find(b => b.id === botId);
+    const bot = bots.find(b => b.id === botId);
     if (!bot || bot.isRunning) return;
     
     runBot(botId);
@@ -755,7 +806,7 @@ export default function AutoBotGenerator() {
   const stopBot = (botId: string) => {
     botRunningRefs.current[botId] = false;
     
-    setAutoBots(prev => prev.map(b => 
+    setBots(prev => prev.map(b => 
       b.id === botId ? {
         ...b,
         isRunning: false,
@@ -765,11 +816,11 @@ export default function AutoBotGenerator() {
   };
   
   const stopAllBots = () => {
-    autoBots.forEach(bot => {
+    bots.forEach(bot => {
       botRunningRefs.current[bot.id] = false;
     });
     
-    setAutoBots(prev => prev.map(b => ({
+    setBots(prev => prev.map(b => ({
       ...b,
       isRunning: false,
       status: 'stopped'
@@ -778,49 +829,44 @@ export default function AutoBotGenerator() {
   
   const removeBot = (botId: string) => {
     stopBot(botId);
-    setAutoBots(prev => prev.filter(b => b.id !== botId));
+    setBots(prev => prev.filter(b => b.id !== botId));
   };
   
-  const updateBotStake = (botId: string, stake: number) => {
-    setAutoBots(prev => prev.map(b => 
-      b.id === botId ? { ...b, stake, currentStake: stake } : b
-    ));
-  };
-  
-  const updateBotTP = (botId: string, takeProfit: number) => {
-    setAutoBots(prev => prev.map(b => 
-      b.id === botId ? { ...b, takeProfit } : b
-    ));
-  };
-  
-  const updateBotSL = (botId: string, stopLoss: number) => {
-    setAutoBots(prev => prev.map(b => 
-      b.id === botId ? { ...b, stopLoss } : b
+  const updateBotSetting = (botId: string, key: keyof BotConfig, value: any) => {
+    setBots(prev => prev.map(b => 
+      b.id === botId ? { ...b, [key]: value } : b
     ));
   };
 
   // ==================== CALCULATE STATS ====================
   
-  const totalProfit = autoBots.reduce((sum, bot) => sum + bot.totalPnl, 0);
-  const totalTrades = autoBots.reduce((sum, bot) => sum + bot.trades, 0);
-  const totalWins = autoBots.reduce((sum, bot) => sum + bot.wins, 0);
+  const totalProfit = bots.reduce((sum, bot) => sum + bot.totalPnl, 0);
+  const totalTrades = bots.reduce((sum, bot) => sum + bot.trades, 0);
+  const totalWins = bots.reduce((sum, bot) => sum + bot.wins, 0);
   const winRate = totalTrades > 0 ? (totalWins / totalTrades) * 100 : 0;
-  const activeBots = autoBots.filter(b => b.isRunning).length;
-  const qualifyingMarkets = Object.values(marketAnalyses).filter(a => a.condition !== 'NONE').length;
+  const activeBots = bots.filter(b => b.isRunning).length;
+  const qualifyingMarkets = Object.values(marketData).filter(d => d.analysis.condition !== 'NONE').length;
+
+  // Auto-scan on load
+  useEffect(() => {
+    scanAllMarketsFast();
+  }, []);
 
   return (
-    <div className="min-h-screen bg-background p-2 sm:p-4">
-      {/* Header */}
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-secondary/20 p-2 sm:p-4">
+      {/* Header with Fast Scan Indicator */}
       <div className="mb-4 space-y-3">
-        <Card className="border-2 shadow-lg">
+        <Card className="border-2 shadow-xl bg-card/50 backdrop-blur-sm">
           <CardHeader className="p-3 sm:p-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Brain className="w-5 h-5 text-primary" />
+                <div className="p-2 rounded-lg bg-primary/10">
+                  <Rocket className="w-5 h-5 text-primary" />
+                </div>
                 <div>
-                  <CardTitle className="text-base sm:text-lg">Auto Bot Generator - Deriv Volatilities</CardTitle>
+                  <CardTitle className="text-base sm:text-lg">Fast Bot Generator - 20s Scan</CardTitle>
                   <CardDescription className="text-xs">
-                    Automatically creates bots when market conditions are met
+                    Parallel market scanning • Auto bot creation • Martingale recovery
                   </CardDescription>
                 </div>
               </div>
@@ -836,33 +882,23 @@ export default function AutoBotGenerator() {
                   {soundEnabled ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
                 </Button>
                 
-                {/* Settings Toggle */}
+                {/* Fast Scan Button with Timer */}
                 <Button
-                  variant="ghost"
+                  variant={isScanning ? "secondary" : "default"}
                   size="sm"
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="h-7 w-7 p-0"
-                >
-                  <Settings className="w-3 h-3" />
-                </Button>
-                
-                {/* Manual Scan Button */}
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={scanAllMarkets}
+                  onClick={scanAllMarketsFast}
                   disabled={isScanning}
-                  className="h-7 text-xs px-2"
+                  className="h-7 text-xs px-2 min-w-[90px]"
                 >
                   {isScanning ? (
                     <>
                       <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                      Scanning
+                      {scanTimer}s
                     </>
                   ) : (
                     <>
-                      <Scan className="w-3 h-3 mr-1" />
-                      Scan Now
+                      <Zap className="w-3 h-3 mr-1" />
+                      Fast Scan
                     </>
                   )}
                 </Button>
@@ -883,125 +919,161 @@ export default function AutoBotGenerator() {
             
             {/* Scan Progress */}
             {isScanning && (
-              <div className="mt-2">
-                <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                  <span>Scanning {currentScanMarket}...</span>
-                  <span>{scanProgress}%</span>
+              <div className="mt-2 space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Scanning {marketsScanned}/{VOLATILITY_MARKETS.length} markets</span>
+                  <span className="font-medium text-primary">{scanProgress}%</span>
                 </div>
-                <Progress value={scanProgress} className="h-1" />
+                <Progress value={scanProgress} className="h-1.5" />
+                <p className="text-[10px] text-muted-foreground">
+                  Fetching 1000 ticks in parallel... Target: 20s
+                </p>
               </div>
             )}
             
-            {/* Last Scan Time */}
+            {/* Last Scan Info */}
             {lastScanTime && !isScanning && (
-              <div className="text-xs text-muted-foreground mt-1">
-                Last scan: {lastScanTime.toLocaleTimeString()}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                <Clock className="w-3 h-3" />
+                <span>Last scan: {lastScanTime.toLocaleTimeString()}</span>
+                <span>•</span>
+                <span>{qualifyingMarkets} qualifying markets</span>
+                <span>•</span>
+                <span>{bots.length} bots generated</span>
               </div>
             )}
           </CardHeader>
           
-          {/* Statistics Panel */}
+          {/* Global Settings - All User Configurable */}
           <CardContent className="p-3 pt-0">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Balance</div>
-                <div className="font-bold text-sm">{formatCurrency(balance || 0)}</div>
+            <Separator className="mb-3" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+              <div>
+                <Label className="text-[10px]">Stake ($)</Label>
+                <Input
+                  type="number"
+                  value={defaultStake}
+                  onChange={(e) => setDefaultStake(parseFloat(e.target.value) || 0.1)}
+                  className="h-7 text-xs"
+                  step="0.1"
+                  min="0.1"
+                />
               </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Total P&L</div>
-                <div className={`font-bold text-sm ${totalProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                  {formatCurrency(totalProfit)}
-                </div>
+              <div>
+                <Label className="text-[10px]">Duration (ticks)</Label>
+                <Input
+                  type="number"
+                  value={defaultDuration}
+                  onChange={(e) => setDefaultDuration(parseInt(e.target.value) || 1)}
+                  className="h-7 text-xs"
+                  min="1"
+                  max="10"
+                />
               </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Win Rate</div>
-                <div className="font-bold text-sm">{formatPercentage(winRate)}</div>
+              <div>
+                <Label className="text-[10px]">Take Profit ($)</Label>
+                <Input
+                  type="number"
+                  value={defaultTakeProfit}
+                  onChange={(e) => setDefaultTakeProfit(parseFloat(e.target.value) || 0)}
+                  className="h-7 text-xs"
+                  step="5"
+                />
               </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Trades</div>
-                <div className="font-bold text-sm">{totalTrades}</div>
+              <div>
+                <Label className="text-[10px]">Stop Loss ($)</Label>
+                <Input
+                  type="number"
+                  value={defaultStopLoss}
+                  onChange={(e) => setDefaultStopLoss(parseFloat(e.target.value) || 0)}
+                  className="h-7 text-xs"
+                  step="5"
+                />
               </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Markets Scanned</div>
-                <div className="font-bold text-sm">{Object.keys(marketAnalyses).length}/{VOLATILITY_MARKETS.length}</div>
+              <div>
+                <Label className="text-[10px]">Martingale Multiplier</Label>
+                <Input
+                  type="number"
+                  value={defaultMartingaleMultiplier}
+                  onChange={(e) => setDefaultMartingaleMultiplier(parseFloat(e.target.value) || 1.5)}
+                  className="h-7 text-xs"
+                  step="0.1"
+                  min="1.1"
+                  max="5"
+                />
               </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Qualifying</div>
-                <div className="font-bold text-sm text-green-500">{qualifyingMarkets}</div>
-              </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Bots Generated</div>
-                <div className="font-bold text-sm">{autoBots.length}</div>
-              </div>
-              <div className="bg-muted/30 rounded-lg p-2">
-                <div className="text-muted-foreground">Active Trades</div>
-                <div className="font-bold text-sm">{activeBots}</div>
+              <div>
+                <Label className="text-[10px]">Max Martingale Steps</Label>
+                <Input
+                  type="number"
+                  value={defaultMaxMartingaleSteps}
+                  onChange={(e) => setDefaultMaxMartingaleSteps(parseInt(e.target.value) || 1)}
+                  className="h-7 text-xs"
+                  min="1"
+                  max="5"
+                />
               </div>
             </div>
           </CardContent>
           
-          {/* Global Settings (only stake, TP, SL) */}
-          <AnimatePresence>
-            {showSettings && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-              >
-                <CardContent className="p-3 pt-0">
-                  <Separator className="mb-3" />
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <Label className="text-xs">Default Stake ($)</Label>
-                      <Input
-                        type="number"
-                        value={globalStake}
-                        onChange={(e) => setGlobalStake(parseFloat(e.target.value) || 1)}
-                        className="h-8 text-xs"
-                        step="0.1"
-                        min="0.1"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Take Profit ($)</Label>
-                      <Input
-                        type="number"
-                        value={globalTakeProfit}
-                        onChange={(e) => setGlobalTakeProfit(parseFloat(e.target.value) || 10)}
-                        className="h-8 text-xs"
-                        step="5"
-                        min="0"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Stop Loss ($)</Label>
-                      <Input
-                        type="number"
-                        value={globalStopLoss}
-                        onChange={(e) => setGlobalStopLoss(parseFloat(e.target.value) || 25)}
-                        className="h-8 text-xs"
-                        step="5"
-                        min="0"
-                      />
-                    </div>
-                  </div>
-                </CardContent>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* Stats Bar */}
+          <CardContent className="p-3 pt-0">
+            <div className="grid grid-cols-4 sm:grid-cols-8 gap-1 text-[10px]">
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Balance</div>
+                <div className="font-bold">{formatCurrency(balance || 0)}</div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Total P&L</div>
+                <div className={`font-bold ${totalProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {formatCurrency(totalProfit)}
+                </div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Win Rate</div>
+                <div className="font-bold">{formatPercentage(winRate)}</div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Trades</div>
+                <div className="font-bold">{totalTrades}</div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Active</div>
+                <div className="font-bold text-green-500">{activeBots}</div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Bots</div>
+                <div className="font-bold">{bots.length}</div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">Qualifying</div>
+                <div className="font-bold text-primary">{qualifyingMarkets}</div>
+              </div>
+              <div className="bg-muted/30 rounded p-1">
+                <div className="text-muted-foreground">W/L</div>
+                <div className="font-bold">
+                  <span className="text-green-500">{totalWins}</span>/
+                  <span className="text-red-500">{totalTrades - totalWins}</span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
         </Card>
       </div>
       
       {/* Bot Cards Grid */}
-      {autoBots.length === 0 ? (
-        <Card className="border-2 border-dashed">
+      {bots.length === 0 ? (
+        <Card className="border-2 border-dashed bg-card/50">
           <CardContent className="p-8 text-center">
-            <Brain className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-30" />
+            <div className="relative">
+              <Rocket className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-30" />
+              <Scan className="w-8 h-8 absolute top-4 right-1/2 transform translate-x-12 text-primary animate-pulse" />
+            </div>
             <h3 className="text-lg font-medium mb-2">No Bots Generated Yet</h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              Click "Scan Now" to analyze markets and automatically create bots when conditions are met.
+            <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
+              Click "Fast Scan" to analyze all markets in under 20 seconds. Bots will be created automatically when conditions are met.
             </p>
-            <Button onClick={scanAllMarkets} disabled={isScanning}>
+            <Button onClick={scanAllMarketsFast} disabled={isScanning} size="lg">
               {isScanning ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -1009,8 +1081,8 @@ export default function AutoBotGenerator() {
                 </>
               ) : (
                 <>
-                  <Scan className="w-4 h-4 mr-2" />
-                  Start Scan
+                  <Zap className="w-4 h-4 mr-2" />
+                  Start Fast Scan
                 </>
               )}
             </Button>
@@ -1019,8 +1091,8 @@ export default function AutoBotGenerator() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           <AnimatePresence>
-            {autoBots.map(bot => {
-              const config = CONDITION_CONFIG[bot.condition];
+            {bots.map(bot => {
+              const style = CONDITION_STYLES[bot.condition];
               const marketInfo = VOLATILITY_MARKETS.find(m => m.value === bot.market);
               
               return (
@@ -1030,18 +1102,21 @@ export default function AutoBotGenerator() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.9 }}
                 >
-                  <Card className={`border-2 ${config.color}`}>
+                  <Card className={`border-2 ${style.border} ${style.bg} backdrop-blur-sm relative overflow-hidden`}>
+                    {/* Gradient Background */}
+                    <div className={`absolute inset-0 bg-gradient-to-br ${style.gradient} pointer-events-none`} />
+                    
                     {/* Bot Header */}
-                    <CardHeader className="p-3 pb-0">
+                    <CardHeader className="p-3 pb-0 relative">
                       <div className="flex items-start justify-between">
                         <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded ${config.badge}`}>
-                            {config.icon}
+                          <div className={`p-1.5 rounded-lg ${style.badge}`}>
+                            {style.icon}
                           </div>
                           <div>
                             <CardTitle className="text-sm flex items-center gap-1">
                               {marketInfo?.icon} {bot.market}
-                              <Badge className={`text-[8px] px-1 py-0 ${config.badge}`}>
+                              <Badge className={`text-[8px] px-1 py-0 ${style.badge}`}>
                                 {bot.condition.replace('_', ' ')}
                               </Badge>
                             </CardTitle>
@@ -1056,7 +1131,7 @@ export default function AutoBotGenerator() {
                             variant="ghost"
                             size="sm"
                             onClick={() => removeBot(bot.id)}
-                            className="h-6 w-6 p-0 text-red-500"
+                            className="h-6 w-6 p-0 text-red-500 hover:text-red-600"
                             disabled={bot.isRunning}
                           >
                             <XCircle className="w-3 h-3" />
@@ -1064,9 +1139,7 @@ export default function AutoBotGenerator() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => setAutoBots(prev => prev.map(b => 
-                              b.id === bot.id ? { ...b, expanded: !b.expanded } : b
-                            ))}
+                            onClick={() => updateBotSetting(bot.id, 'expanded', !bot.expanded)}
                             className="h-6 w-6 p-0"
                           >
                             {bot.expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
@@ -1076,12 +1149,12 @@ export default function AutoBotGenerator() {
                     </CardHeader>
                     
                     {/* Market Statistics */}
-                    <CardContent className="p-3">
-                      <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
+                    <CardContent className="p-3 relative">
+                      <div className="grid grid-cols-4 gap-1 text-[10px] mb-2">
                         <div>
                           <span className="text-muted-foreground">0-1-2:</span>
                           <span className={`ml-1 font-bold ${
-                            bot.analysis.percentages.low012 < 10 ? 'text-green-500' : ''
+                            bot.analysis.percentages.low012 < 10 ? 'text-emerald-500' : ''
                           }`}>
                             {bot.analysis.percentages.low012.toFixed(1)}%
                           </span>
@@ -1110,63 +1183,57 @@ export default function AutoBotGenerator() {
                             {bot.analysis.percentages.odd.toFixed(1)}%
                           </span>
                         </div>
-                        <div>
-                          <span className="text-muted-foreground">Most:</span>
-                          <span className="ml-1 font-bold">{bot.analysis.mostFrequent}</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Least:</span>
-                          <span className="ml-1 font-bold">{bot.analysis.leastFrequent}</span>
-                        </div>
                       </div>
                       
                       {/* Bot Stats */}
                       <div className="grid grid-cols-3 gap-1 text-xs mb-2">
-                        <div>
-                          <div className="text-muted-foreground">P&L</div>
+                        <div className="bg-background/50 rounded p-1">
+                          <div className="text-muted-foreground text-[8px]">P&L</div>
                           <div className={`font-bold ${bot.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                             {formatCurrency(bot.totalPnl)}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-muted-foreground">W/L</div>
+                        <div className="bg-background/50 rounded p-1">
+                          <div className="text-muted-foreground text-[8px]">W/L</div>
                           <div>
                             <span className="text-green-500">{bot.wins}</span>
                             <span className="text-muted-foreground">/</span>
                             <span className="text-red-500">{bot.losses}</span>
                           </div>
                         </div>
-                        <div>
-                          <div className="text-muted-foreground">Status</div>
+                        <div className="bg-background/50 rounded p-1">
+                          <div className="text-muted-foreground text-[8px]">Status</div>
                           <div className={`flex items-center gap-0.5 ${
                             bot.status === 'trading' ? 'text-green-500' :
-                            bot.status === 'recovery' ? 'text-orange-500' :
+                            bot.status === 'martingale' ? 'text-orange-500' :
+                            bot.status === 'watching' ? 'text-yellow-500' :
                             bot.status === 'completed' ? 'text-blue-500' :
                             'text-gray-500'
                           }`}>
                             {bot.status === 'trading' && <Activity className="w-3 h-3" />}
-                            {bot.status === 'recovery' && <RefreshCw className="w-3 h-3" />}
+                            {bot.status === 'martingale' && <RefreshCw className="w-3 h-3 animate-spin" />}
+                            {bot.status === 'watching' && <Eye className="w-3 h-3" />}
                             {bot.status === 'completed' && <CheckCircle2 className="w-3 h-3" />}
                             {bot.status === 'stopped' && <StopCircle className="w-3 h-3" />}
                             {bot.status === 'idle' && <CircleDot className="w-3 h-3" />}
-                            <span className="text-[10px] capitalize">{bot.status}</span>
+                            <span className="text-[8px] capitalize">{bot.status}</span>
                           </div>
                         </div>
                       </div>
                       
-                      {/* Recovery Progress */}
-                      {bot.recoveryStep > 0 && (
+                      {/* Martingale Progress */}
+                      {bot.martingaleStep > 0 && (
                         <div className="mb-2">
                           <div className="flex justify-between text-[8px] text-muted-foreground mb-0.5">
-                            <span>Recovery Step {bot.recoveryStep}/{bot.maxRecoverySteps}</span>
-                            <span>Stake: {formatCurrency(bot.currentStake)}</span>
+                            <span>Martingale Step {bot.martingaleStep}/{bot.maxMartingaleSteps}</span>
+                            <span className="font-medium text-orange-500">Stake: {formatCurrency(bot.currentStake)}</span>
                           </div>
-                          <Progress value={(bot.recoveryStep / bot.maxRecoverySteps) * 100} className="h-1" />
+                          <Progress value={(bot.martingaleStep / bot.maxMartingaleSteps) * 100} className="h-1" />
                         </div>
                       )}
                     </CardContent>
                     
-                    {/* Expanded Settings - Only Stake, TP, SL */}
+                    {/* Expanded Settings - All User Configurable */}
                     <AnimatePresence>
                       {bot.expanded && (
                         <motion.div
@@ -1174,16 +1241,16 @@ export default function AutoBotGenerator() {
                           animate={{ opacity: 1, height: 'auto' }}
                           exit={{ opacity: 0, height: 0 }}
                         >
-                          <CardContent className="p-3 pt-0">
+                          <CardContent className="p-3 pt-0 relative">
                             <Separator className="mb-3" />
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className="grid grid-cols-2 gap-2">
                               <div>
                                 <Label className="text-[8px]">Stake ($)</Label>
                                 <div className="flex items-center gap-1">
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => updateBotStake(bot.id, Math.max(0.1, bot.stake - 0.1))}
+                                    onClick={() => updateBotSetting(bot.id, 'stake', Math.max(0.1, bot.stake - 0.1))}
                                     className="h-6 w-6 p-0"
                                     disabled={bot.isRunning}
                                   >
@@ -1192,7 +1259,7 @@ export default function AutoBotGenerator() {
                                   <Input
                                     type="number"
                                     value={bot.stake}
-                                    onChange={(e) => updateBotStake(bot.id, parseFloat(e.target.value) || 0.1)}
+                                    onChange={(e) => updateBotSetting(bot.id, 'stake', parseFloat(e.target.value) || 0.1)}
                                     disabled={bot.isRunning}
                                     className="h-6 text-[8px] text-center p-0"
                                     step="0.1"
@@ -1201,7 +1268,7 @@ export default function AutoBotGenerator() {
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => updateBotStake(bot.id, bot.stake + 0.1)}
+                                    onClick={() => updateBotSetting(bot.id, 'stake', bot.stake + 0.1)}
                                     className="h-6 w-6 p-0"
                                     disabled={bot.isRunning}
                                   >
@@ -1209,28 +1276,75 @@ export default function AutoBotGenerator() {
                                   </Button>
                                 </div>
                               </div>
+                              
                               <div>
-                                <Label className="text-[8px]">TP ($)</Label>
+                                <Label className="text-[8px]">Duration (ticks)</Label>
+                                <Select
+                                  value={bot.duration.toString()}
+                                  onValueChange={(v) => updateBotSetting(bot.id, 'duration', parseInt(v))}
+                                  disabled={bot.isRunning}
+                                >
+                                  <SelectTrigger className="h-6 text-[8px]">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {[1,2,3,4,5,6,7,8,9,10].map(d => (
+                                      <SelectItem key={d} value={d.toString()} className="text-[8px]">
+                                        {d} {d === 1 ? 'tick' : 'ticks'}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              
+                              <div>
+                                <Label className="text-[8px]">Take Profit ($)</Label>
                                 <Input
                                   type="number"
                                   value={bot.takeProfit}
-                                  onChange={(e) => updateBotTP(bot.id, parseFloat(e.target.value) || 0)}
+                                  onChange={(e) => updateBotSetting(bot.id, 'takeProfit', parseFloat(e.target.value) || 0)}
                                   disabled={bot.isRunning}
                                   className="h-6 text-[8px]"
                                   step="5"
-                                  min="0"
                                 />
                               </div>
+                              
                               <div>
-                                <Label className="text-[8px]">SL ($)</Label>
+                                <Label className="text-[8px]">Stop Loss ($)</Label>
                                 <Input
                                   type="number"
                                   value={bot.stopLoss}
-                                  onChange={(e) => updateBotSL(bot.id, parseFloat(e.target.value) || 0)}
+                                  onChange={(e) => updateBotSetting(bot.id, 'stopLoss', parseFloat(e.target.value) || 0)}
                                   disabled={bot.isRunning}
                                   className="h-6 text-[8px]"
                                   step="5"
-                                  min="0"
+                                />
+                              </div>
+                              
+                              <div>
+                                <Label className="text-[8px]">Martingale Multiplier</Label>
+                                <Input
+                                  type="number"
+                                  value={bot.martingaleMultiplier}
+                                  onChange={(e) => updateBotSetting(bot.id, 'martingaleMultiplier', parseFloat(e.target.value) || 1.5)}
+                                  disabled={bot.isRunning}
+                                  className="h-6 text-[8px]"
+                                  step="0.1"
+                                  min="1.1"
+                                  max="5"
+                                />
+                              </div>
+                              
+                              <div>
+                                <Label className="text-[8px]">Max Martingale Steps</Label>
+                                <Input
+                                  type="number"
+                                  value={bot.maxMartingaleSteps}
+                                  onChange={(e) => updateBotSetting(bot.id, 'maxMartingaleSteps', parseInt(e.target.value) || 1)}
+                                  disabled={bot.isRunning}
+                                  className="h-6 text-[8px]"
+                                  min="1"
+                                  max="5"
                                 />
                               </div>
                             </div>
@@ -1240,12 +1354,12 @@ export default function AutoBotGenerator() {
                     </AnimatePresence>
                     
                     {/* Bot Actions */}
-                    <CardFooter className="p-3 pt-0 flex gap-2">
+                    <CardFooter className="p-3 pt-0 flex gap-2 relative">
                       {!bot.isRunning ? (
                         <Button
                           onClick={() => startBot(bot.id)}
                           disabled={!isAuthorized || balance < bot.stake || activeTradeId !== null}
-                          className="flex-1 h-7 text-xs"
+                          className={`flex-1 h-7 text-xs ${style.badge} hover:opacity-80`}
                           size="sm"
                         >
                           <Play className="w-3 h-3 mr-1" />
@@ -1273,9 +1387,12 @@ export default function AutoBotGenerator() {
       
       {/* Trade Log */}
       {tradeLogs.length > 0 && (
-        <Card className="mt-4">
+        <Card className="mt-4 border-2 bg-card/50 backdrop-blur-sm">
           <CardHeader className="p-3">
-            <CardTitle className="text-sm">Recent Trades</CardTitle>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              Recent Trades
+            </CardTitle>
           </CardHeader>
           <CardContent className="p-3 pt-0">
             <div className="space-y-1 max-h-[200px] overflow-y-auto">
@@ -1296,12 +1413,15 @@ export default function AutoBotGenerator() {
                       {trade.botName}
                     </Badge>
                     <span className="text-[8px]">{trade.entryType}</span>
+                    {trade.digit !== undefined && (
+                      <span className="text-[8px] text-muted-foreground">→ {trade.digit}</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[8px] font-mono">{formatCurrency(trade.stake)}</span>
-                    {trade.recoveryStep > 0 && (
+                    {trade.martingaleStep > 0 && (
                       <Badge className="text-[6px] px-1 py-0 bg-orange-500/20 text-orange-500">
-                        R{trade.recoveryStep}
+                        M{trade.martingaleStep}
                       </Badge>
                     )}
                     <span className={`text-[8px] font-bold ${
