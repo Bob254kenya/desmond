@@ -101,29 +101,6 @@ function simulateVirtualContract(
   });
 }
 
-/* ── Retry utility with exponential backoff ── */
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelay: number = 1000
-): Promise<T> {
-  let lastError: Error;
-  
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error as Error;
-      if (i === maxRetries - 1) break;
-      
-      const delay = baseDelay * Math.pow(2, i);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  
-  throw lastError!;
-}
-
 export default function ProScannerBot() {
   const { isAuthorized, balance, activeAccount } = useAuth();
   const { recordLoss } = useLossRequirement();
@@ -252,51 +229,61 @@ export default function ProScannerBot() {
     setAnalyzerStatus('Connecting...');
     setAnalyzerTicks([]);
 
-    const ws = new WebSocket("wss://ws.binaryws.com/websockets/v3?app_id=1089");
-    analyzerWsRef.current = ws;
+    try {
+      const ws = new WebSocket("wss://ws.binaryws.com/websockets/v3?app_id=1089");
+      analyzerWsRef.current = ws;
 
-    ws.onopen = () => {
-      setAnalyzerStatus('Live');
-      ws.send(JSON.stringify({
-        ticks_history: analyzerSymbol,
-        style: "ticks",
-        count: 1000,
-        end: "latest",
-        subscribe: 1,
-      }));
-    };
+      ws.onopen = () => {
+        setAnalyzerStatus('Live');
+        ws.send(JSON.stringify({
+          ticks_history: analyzerSymbol,
+          style: "ticks",
+          count: 1000,
+          end: "latest",
+          subscribe: 1,
+        }));
+      };
 
-    ws.onmessage = (msg) => {
-      const data = JSON.parse(msg.data);
-      if (data.history) {
-        const prices = data.history.prices.map((p: string) => 
-          parseInt(parseFloat(p).toFixed(2).slice(-1))
-        );
-        setAnalyzerTicks(prices);
-      }
-      if (data.tick) {
-        const tick = parseFloat(data.tick.quote);
-        const digit = parseInt(tick.toFixed(2).slice(-1));
-        if (!isNaN(digit)) {
-          setAnalyzerTicks(prev => {
-            const newTicks = [...prev, digit];
-            if (newTicks.length > 4000) newTicks.shift();
-            return newTicks;
-          });
+      ws.onmessage = (msg) => {
+        try {
+          const data = JSON.parse(msg.data);
+          if (data.history?.prices) {
+            const prices = data.history.prices.map((p: string) => 
+              parseInt(parseFloat(p).toFixed(2).slice(-1))
+            );
+            setAnalyzerTicks(prices);
+          }
+          if (data.tick?.quote) {
+            const tick = parseFloat(data.tick.quote);
+            const digit = parseInt(tick.toFixed(2).slice(-1));
+            if (!isNaN(digit)) {
+              setAnalyzerTicks(prev => {
+                const newTicks = [...prev, digit];
+                if (newTicks.length > 4000) newTicks.shift();
+                return newTicks;
+              });
+            }
+          }
+        } catch (e) {
+          // Silently handle parse errors
         }
-      }
-    };
+      };
 
-    ws.onerror = () => {
+      ws.onerror = () => {
+        setAnalyzerStatus('Error');
+      };
+
+      ws.onclose = () => {
+        setAnalyzerStatus('No network');
+      };
+    } catch (e) {
       setAnalyzerStatus('Error');
-    };
-
-    ws.onclose = () => {
-      setAnalyzerStatus('No network');
-    };
+    }
 
     return () => {
-      ws.close();
+      if (analyzerWsRef.current) {
+        analyzerWsRef.current.close();
+      }
     };
   }, [analyzerSymbol]);
 
@@ -335,6 +322,15 @@ export default function ProScannerBot() {
     const lowPercent = total ? ((lowCount / total) * 100).toFixed(1) : 0;
     const highPercent = total ? ((highCount / total) * 100).toFixed(1) : 0;
 
+    // Even/Odd percentages
+    let evenCount = 0, oddCount = 0;
+    recentTicks.forEach(d => {
+      if (d % 2 === 0) evenCount++;
+      else oddCount++;
+    });
+    const evenPercent = total ? ((evenCount / total) * 100).toFixed(1) : 0;
+    const oddPercent = total ? ((oddCount / total) * 100).toFixed(1) : 0;
+
     // Entry triggers
     let winningDigits: number[] = [], losingDigits: number[] = [];
     for (let i = 0; i < recentTicks.length - 1; i++) {
@@ -369,6 +365,8 @@ export default function ProScannerBot() {
       second,
       lowPercent,
       highPercent,
+      evenPercent,
+      oddPercent,
       winningDigits,
       losingDigits,
       signalText,
@@ -1495,7 +1493,7 @@ export default function ProScannerBot() {
                 </Button>
               </div>
             </div>
-            <div className="max-h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
+            <div className="max-h-[calc(100vh-500px)] min-h-[250px] overflow-auto">
               <table className="w-full text-[10px]">
                 <thead className="text-[9px] text-gray-500 font-medium bg-gray-900/80 sticky top-0">
                   <tr>
@@ -1558,14 +1556,14 @@ export default function ProScannerBot() {
             </div>
           </div>
 
-          {/* ── NEW: HTML Analyzer Section ── */}
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-4 shadow-md">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-cyan-400 flex items-center gap-2">
-                <span>📊</span> Deriv Over/Under Entry Digit Analyzer
+          {/* ── COMPACT HTML Analyzer Section ── */}
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-3 shadow-md">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-cyan-400 flex items-center gap-1">
+                <span>📊</span> Digit Analyzer
               </h3>
-              <div className="flex items-center gap-3">
-                <div className="text-xs text-gray-400">
+              <div className="flex items-center gap-2">
+                <div className="text-[9px] text-gray-400">
                   Status: <span className={`font-medium ${
                     analyzerStatus === 'Live' ? 'text-emerald-400' : 
                     analyzerStatus === 'Error' ? 'text-rose-400' : 'text-amber-400'
@@ -1575,51 +1573,51 @@ export default function ProScannerBot() {
                   href="https://ramztraders.site/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                  className="text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
                 >
-                  Trade on ramztraders.site ↗
+                  ramztraders.site ↗
                 </a>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
               <div>
-                <label className="block text-[10px] text-gray-500 mb-1">Mode</label>
+                <label className="block text-[8px] text-gray-500 mb-0.5">Mode</label>
                 <Select value={analyzerMode} onValueChange={(v: 'over' | 'under') => setAnalyzerMode(v)}>
-                  <SelectTrigger className="h-8 text-xs bg-gray-900 border-gray-700 text-gray-200">
+                  <SelectTrigger className="h-6 text-[9px] bg-gray-900 border-gray-700 text-gray-200">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="bg-gray-800 border-gray-700">
-                    <SelectItem value="over" className="text-gray-200">Over</SelectItem>
-                    <SelectItem value="under" className="text-gray-200">Under</SelectItem>
+                    <SelectItem value="over" className="text-gray-200 text-[9px]">Over</SelectItem>
+                    <SelectItem value="under" className="text-gray-200 text-[9px]">Under</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <label className="block text-[10px] text-gray-500 mb-1">Market</label>
+                <label className="block text-[8px] text-gray-500 mb-0.5">Market</label>
                 <Select value={analyzerSymbol} onValueChange={setAnalyzerSymbol}>
-                  <SelectTrigger className="h-8 text-xs bg-gray-900 border-gray-700 text-gray-200">
+                  <SelectTrigger className="h-6 text-[9px] bg-gray-900 border-gray-700 text-gray-200">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="bg-gray-800 border-gray-700 max-h-[300px]">
+                  <SelectContent className="bg-gray-800 border-gray-700 max-h-[200px]">
                     {SCANNER_MARKETS.map(m => (
-                      <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200 text-xs">
-                        {m.name} ({m.symbol})
+                      <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200 text-[9px]">
+                        {m.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1">Threshold</label>
-                <div className="flex gap-1 flex-wrap">
+              <div className="md:col-span-2">
+                <label className="block text-[8px] text-gray-500 mb-0.5">Threshold</label>
+                <div className="flex gap-0.5 flex-wrap">
                   {[0,1,2,3,4,5,6,7,8,9].map(d => (
                     <button
                       key={d}
                       onClick={() => handleAnalyzerDigitClick(d)}
-                      className={`w-7 h-7 rounded text-xs font-bold transition-all ${
+                      className={`w-5 h-5 rounded text-[9px] font-bold transition-all ${
                         analyzerThreshold === d
-                          ? 'bg-cyan-600 text-white ring-2 ring-cyan-400'
+                          ? 'bg-cyan-600 text-white ring-1 ring-cyan-400'
                           : 'bg-gray-900 text-gray-300 hover:bg-gray-700 border border-gray-700'
                       }`}
                     >
@@ -1628,34 +1626,16 @@ export default function ProScannerBot() {
                   ))}
                 </div>
               </div>
-              <div>
-                <label className="block text-[10px] text-gray-500 mb-1">Ticks (1000)</label>
-                <Input
-                  type="number"
-                  value="1000"
-                  disabled
-                  className="h-8 text-xs bg-gray-900 border-gray-700 text-gray-200 opacity-50"
-                />
-              </div>
             </div>
 
             {analyzerStats && (
               <>
-                {/* Prediction Box */}
-                <div className={`p-3 rounded-lg text-center font-bold mb-4 ${
-                  analyzerStats.signalClass === 'signal-over' ? 'bg-green-900/50 text-green-400' :
-                  analyzerStats.signalClass === 'signal-under' ? 'bg-red-900/50 text-red-400' :
-                  'bg-gray-800 text-gray-400'
-                }`}>
-                  {analyzerStats.signalText}
-                </div>
-
-                {/* Last Digits */}
-                <div className="mb-4">
-                  <h4 className="text-[10px] text-gray-500 mb-2">Last 30 Digits</h4>
-                  <div className="grid grid-cols-15 gap-1">
+                {/* Last 30 Digits - 3 per row */}
+                <div className="mb-2">
+                  <h4 className="text-[8px] text-gray-500 mb-1">Last 30 Digits</h4>
+                  <div className="grid grid-cols-15 gap-0.5">
                     {analyzerStats.lastDigits.map((d: number, i: number) => {
-                      let bgColor = 'bg-gray-900';
+                      let bgColor = 'bg-gray-800';
                       if (d === analyzerThreshold) bgColor = 'bg-blue-600';
                       else if (analyzerMode === 'over' && d > analyzerThreshold) bgColor = 'bg-green-700';
                       else if (analyzerMode === 'over' && d < analyzerThreshold) bgColor = 'bg-red-700';
@@ -1665,7 +1645,7 @@ export default function ProScannerBot() {
                       return (
                         <div
                           key={i}
-                          className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold text-white ${bgColor}`}
+                          className={`w-4 h-4 rounded flex items-center justify-center text-[7px] font-bold text-white ${bgColor}`}
                         >
                           {d}
                         </div>
@@ -1674,50 +1654,48 @@ export default function ProScannerBot() {
                   </div>
                 </div>
 
-                {/* Digit Buttons with Percentages */}
-                <div className="mb-4">
-                  <h4 className="text-[10px] text-gray-500 mb-2">Digit Distribution</h4>
-                  <div className="grid grid-cols-5 gap-1">
-                    {[0,1,2,3,4,5,6,7,8,9].map(d => {
-                      const percent = analyzerStats.counts[d] / analyzerTicks.slice(-1000).length * 100;
-                      let bgColor = 'bg-gray-900';
-                      if (d === analyzerStats.most) bgColor = 'bg-green-700';
-                      else if (d === analyzerStats.second) bgColor = 'bg-blue-700';
-                      else if (d === Math.min(...Object.values(analyzerStats.counts))) bgColor = 'bg-red-700';
-                      
-                      return (
-                        <div
-                          key={d}
-                          className={`p-2 rounded text-center ${bgColor}`}
-                        >
-                          <div className="text-sm font-bold text-white">{d}</div>
-                          <div className="text-[8px] text-gray-300">{percent.toFixed(1)}%</div>
-                        </div>
-                      );
-                    })}
+                {/* Prediction Box - Compact */}
+                <div className={`p-1.5 rounded text-center font-bold mb-2 text-[9px] ${
+                  analyzerStats.signalClass === 'signal-over' ? 'bg-green-900/50 text-green-400' :
+                  analyzerStats.signalClass === 'signal-under' ? 'bg-red-900/50 text-red-400' :
+                  'bg-gray-800 text-gray-400'
+                }`}>
+                  {analyzerStats.signalText}
+                </div>
+
+                {/* Stats Grid - 3 columns */}
+                <div className="grid grid-cols-3 gap-1 mb-2">
+                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
+                    <div className="text-[7px] text-gray-500">Under {analyzerThreshold}</div>
+                    <div className="text-[9px] font-mono text-emerald-400">{analyzerStats.lowPercent}%</div>
+                  </div>
+                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
+                    <div className="text-[7px] text-gray-500">Over {analyzerThreshold}</div>
+                    <div className="text-[9px] font-mono text-amber-400">{analyzerStats.highPercent}%</div>
+                  </div>
+                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
+                    <div className="text-[7px] text-gray-500">Even/Odd</div>
+                    <div className="text-[9px] font-mono">
+                      <span className="text-emerald-400">{analyzerStats.evenPercent}%</span>
+                      <span className="text-gray-500 mx-0.5">/</span>
+                      <span className="text-amber-400">{analyzerStats.oddPercent}%</span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Percentages and Triggers */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700">
-                    <h4 className="text-[10px] text-gray-500 mb-1">Over/Under Percentages</h4>
-                    <p className="text-sm font-mono">
-                      Under {analyzerThreshold}: <span className="text-emerald-400">{analyzerStats.lowPercent}%</span> | 
-                      Over {analyzerThreshold}: <span className="text-amber-400">{analyzerStats.highPercent}%</span>
-                    </p>
+                {/* Triggers */}
+                <div className="grid grid-cols-2 gap-1">
+                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
+                    <div className="text-[7px] text-gray-500">✅ Winning</div>
+                    <div className="text-[8px] font-mono text-emerald-400">
+                      [{analyzerStats.winningDigits.length ? analyzerStats.winningDigits.join(', ') : 'none'}]
+                    </div>
                   </div>
-                  <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700">
-                    <h4 className="text-[10px] text-gray-500 mb-1">Entry Triggers</h4>
-                    <p className="text-xs">
-                      <span className="text-emerald-400">
-                        ✅ Winning digits: [{analyzerStats.winningDigits.length ? analyzerStats.winningDigits.join(', ') : 'none'}]
-                      </span>
-                      <br />
-                      <span className="text-rose-400">
-                        ❌ Losing digits: [{analyzerStats.losingDigits.length ? analyzerStats.losingDigits.join(', ') : 'none'}]
-                      </span>
-                    </p>
+                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
+                    <div className="text-[7px] text-gray-500">❌ Losing</div>
+                    <div className="text-[8px] font-mono text-rose-400">
+                      [{analyzerStats.losingDigits.length ? analyzerStats.losingDigits.join(', ') : 'none'}]
+                    </div>
                   </div>
                 </div>
               </>
