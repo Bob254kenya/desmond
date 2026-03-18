@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import {
   Play, StopCircle, Trash2, Scan,
-  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, Loader2, WifiOff
+  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, Loader2,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -54,18 +54,9 @@ interface LogEntry {
 }
 
 function waitForNextTick(symbol: string): Promise<{ quote: number }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      unsub();
-      reject(new Error('Tick timeout'));
-    }, 5000);
-    
+  return new Promise((resolve) => {
     const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) { 
-        clearTimeout(timeout);
-        unsub(); 
-        resolve({ quote: data.tick.quote }); 
-      }
+      if (data.tick && data.tick.symbol === symbol) { unsub(); resolve({ quote: data.tick.quote }); }
     });
   });
 }
@@ -74,15 +65,9 @@ function waitForNextTick(symbol: string): Promise<{ quote: number }> {
 function simulateVirtualContract(
   contractType: string, barrier: string, symbol: string
 ): Promise<{ won: boolean; digit: number }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      unsub();
-      reject(new Error('Virtual contract timeout'));
-    }, 5000);
-    
+  return new Promise((resolve) => {
     const unsub = derivApi.onMessage((data: any) => {
       if (data.tick && data.tick.symbol === symbol) {
-        clearTimeout(timeout);
         unsub();
         const digit = getLastDigit(data.tick.quote);
         const b = parseInt(barrier) || 0;
@@ -105,10 +90,6 @@ export default function ProScannerBot() {
   const { isAuthorized, balance, activeAccount } = useAuth();
   const { recordLoss } = useLossRequirement();
   const location = useLocation();
-
-  /* ── Connection state ── */
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   /* ── Market 1 config ── */
   const [m1Enabled, setM1Enabled] = useState(true);
@@ -193,31 +174,13 @@ export default function ProScannerBot() {
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
 
-  /* ── HTML Analyzer State (Fixed) ── */
+  /* ── HTML Analyzer State ── */
   const [analyzerSymbol, setAnalyzerSymbol] = useState('R_100');
   const [analyzerMode, setAnalyzerMode] = useState<'over' | 'under'>('over');
   const [analyzerThreshold, setAnalyzerThreshold] = useState(5);
   const [analyzerTicks, setAnalyzerTicks] = useState<number[]>([]);
   const [analyzerStatus, setAnalyzerStatus] = useState('Connecting...');
   const analyzerWsRef = useRef<WebSocket | null>(null);
-
-  /* ── Check connection status ── */
-  useEffect(() => {
-    const checkConnection = () => {
-      const connected = derivApi.isConnected;
-      setIsConnected(connected);
-      if (!connected) {
-        setConnectionError('Not connected to Deriv API');
-      } else {
-        setConnectionError(null);
-      }
-    };
-
-    checkConnection();
-    const interval = setInterval(checkConnection, 3000);
-    
-    return () => clearInterval(interval);
-  }, []);
 
   /* ── HTML Analyzer WebSocket Connection ── */
   useEffect(() => {
@@ -262,16 +225,6 @@ export default function ProScannerBot() {
                 if (newTicks.length > 4000) newTicks.shift();
                 return newTicks;
               });
-              
-              // Also update the tick map for pattern matching
-              tickMapRef.current.set(analyzerSymbol, [
-                ...(tickMapRef.current.get(analyzerSymbol) || []),
-                digit
-              ].slice(-200));
-              setTickCounts(prev => ({ 
-                ...prev, 
-                [analyzerSymbol]: (tickMapRef.current.get(analyzerSymbol) || []).length 
-              }));
             }
           }
         } catch (e) {
@@ -306,7 +259,6 @@ export default function ProScannerBot() {
     if (needsBarrier(m2Contract)) {
       setM2Barrier(digit.toString());
     }
-    toast.info(`Selected threshold digit: ${digit}`);
   };
 
   /* ── Calculate analyzer statistics ── */
@@ -330,10 +282,8 @@ export default function ProScannerBot() {
     // Over/Under percentages
     const lowCount = counts.slice(0, analyzerThreshold).reduce((a, b) => a + b, 0);
     const highCount = counts.slice(analyzerThreshold + 1, 10).reduce((a, b) => a + b, 0);
-    const lowPercent = total ? ((lowCount / total) * 100).toFixed(1) : '0.0';
-    const highPercent = total ? ((highCount / total) * 100).toFixed(1) : '0.0';
-    const exactCount = counts[analyzerThreshold] || 0;
-    const exactPercent = total ? ((exactCount / total) * 100).toFixed(1) : '0.0';
+    const lowPercent = total ? ((lowCount / total) * 100).toFixed(1) : 0;
+    const highPercent = total ? ((highCount / total) * 100).toFixed(1) : 0;
 
     // Even/Odd percentages
     let evenCount = 0, oddCount = 0;
@@ -341,8 +291,8 @@ export default function ProScannerBot() {
       if (d % 2 === 0) evenCount++;
       else oddCount++;
     });
-    const evenPercent = total ? ((evenCount / total) * 100).toFixed(1) : '0.0';
-    const oddPercent = total ? ((oddCount / total) * 100).toFixed(1) : '0.0';
+    const evenPercent = total ? ((evenCount / total) * 100).toFixed(1) : 0;
+    const oddPercent = total ? ((oddCount / total) * 100).toFixed(1) : 0;
 
     // Entry triggers
     let winningDigits: number[] = [], losingDigits: number[] = [];
@@ -362,13 +312,13 @@ export default function ProScannerBot() {
     losingDigits = [...new Set(losingDigits)];
 
     // Signal
-    let signalText = "WAIT / NEUTRAL", signalClass = "signal-neutral";
+    let signalText = "WAIT / NEUTRAL", signalClass = "bg-gray-700 text-gray-300";
     if (most < analyzerThreshold && second < analyzerThreshold) {
-      signalText = `SIGNAL: STRONG TRADE UNDER ${analyzerThreshold}`;
-      signalClass = "signal-under";
+      signalText = `🔥 STRONG TRADE UNDER ${analyzerThreshold}`;
+      signalClass = "bg-red-600 text-white";
     } else if (most > analyzerThreshold && second > analyzerThreshold) {
-      signalText = `SIGNAL: STRONG TRADE OVER ${analyzerThreshold}`;
-      signalClass = "signal-over";
+      signalText = `🔥 STRONG TRADE OVER ${analyzerThreshold}`;
+      signalClass = "bg-white text-red-600 border-2 border-red-600";
     }
 
     return {
@@ -378,7 +328,6 @@ export default function ProScannerBot() {
       second,
       lowPercent,
       highPercent,
-      exactPercent,
       evenPercent,
       oddPercent,
       winningDigits,
@@ -468,18 +417,7 @@ export default function ProScannerBot() {
 
   /* ═══════════════ MAIN BOT LOOP ═══════════════ */
   const startBot = useCallback(async () => {
-    if (!isAuthorized) {
-      toast.error('Please authorize first');
-      return;
-    }
-    
-    if (!derivApi.isConnected) {
-      toast.error('Not connected to Deriv API');
-      return;
-    }
-
-    if (isRunning) return;
-    
+    if (!isAuthorized || isRunning) return;
     const baseStake = parseFloat(stake);
     if (baseStake < 0.35) { toast.error('Min stake $0.35'); return; }
     if (!m1Enabled && !m2Enabled) { toast.error('Enable at least one market'); return; }
@@ -507,12 +445,6 @@ export default function ProScannerBot() {
     });
 
     while (runningRef.current) {
-      // Check connection periodically
-      if (!derivApi.isConnected) {
-        toast.error('Connection lost. Stopping bot.');
-        break;
-      }
-
       const mkt: 1 | 2 = inRecovery ? 2 : 1;
       setCurrentMarket(mkt);
 
@@ -532,8 +464,6 @@ export default function ProScannerBot() {
         let matched = false;
         let matchedSymbol = '';
         while (runningRef.current && !matched) {
-          if (!derivApi.isConnected) break;
-          
           if (scannerActive) {
             const found = findScannerMatchForMarket(2);
             if (found) { matched = true; matchedSymbol = found; }
@@ -547,7 +477,7 @@ export default function ProScannerBot() {
             });
           }
         }
-        if (!runningRef.current || !derivApi.isConnected) break;
+        if (!runningRef.current) break;
 
         setBotStatus('pattern_matched');
         tradeSymbol = matchedSymbol;
@@ -559,8 +489,6 @@ export default function ProScannerBot() {
 
         let matched = false;
         while (runningRef.current && !matched) {
-          if (!derivApi.isConnected) break;
-          
           if (checkStrategyForMarket(cfg.symbol, 1)) { matched = true; }
           if (!matched) {
             await new Promise<void>(r => {
@@ -569,7 +497,7 @@ export default function ProScannerBot() {
             });
           }
         }
-        if (!runningRef.current || !derivApi.isConnected) break;
+        if (!runningRef.current) break;
 
         setBotStatus('pattern_matched');
         tradeSymbol = cfg.symbol;
@@ -579,7 +507,7 @@ export default function ProScannerBot() {
         tradeSymbol = cfg.symbol;
       }
 
-      /* ═══ VIRTUAL HOOK SEQUENCE ═══ */
+      /* ═══ VIRTUAL HOOK SEQUENCE — Loss-streak based ═══ */
       if (hookEnabled) {
         setBotStatus('virtual_hook');
         setVhStatus('waiting');
@@ -589,9 +517,8 @@ export default function ProScannerBot() {
         let consecLosses = 0;
         let virtualTradeNum = 0;
 
+        // Keep simulating virtual trades until we accumulate requiredLosses consecutive losses
         while (consecLosses < requiredLosses && runningRef.current) {
-          if (!derivApi.isConnected) break;
-          
           virtualTradeNum++;
           const vLogId = ++logIdRef.current;
           const vNow = new Date().toLocaleTimeString();
@@ -602,33 +529,30 @@ export default function ProScannerBot() {
             switchInfo: `Virtual #${virtualTradeNum} (losses: ${consecLosses}/${requiredLosses})`,
           });
 
-          try {
-            const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol);
-            if (!runningRef.current) break;
+          const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol);
+          if (!runningRef.current) break;
 
-            if (vResult.won) {
-              consecLosses = 0;
-              setVhConsecLosses(0);
-              setVhFakeWins(prev => prev + 1);
-              updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` });
-            } else {
-              consecLosses++;
-              setVhConsecLosses(consecLosses);
-              setVhFakeLosses(prev => prev + 1);
-              updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` });
-            }
-          } catch (error) {
-            console.error('Virtual contract error:', error);
-            updateLog(vLogId, { result: 'V-Loss', exitDigit: '-', switchInfo: 'Error in virtual trade' });
-            break;
+          if (vResult.won) {
+            // Win resets the consecutive loss counter
+            consecLosses = 0;
+            setVhConsecLosses(0);
+            setVhFakeWins(prev => prev + 1);
+            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` });
+          } else {
+            consecLosses++;
+            setVhConsecLosses(consecLosses);
+            setVhFakeLosses(prev => prev + 1);
+            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` });
           }
         }
 
-        if (!runningRef.current || !derivApi.isConnected) break;
+        if (!runningRef.current) break;
 
+        // Required consecutive losses reached → hook confirmed
         setVhStatus('confirmed');
         toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
 
+        /* Execute real trades batch */
         for (let ri = 0; ri < realCount && runningRef.current; ri++) {
           const result = await executeRealTrade(
             cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
@@ -643,13 +567,14 @@ export default function ProScannerBot() {
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
 
+        // Reset after real trades
         setVhStatus('idle');
         setVhConsecLosses(0);
         if (!runningRef.current) break;
         continue;
       }
 
-      /* ═══ NORMAL REAL TRADE ═══ */
+      /* ═══ NORMAL REAL TRADE (no hook) ═══ */
       const result = await executeRealTrade(
         cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
       );
@@ -662,6 +587,7 @@ export default function ProScannerBot() {
 
       if (result.shouldBreak) break;
 
+      // Turbo: no delay between trades; normal: small delay
       if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
 
@@ -701,13 +627,9 @@ export default function ProScannerBot() {
     let inRecovery = mkt === 2;
 
     try {
+      // Turbo: skip waiting for next tick, trade immediately
       if (!turboMode) {
-        try {
-          await waitForNextTick(tradeSymbol as MarketSymbol);
-        } catch (error) {
-          updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: 'Tick timeout' });
-          return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
-        }
+        await waitForNextTick(tradeSymbol as MarketSymbol);
       }
 
       const buyParams: any = {
@@ -718,6 +640,7 @@ export default function ProScannerBot() {
 
       const { contractId } = await derivApi.buyContract(buyParams);
       
+      // Copy trade to followers
       if (copyTradingService.enabled) {
         copyTradingService.copyTrade({
           ...buyParams,
@@ -746,6 +669,7 @@ export default function ProScannerBot() {
         cStake = baseStake;
       } else {
         setLosses(prev => prev + 1);
+        // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
         if (activeAccount?.is_virtual) {
           recordLoss(cStake, tradeSymbol, 6000);
         }
@@ -793,7 +717,7 @@ export default function ProScannerBot() {
       if (!turboMode) await new Promise(r => setTimeout(r, 2000));
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
     }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
@@ -871,31 +795,18 @@ export default function ProScannerBot() {
     if ((cfg as any).botName) setBotName((cfg as any).botName);
   }, []);
 
-  // Auto-load config from navigation state
+  // Auto-load config from navigation state (Free Bots page)
   useEffect(() => {
     const state = location.state as { loadConfig?: BotConfig } | null;
     if (state?.loadConfig) {
       handleLoadConfig(state.loadConfig);
+      // Clear state to prevent re-loading on re-render
       window.history.replaceState({}, '');
     }
   }, [location.state, handleLoadConfig]);
 
   const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
   const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
-
-  // Show connection error if not connected
-  if (!isConnected) {
-    return (
-      <div className="flex flex-col items-center justify-center h-[400px] space-y-4">
-        <WifiOff className="w-16 h-16 text-rose-400" />
-        <h2 className="text-xl font-semibold text-gray-200">Connection Error</h2>
-        <p className="text-sm text-gray-400">{connectionError || 'Failed to connect to Deriv API'}</p>
-        <Button onClick={() => window.location.reload()} className="mt-4">
-          Retry Connection
-        </Button>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-2 max-w-7xl mx-auto font-sans">
@@ -1467,7 +1378,7 @@ export default function ProScannerBot() {
           <div className="grid grid-cols-2 gap-2">
             <Button
               onClick={startBot}
-              disabled={isRunning || !isAuthorized || balance < parseFloat(stake) || !isConnected}
+              disabled={isRunning || !isAuthorized || balance < parseFloat(stake)}
               className="h-14 text-base font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white rounded-xl shadow-lg"
             >
               <Play className="w-5 h-5 mr-2" /> START M1
@@ -1493,7 +1404,7 @@ export default function ProScannerBot() {
                   </span>
                 )}
                 {!isRunning ? (
-                  <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake) || !isConnected}
+                  <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake)}
                     size="sm" className="h-7 text-[10px] font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white px-3">
                     <Play className="w-3 h-3 mr-1" /> START
                   </Button>
@@ -1507,7 +1418,7 @@ export default function ProScannerBot() {
                 </Button>
               </div>
             </div>
-            <div className="max-h-[calc(100vh-500px)] min-h-[250px] overflow-auto">
+            <div className="max-h-[calc(100vh-550px)] min-h-[250px] overflow-auto">
               <table className="w-full text-[10px]">
                 <thead className="text-[9px] text-gray-500 font-medium bg-gray-900/80 sticky top-0">
                   <tr>
@@ -1570,24 +1481,24 @@ export default function ProScannerBot() {
             </div>
           </div>
 
-          {/* ── COMPACT HTML Analyzer Section (Fixed) ── */}
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-3 shadow-md">
+          {/* ── STYLED ANALYZER SECTION (RED & WHITE) ── */}
+          <div className="bg-gradient-to-br from-white to-red-50 border-2 border-red-600 rounded-xl p-3 shadow-lg">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-semibold text-cyan-400 flex items-center gap-1">
-                <span>📊</span> Digit Over/Under Analyzer
+              <h3 className="text-xs font-semibold text-red-600 flex items-center gap-1">
+                <span className="text-red-600">📊</span> Digit Analyzer
               </h3>
               <div className="flex items-center gap-2">
-                <div className="text-[9px] text-gray-400">
+                <div className="text-[9px] text-red-500">
                   Status: <span className={`font-medium ${
-                    analyzerStatus === 'Live' ? 'text-emerald-400' : 
-                    analyzerStatus === 'Error' ? 'text-rose-400' : 'text-amber-400'
+                    analyzerStatus === 'Live' ? 'text-red-600' : 
+                    analyzerStatus === 'Error' ? 'text-red-400' : 'text-red-300'
                   }`}>{analyzerStatus}</span>
                 </div>
                 <a
                   href="https://ramztraders.site/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
+                  className="text-[9px] text-red-600 hover:text-red-800 transition-colors font-medium"
                 >
                   ramztraders.site ↗
                 </a>
@@ -1596,26 +1507,26 @@ export default function ProScannerBot() {
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
               <div>
-                <label className="block text-[8px] text-gray-500 mb-0.5">Mode</label>
+                <label className="block text-[8px] text-red-500 font-medium mb-0.5">Mode</label>
                 <Select value={analyzerMode} onValueChange={(v: 'over' | 'under') => setAnalyzerMode(v)}>
-                  <SelectTrigger className="h-6 text-[9px] bg-gray-900 border-gray-700 text-gray-200">
+                  <SelectTrigger className="h-6 text-[9px] bg-white border-red-300 text-red-700 focus:ring-red-500">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="bg-gray-800 border-gray-700">
-                    <SelectItem value="over" className="text-gray-200 text-[9px]">Over</SelectItem>
-                    <SelectItem value="under" className="text-gray-200 text-[9px]">Under</SelectItem>
+                  <SelectContent className="bg-white border-red-300">
+                    <SelectItem value="over" className="text-red-700 text-[9px] hover:bg-red-50">Over</SelectItem>
+                    <SelectItem value="under" className="text-red-700 text-[9px] hover:bg-red-50">Under</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <label className="block text-[8px] text-gray-500 mb-0.5">Market</label>
+                <label className="block text-[8px] text-red-500 font-medium mb-0.5">Market</label>
                 <Select value={analyzerSymbol} onValueChange={setAnalyzerSymbol}>
-                  <SelectTrigger className="h-6 text-[9px] bg-gray-900 border-gray-700 text-gray-200">
+                  <SelectTrigger className="h-6 text-[9px] bg-white border-red-300 text-red-700 focus:ring-red-500">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="bg-gray-800 border-gray-700 max-h-[200px]">
+                  <SelectContent className="bg-white border-red-300 max-h-[200px]">
                     {SCANNER_MARKETS.map(m => (
-                      <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200 text-[9px]">
+                      <SelectItem key={m.symbol} value={m.symbol} className="text-red-700 text-[9px] hover:bg-red-50">
                         {m.name}
                       </SelectItem>
                     ))}
@@ -1623,7 +1534,7 @@ export default function ProScannerBot() {
                 </Select>
               </div>
               <div className="md:col-span-2">
-                <label className="block text-[8px] text-gray-500 mb-0.5">Threshold Digit (Click to set)</label>
+                <label className="block text-[8px] text-red-500 font-medium mb-0.5">Threshold</label>
                 <div className="flex gap-0.5 flex-wrap">
                   {[0,1,2,3,4,5,6,7,8,9].map(d => (
                     <button
@@ -1631,10 +1542,9 @@ export default function ProScannerBot() {
                       onClick={() => handleAnalyzerDigitClick(d)}
                       className={`w-5 h-5 rounded text-[9px] font-bold transition-all ${
                         analyzerThreshold === d
-                          ? 'bg-cyan-600 text-white ring-1 ring-cyan-400 scale-110'
-                          : 'bg-gray-900 text-gray-300 hover:bg-gray-700 border border-gray-700'
+                          ? 'bg-red-600 text-white ring-1 ring-red-400'
+                          : 'bg-white text-red-600 hover:bg-red-100 border border-red-300'
                       }`}
-                      title={`Set threshold to ${d}`}
                     >
                       {d}
                     </button>
@@ -1645,23 +1555,22 @@ export default function ProScannerBot() {
 
             {analyzerStats && (
               <>
-                {/* Last 30 Digits - 15 per row */}
+                {/* Last 30 Digits - 3 per row */}
                 <div className="mb-2">
-                  <h4 className="text-[8px] text-gray-500 mb-1">Last 30 Digits</h4>
+                  <h4 className="text-[8px] text-red-500 font-medium mb-1">Last 30 Digits</h4>
                   <div className="grid grid-cols-15 gap-0.5">
                     {analyzerStats.lastDigits.map((d: number, i: number) => {
-                      let bgColor = 'bg-gray-800';
-                      if (d === analyzerThreshold) bgColor = 'bg-blue-600';
-                      else if (analyzerMode === 'over' && d > analyzerThreshold) bgColor = 'bg-emerald-700';
-                      else if (analyzerMode === 'over' && d < analyzerThreshold) bgColor = 'bg-rose-700';
-                      else if (analyzerMode === 'under' && d < analyzerThreshold) bgColor = 'bg-emerald-700';
-                      else if (analyzerMode === 'under' && d > analyzerThreshold) bgColor = 'bg-rose-700';
+                      let bgColor = 'bg-red-100 text-red-700';
+                      if (d === analyzerThreshold) bgColor = 'bg-red-600 text-white';
+                      else if (analyzerMode === 'over' && d > analyzerThreshold) bgColor = 'bg-red-500 text-white';
+                      else if (analyzerMode === 'over' && d < analyzerThreshold) bgColor = 'bg-red-200 text-red-800';
+                      else if (analyzerMode === 'under' && d < analyzerThreshold) bgColor = 'bg-red-500 text-white';
+                      else if (analyzerMode === 'under' && d > analyzerThreshold) bgColor = 'bg-red-200 text-red-800';
                       
                       return (
                         <div
                           key={i}
-                          className={`w-4 h-4 rounded flex items-center justify-center text-[7px] font-bold text-white ${bgColor}`}
-                          title={`Digit: ${d}`}
+                          className={`w-4 h-4 rounded flex items-center justify-center text-[7px] font-bold ${bgColor}`}
                         >
                           {d}
                         </div>
@@ -1670,47 +1579,43 @@ export default function ProScannerBot() {
                   </div>
                 </div>
 
-                {/* Prediction Box - Compact */}
-                <div className={`p-1.5 rounded text-center font-bold mb-2 text-[9px] ${
-                  analyzerStats.signalClass === 'signal-over' ? 'bg-emerald-900/50 text-emerald-400' :
-                  analyzerStats.signalClass === 'signal-under' ? 'bg-rose-900/50 text-rose-400' :
-                  'bg-gray-800 text-gray-400'
-                }`}>
+                {/* Prediction Box - Red & White */}
+                <div className={`p-1.5 rounded text-center font-bold mb-2 text-[9px] ${analyzerStats.signalClass}`}>
                   {analyzerStats.signalText}
                 </div>
 
                 {/* Stats Grid - 3 columns */}
                 <div className="grid grid-cols-3 gap-1 mb-2">
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">Under {analyzerThreshold}</div>
-                    <div className="text-[9px] font-mono text-emerald-400">{analyzerStats.lowPercent}%</div>
+                  <div className="bg-red-50 p-1.5 rounded border border-red-200">
+                    <div className="text-[7px] text-red-500 font-medium">Under {analyzerThreshold}</div>
+                    <div className="text-[9px] font-mono text-red-700">{analyzerStats.lowPercent}%</div>
                   </div>
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">Over {analyzerThreshold}</div>
-                    <div className="text-[9px] font-mono text-amber-400">{analyzerStats.highPercent}%</div>
+                  <div className="bg-red-50 p-1.5 rounded border border-red-200">
+                    <div className="text-[7px] text-red-500 font-medium">Over {analyzerThreshold}</div>
+                    <div className="text-[9px] font-mono text-red-700">{analyzerStats.highPercent}%</div>
                   </div>
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">Equal {analyzerThreshold}</div>
-                    <div className="text-[9px] font-mono text-blue-400">{analyzerStats.exactPercent}%</div>
+                  <div className="bg-red-50 p-1.5 rounded border border-red-200">
+                    <div className="text-[7px] text-red-500 font-medium">Even/Odd</div>
+                    <div className="text-[9px] font-mono">
+                      <span className="text-red-600">{analyzerStats.evenPercent}%</span>
+                      <span className="text-red-300 mx-0.5">/</span>
+                      <span className="text-red-400">{analyzerStats.oddPercent}%</span>
+                    </div>
                   </div>
                 </div>
 
                 {/* Triggers */}
                 <div className="grid grid-cols-2 gap-1">
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">✅ Winning Digits</div>
-                    <div className="text-[8px] font-mono text-emerald-400">
-                      {analyzerStats.winningDigits.length ? 
-                        `[${analyzerStats.winningDigits.sort((a,b)=>a-b).join(', ')}]` : 
-                        'none'}
+                  <div className="bg-red-50 p-1.5 rounded border border-red-200">
+                    <div className="text-[7px] text-red-500 font-medium">✅ Winning</div>
+                    <div className="text-[8px] font-mono text-red-700">
+                      [{analyzerStats.winningDigits.length ? analyzerStats.winningDigits.join(', ') : 'none'}]
                     </div>
                   </div>
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">❌ Losing Digits</div>
-                    <div className="text-[8px] font-mono text-rose-400">
-                      {analyzerStats.losingDigits.length ? 
-                        `[${analyzerStats.losingDigits.sort((a,b)=>a-b).join(', ')}]` : 
-                        'none'}
+                  <div className="bg-red-50 p-1.5 rounded border border-red-200">
+                    <div className="text-[7px] text-red-500 font-medium">❌ Losing</div>
+                    <div className="text-[8px] font-mono text-red-700">
+                      [{analyzerStats.losingDigits.length ? analyzerStats.losingDigits.join(', ') : 'none'}]
                     </div>
                   </div>
                 </div>
