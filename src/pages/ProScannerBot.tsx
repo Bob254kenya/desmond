@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import {
   Play, StopCircle, Trash2, Scan,
-  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, BarChart,
+  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, BarChart, Loader2,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -84,13 +84,20 @@ class CircularTickBuffer {
   lastTs(): number { return this.count > 0 ? this.buffer[(this.head - 1 + this.capacity) % this.capacity].ts : 0; }
   get size() { return this.count; }
   
-  // Get all digits for percentage calculation
+  // Get all digits for percentage calculation (most recent first)
   getAllDigits(): number[] {
     const result: number[] = [];
     for (let i = 0; i < this.count; i++) {
       result.push(this.buffer[(this.head - i - 1 + this.capacity) % this.capacity].digit);
     }
     return result;
+  }
+
+  // Clear buffer and reset
+  clear() {
+    this.head = 0;
+    this.count = 0;
+    this.buffer = new Array(this.capacity);
   }
 }
 
@@ -191,9 +198,12 @@ export default function ProScannerBot() {
 
   /* ── Percentage Analysis ── */
   const [selectedPercentMarket, setSelectedPercentMarket] = useState('R_100');
-  const [percentTickRange, setPercentTickRange] = useState('100');
+  const [percentTickRange, setPercentTickRange] = useState('1000'); // Default to 1000
   const [digitPercentages, setDigitPercentages] = useState<DigitPercentage[]>([]);
   const [selectedDigit, setSelectedDigit] = useState<number | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const historyFetchInProgress = useRef(false);
 
   /* ── Turbo ── */
   const [turboMode, setTurboMode] = useState(false);
@@ -222,7 +232,106 @@ export default function ProScannerBot() {
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
 
-  /* Subscribe to all scanner markets */
+  /* ── Fetch historical ticks for a symbol ── */
+  const fetchHistoricalTicks = useCallback(async (symbol: string, count: number = 1000) => {
+    if (!derivApi.isConnected) {
+      toast.error('Not connected to Deriv API');
+      return;
+    }
+
+    if (historyFetchInProgress.current) return;
+    historyFetchInProgress.current = true;
+    setIsLoadingHistory(true);
+
+    try {
+      // Get historical ticks from the API
+      const response = await derivApi.getTicksHistory(symbol as MarketSymbol, {
+        adjust_start_time: 1,
+        count,
+        end: 'latest',
+        start: 1,
+        style: 'ticks'
+      });
+
+      if (response?.history?.ticks && Array.isArray(response.history.ticks)) {
+        const ticks = response.history.ticks;
+        
+        // Initialize buffer for this symbol
+        if (!turboBuffersRef.current.has(symbol)) {
+          turboBuffersRef.current.set(symbol, new CircularTickBuffer(1000));
+        }
+        const buffer = turboBuffersRef.current.get(symbol)!;
+        buffer.clear(); // Clear existing data
+
+        // Push historical ticks in chronological order
+        ticks.forEach((tick: { epoch: number; quote: number }) => {
+          const digit = getLastDigit(tick.quote);
+          buffer.push(digit);
+          
+          // Also update legacy tick map
+          const map = tickMapRef.current;
+          const arr = map.get(symbol) || [];
+          arr.push(digit);
+          if (arr.length > 200) arr.shift();
+          map.set(symbol, arr);
+        });
+
+        setTickCounts(prev => ({ ...prev, [symbol]: ticks.length }));
+        
+        // Update percentages
+        updateDigitPercentages(symbol);
+        
+        toast.success(`Loaded ${ticks.length} historical ticks for ${symbol}`);
+        setHistoryLoaded(true);
+      }
+    } catch (error) {
+      console.error('Error fetching historical ticks:', error);
+      toast.error('Failed to load historical ticks');
+    } finally {
+      setIsLoadingHistory(false);
+      historyFetchInProgress.current = false;
+    }
+  }, []);
+
+  /* ── Update digit percentages for selected market ── */
+  const updateDigitPercentages = useCallback((symbol: string) => {
+    const buffer = turboBuffersRef.current.get(symbol);
+    if (!buffer) return;
+    
+    const range = parseInt(percentTickRange) || 1000;
+    const allDigits = buffer.getAllDigits();
+    const recentDigits = allDigits.slice(0, Math.min(range, allDigits.length));
+    
+    if (recentDigits.length === 0) return;
+    
+    const counts: Record<number, number> = {};
+    for (let i = 0; i <= 9; i++) counts[i] = 0;
+    
+    recentDigits.forEach(d => {
+      counts[d] = (counts[d] || 0) + 1;
+    });
+    
+    const percentages: DigitPercentage[] = [];
+    for (let i = 0; i <= 9; i++) {
+      percentages.push({
+        digit: i,
+        count: counts[i],
+        percentage: (counts[i] / recentDigits.length) * 100
+      });
+    }
+    
+    setDigitPercentages(percentages);
+  }, [percentTickRange]);
+
+  /* ── Load historical ticks when market changes ── */
+  useEffect(() => {
+    if (!derivApi.isConnected) return;
+    
+    setHistoryLoaded(false);
+    fetchHistoricalTicks(selectedPercentMarket, 1000);
+  }, [selectedPercentMarket, fetchHistoricalTicks]);
+
+  /* Subscribe to all scanner markets and handle real-time updates */
   useEffect(() => {
     if (!derivApi.isConnected) return;
     let active = true;
@@ -264,37 +373,7 @@ export default function ProScannerBot() {
     const unsub = derivApi.onMessage(handler);
     SCANNER_MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); });
     return () => { active = false; unsub(); };
-  }, [selectedPercentMarket]);
-
-  /* ── Update digit percentages for selected market ── */
-  const updateDigitPercentages = useCallback((symbol: string) => {
-    const buffer = turboBuffersRef.current.get(symbol);
-    if (!buffer) return;
-    
-    const range = parseInt(percentTickRange) || 100;
-    const allDigits = buffer.getAllDigits();
-    const recentDigits = allDigits.slice(0, Math.min(range, allDigits.length));
-    
-    if (recentDigits.length === 0) return;
-    
-    const counts: Record<number, number> = {};
-    for (let i = 0; i <= 9; i++) counts[i] = 0;
-    
-    recentDigits.forEach(d => {
-      counts[d] = (counts[d] || 0) + 1;
-    });
-    
-    const percentages: DigitPercentage[] = [];
-    for (let i = 0; i <= 9; i++) {
-      percentages.push({
-        digit: i,
-        count: counts[i],
-        percentage: (counts[i] / recentDigits.length) * 100
-      });
-    }
-    
-    setDigitPercentages(percentages);
-  }, [percentTickRange]);
+  }, [selectedPercentMarket, updateDigitPercentages]);
 
   /* ── Handle digit button click ── */
   const handleDigitClick = useCallback((digit: number) => {
@@ -306,7 +385,8 @@ export default function ProScannerBot() {
       setM1Barrier(digit.toString());
     }
     
-    toast.info(`Selected digit: ${digit} (${digitPercentages.find(d => d.digit === digit)?.percentage.toFixed(1)}%)`);
+    const percentage = digitPercentages.find(d => d.digit === digit)?.percentage.toFixed(1) || '0.0';
+    toast.info(`Selected digit: ${digit} (${percentage}%)`);
   }, [selectedDigit, m1Contract, digitPercentages]);
 
   /* ── Pattern validation ── */
@@ -782,8 +862,15 @@ export default function ProScannerBot() {
 
   // Update percentages when market or tick range changes
   useEffect(() => {
-    updateDigitPercentages(selectedPercentMarket);
-  }, [selectedPercentMarket, percentTickRange, updateDigitPercentages]);
+    if (historyLoaded) {
+      updateDigitPercentages(selectedPercentMarket);
+    }
+  }, [selectedPercentMarket, percentTickRange, updateDigitPercentages, historyLoaded]);
+
+  // Manual refresh button handler
+  const handleRefreshHistory = useCallback(() => {
+    fetchHistoricalTicks(selectedPercentMarket, 1000);
+  }, [selectedPercentMarket, fetchHistoricalTicks]);
 
   return (
     <div className="space-y-2 max-w-7xl mx-auto font-sans">
@@ -921,8 +1008,29 @@ export default function ProScannerBot() {
                 <SelectItem value="1000" className="text-gray-200 text-[10px]">1000 ticks</SelectItem>
               </SelectContent>
             </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[9px] px-2 bg-gray-900 border-gray-700 text-gray-300 hover:bg-gray-800"
+              onClick={handleRefreshHistory}
+              disabled={isLoadingHistory || isRunning}
+            >
+              {isLoadingHistory ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3 h-3" />
+              )}
+            </Button>
           </div>
         </div>
+        
+        {/* Loading indicator */}
+        {isLoadingHistory && (
+          <div className="flex items-center justify-center py-2">
+            <Loader2 className="w-4 h-4 animate-spin text-cyan-400 mr-2" />
+            <span className="text-[10px] text-gray-400">Loading 1000 historical ticks...</span>
+          </div>
+        )}
         
         {/* Digit Buttons with Percentages */}
         <div className="grid grid-cols-5 gap-1 mb-1">
@@ -956,8 +1064,13 @@ export default function ProScannerBot() {
         </div>
         
         {/* Total ticks info */}
-        <div className="text-[9px] text-gray-500 font-medium text-right">
-          Total ticks analyzed: {digitPercentages.reduce((sum, d) => sum + d.count, 0)} / {percentTickRange}
+        <div className="flex items-center justify-between text-[9px] text-gray-500 font-medium">
+          <span>
+            {historyLoaded ? '✅ Historical data loaded' : '⏳ Waiting for data...'}
+          </span>
+          <span>
+            Total ticks analyzed: {digitPercentages.reduce((sum, d) => sum + d.count, 0)} / {percentTickRange}
+          </span>
         </div>
       </div>
 
