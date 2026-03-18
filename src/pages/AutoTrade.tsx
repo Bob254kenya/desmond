@@ -18,7 +18,8 @@ import {
   Loader2, Activity, Target, Clock, Hash, Zap, Volume2, VolumeX, 
   Timer, XCircle, Settings, ChevronDown, ChevronUp, DollarSign, 
   Plus, Minus, Brain, Scan, Trash2, Download, Upload, Copy, Eye,
-  BarChart3, History, Gauge, ListChecks, AlertCircle, CheckCircle2
+  BarChart3, History, Gauge, ListChecks, AlertCircle, CheckCircle2,
+  Waves, Wind, Flame, Snowflake
 } from 'lucide-react';
 
 // ==================== TYPES ====================
@@ -38,6 +39,16 @@ interface MarketAnalysis {
   condition: 'TYPE_A' | 'TYPE_B' | 'EVEN' | 'ODD' | 'NONE';
   entry: number | 'EVEN' | 'ODD';
   confidence: number;
+  volatility: VolatilityAnalysis;
+}
+
+interface VolatilityAnalysis {
+  averageChange: number;
+  volatilityIndex: 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME';
+  priceRange: { min: number; max: number };
+  recentSpikes: number;
+  trend: 'UP' | 'DOWN' | 'SIDEWAYS';
+  volatilityScore: number; // 0-100
 }
 
 interface Bot {
@@ -56,9 +67,14 @@ interface Bot {
   takeProfit: number;
   stopLoss: number;
   
+  // Volatility settings
+  checkVolatility: boolean;
+  minVolatility: number;
+  maxVolatility: number;
+  
   // State
   isRunning: boolean;
-  status: 'idle' | 'watching' | 'trading' | 'recovery' | 'completed';
+  status: 'idle' | 'watching' | 'trading' | 'recovery' | 'completed' | 'waiting';
   currentStake: number;
   totalPnl: number;
   trades: number;
@@ -66,6 +82,7 @@ interface Bot {
   losses: number;
   currentRun: number;
   recoveryStep: number;
+  lastVolatilityCheck: VolatilityAnalysis | null;
   
   // UI
   expanded: boolean;
@@ -81,31 +98,32 @@ interface Trade {
   result: 'win' | 'loss' | 'pending';
   profit: number;
   digit?: number;
+  volatility?: number;
 }
 
 // ==================== CONSTANTS ====================
 
 const MARKETS = [
-  { value: 'R_10', label: 'R 10', icon: '📈' },
-  { value: 'R_25', label: 'R 25', icon: '📈' },
-  { value: 'R_50', label: 'R 50', icon: '📈' },
-  { value: 'R_75', label: 'R 75', icon: '📈' },
-  { value: 'R_100', label: 'R 100', icon: '📈' },
-  { value: '1HZ10V', label: '1HZ 10', icon: '⚡' },
-  { value: '1HZ25V', label: '1HZ 25', icon: '⚡' },
-  { value: '1HZ50V', label: '1HZ 50', icon: '⚡' },
-  { value: '1HZ75V', label: '1HZ 75', icon: '⚡' },
-  { value: '1HZ100V', label: '1HZ 100', icon: '⚡' },
-  { value: 'JD10', label: 'Jump 10', icon: '🦘' },
-  { value: 'JD25', label: 'Jump 25', icon: '🦘' },
-  { value: 'JD50', label: 'Jump 50', icon: '🦘' },
-  { value: 'JD75', label: 'Jump 75', icon: '🦘' },
-  { value: 'JD100', label: 'Jump 100', icon: '🦘' },
-  { value: 'JB10', label: 'Bear 10', icon: '🐻' },
-  { value: 'JB25', label: 'Bear 25', icon: '🐻' },
-  { value: 'JB50', label: 'Bear 50', icon: '🐻' },
-  { value: 'JB75', label: 'Bear 75', icon: '🐻' },
-  { value: 'JB100', label: 'Bear 100', icon: '🐻' }
+  { value: 'R_10', label: 'R 10', icon: '📈', volatility: 'MEDIUM' },
+  { value: 'R_25', label: 'R 25', icon: '📈', volatility: 'MEDIUM' },
+  { value: 'R_50', label: 'R 50', icon: '📈', volatility: 'HIGH' },
+  { value: 'R_75', label: 'R 75', icon: '📈', volatility: 'HIGH' },
+  { value: 'R_100', label: 'R 100', icon: '📈', volatility: 'EXTREME' },
+  { value: '1HZ10V', label: '1HZ 10', icon: '⚡', volatility: 'LOW' },
+  { value: '1HZ25V', label: '1HZ 25', icon: '⚡', volatility: 'LOW' },
+  { value: '1HZ50V', label: '1HZ 50', icon: '⚡', volatility: 'MEDIUM' },
+  { value: '1HZ75V', label: '1HZ 75', icon: '⚡', volatility: 'MEDIUM' },
+  { value: '1HZ100V', label: '1HZ 100', icon: '⚡', volatility: 'HIGH' },
+  { value: 'JD10', label: 'Jump 10', icon: '🦘', volatility: 'HIGH' },
+  { value: 'JD25', label: 'Jump 25', icon: '🦘', volatility: 'HIGH' },
+  { value: 'JD50', label: 'Jump 50', icon: '🦘', volatility: 'EXTREME' },
+  { value: 'JD75', label: 'Jump 75', icon: '🦘', volatility: 'EXTREME' },
+  { value: 'JD100', label: 'Jump 100', icon: '🦘', volatility: 'EXTREME' },
+  { value: 'JB10', label: 'Bear 10', icon: '🐻', volatility: 'HIGH' },
+  { value: 'JB25', label: 'Bear 25', icon: '🐻', volatility: 'HIGH' },
+  { value: 'JB50', label: 'Bear 50', icon: '🐻', volatility: 'EXTREME' },
+  { value: 'JB75', label: 'Bear 75', icon: '🐻', volatility: 'EXTREME' },
+  { value: 'JB100', label: 'Bear 100', icon: '🐻', volatility: 'EXTREME' }
 ];
 
 const BOT_STYLES = {
@@ -115,7 +133,71 @@ const BOT_STYLES = {
   ODD: { border: 'border-orange-500', bg: 'bg-orange-500/5', badge: 'bg-orange-500/20 text-orange-500', icon: <Hash className="w-4 h-4" /> }
 };
 
+const VOLATILITY_ICONS = {
+  LOW: <Snowflake className="w-3 h-3 text-blue-400" />,
+  MEDIUM: <Wind className="w-3 h-3 text-yellow-400" />,
+  HIGH: <Waves className="w-3 h-3 text-orange-400" />,
+  EXTREME: <Flame className="w-3 h-3 text-red-400" />
+};
+
 // ==================== HELPER FUNCTIONS ====================
+
+const analyzeVolatility = (ticks: number[]): VolatilityAnalysis => {
+  if (ticks.length < 50) {
+    return {
+      averageChange: 0,
+      volatilityIndex: 'LOW',
+      priceRange: { min: 0, max: 0 },
+      recentSpikes: 0,
+      trend: 'SIDEWAYS',
+      volatilityScore: 0
+    };
+  }
+
+  const recent = ticks.slice(-50);
+  let changes = [];
+  let spikes = 0;
+  
+  for (let i = 1; i < recent.length; i++) {
+    const change = Math.abs(recent[i] - recent[i-1]);
+    changes.push(change);
+    if (change > 5) spikes++;
+  }
+  
+  const avgChange = changes.reduce((a, b) => a + b, 0) / changes.length;
+  const maxChange = Math.max(...changes);
+  
+  let volatilityIndex: 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME' = 'LOW';
+  let volatilityScore = 0;
+  
+  if (avgChange < 0.5) {
+    volatilityIndex = 'LOW';
+    volatilityScore = 25;
+  } else if (avgChange < 1.5) {
+    volatilityIndex = 'MEDIUM';
+    volatilityScore = 50;
+  } else if (avgChange < 3) {
+    volatilityIndex = 'HIGH';
+    volatilityScore = 75;
+  } else {
+    volatilityIndex = 'EXTREME';
+    volatilityScore = 100;
+  }
+  
+  // Determine trend
+  const first10 = recent.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+  const last10 = recent.slice(-10).reduce((a, b) => a + b, 0) / 10;
+  const trend = last10 > first10 ? 'UP' : last10 < first10 ? 'DOWN' : 'SIDEWAYS';
+  
+  return {
+    averageChange: avgChange,
+    volatilityIndex,
+    priceRange: { min: Math.min(...recent), max: Math.max(...recent) },
+    recentSpikes: spikes,
+    trend,
+    volatilityScore
+  };
+};
 
 const analyzeMarket = (ticks: number[]): MarketAnalysis => {
   if (ticks.length < 100) {
@@ -127,7 +209,8 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
       leastFrequent: 0,
       condition: 'NONE',
       entry: 0,
-      confidence: 0
+      confidence: 0,
+      volatility: analyzeVolatility(ticks)
     };
   }
 
@@ -203,7 +286,8 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
     leastFrequent: leastFreq,
     condition,
     entry,
-    confidence
+    confidence,
+    volatility: analyzeVolatility(ticks)
   };
 };
 
@@ -238,6 +322,7 @@ export default function TradingBot() {
   const [sound, setSound] = useState(true);
   const [autoCreate, setAutoCreate] = useState(true);
   const [selectedTab, setSelectedTab] = useState('bots');
+  const [globalVolatilityCheck, setGlobalVolatilityCheck] = useState(true);
   
   // Defaults
   const [defStake, setDefStake] = useState(1);
@@ -246,6 +331,8 @@ export default function TradingBot() {
   const [defSteps, setDefSteps] = useState(3);
   const [defTP, setDefTP] = useState(10);
   const [defSL, setDefSL] = useState(25);
+  const [defMinVol, setDefMinVol] = useState(0);
+  const [defMaxVol, setDefMaxVol] = useState(100);
   
   // Refs
   const runningRef = useRef<Record<string, boolean>>({});
@@ -294,6 +381,9 @@ export default function TradingBot() {
                 maxSteps: defSteps,
                 takeProfit: defTP,
                 stopLoss: defSL,
+                checkVolatility: true,
+                minVolatility: defMinVol,
+                maxVolatility: defMaxVol,
                 isRunning: false,
                 status: 'idle',
                 currentStake: defStake,
@@ -303,6 +393,7 @@ export default function TradingBot() {
                 losses: 0,
                 currentRun: 0,
                 recoveryStep: 0,
+                lastVolatilityCheck: null,
                 expanded: true
               };
               setBots(prev => [...prev, newBot]);
@@ -320,7 +411,39 @@ export default function TradingBot() {
     setScanning(false);
     toast.success(`Scan complete! Found ${Object.values(results).filter(r => r.condition !== 'NONE').length} qualifying markets`);
     if (sound) playSound('success');
-  }, [scanning, autoCreate, bots, defStake, defDuration, defMult, defSteps, defTP, defSL, sound]);
+  }, [scanning, autoCreate, bots, defStake, defDuration, defMult, defSteps, defTP, defSL, defMinVol, defMaxVol, sound]);
+
+  // ==================== CHECK VOLATILITY ====================
+  
+  const checkVolatilityCondition = useCallback((bot: Bot, analysis: VolatilityAnalysis): boolean => {
+    if (!bot.checkVolatility) return true;
+    
+    const score = analysis.volatilityScore;
+    return score >= bot.minVolatility && score <= bot.maxVolatility;
+  }, []);
+
+  // ==================== UPDATE MARKET DATA ====================
+  
+  const updateMarketData = useCallback(async (symbol: string) => {
+    try {
+      const ticks = marketTicks.current[symbol] || [];
+      const newTick = await waitForNextTick(symbol);
+      if (newTick > 0) {
+        ticks.push(newTick);
+        if (ticks.length > 1000) ticks.shift();
+        marketTicks.current[symbol] = ticks;
+        
+        // Update analysis
+        setAnalyses(prev => ({
+          ...prev,
+          [symbol]: analyzeMarket(ticks)
+        }));
+      }
+      return newTick;
+    } catch (e) {
+      return 0;
+    }
+  }, []);
 
   // ==================== PLAY SOUND ====================
   
@@ -356,21 +479,61 @@ export default function TradingBot() {
     let run = 0;
     let step = 0;
     let recovering = false;
+    let consecutiveLosses = 0;
     
     while (runningRef.current[botId] && run < 3) {
       if (pnl >= bot.takeProfit || pnl <= -bot.stopLoss) break;
       
-      const tick = await waitForNextTick(bot.market);
+      // Update market data and check conditions
+      setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'waiting' } : b));
+      
+      const tick = await updateMarketData(bot.market);
       if (tick === 0) continue;
+      
+      // Check current market conditions
+      const currentAnalysis = analyses[bot.market];
+      if (!currentAnalysis) continue;
+      
+      // Update bot with latest volatility
+      setBots(prev => prev.map(b => b.id === botId ? { 
+        ...b, 
+        lastVolatilityCheck: currentAnalysis.volatility 
+      } : b));
+      
+      // Check volatility condition
+      if (!checkVolatilityCondition(bot, currentAnalysis.volatility)) {
+        // Volatility not suitable, wait and continue watching
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
       
       const digit = Math.floor(tick % 10);
       let shouldEnter = false;
       
-      if (bot.entryType === 'digit') shouldEnter = digit === bot.entryValue;
-      else if (bot.entryType === 'even') shouldEnter = digit % 2 === 0;
-      else shouldEnter = digit % 2 === 1;
+      // Check digit condition based on bot type
+      if (bot.entryType === 'digit') {
+        shouldEnter = digit === bot.entryValue;
+      } else if (bot.entryType === 'even') {
+        shouldEnter = digit % 2 === 0;
+      } else {
+        shouldEnter = digit % 2 === 1;
+      }
       
       if (!shouldEnter) continue;
+      
+      // Double-check conditions for Type A/B bots
+      if (bot.type === 'TYPE_A') {
+        const low012 = currentAnalysis.percentages.low012;
+        if (low012 >= 10) {
+          // Condition no longer valid, skip this entry
+          continue;
+        }
+      } else if (bot.type === 'TYPE_B') {
+        const high789 = currentAnalysis.percentages.high789;
+        if (high789 >= 10) {
+          continue;
+        }
+      }
       
       setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'trading' } : b));
       
@@ -398,7 +561,8 @@ export default function TradingBot() {
           stake,
           result: 'pending',
           profit: 0,
-          digit
+          digit,
+          volatility: currentAnalysis.volatility.volatilityScore
         }, ...prev].slice(0, 50));
         
         const { contractId } = await derivApi.buyContract(params);
@@ -414,9 +578,11 @@ export default function TradingBot() {
         
         if (won) {
           wins++;
+          consecutiveLosses = 0;
           if (recovering) {
             runningRef.current[botId] = false;
             toast.success(`${bot.name}: Recovery successful!`);
+            if (sound) playSound('success');
             break;
           } else {
             run++;
@@ -425,15 +591,19 @@ export default function TradingBot() {
             recovering = false;
             if (run >= 3) {
               toast.success(`${bot.name}: Completed 3 runs!`);
+              if (sound) playSound('success');
               break;
             }
           }
         } else {
           losses++;
+          consecutiveLosses++;
+          
           if (!recovering) {
             recovering = true;
             step = 1;
             stake = bot.stake * bot.multiplier;
+            setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'recovery' } : b));
           } else {
             step++;
             if (step <= bot.maxSteps) {
@@ -441,6 +611,7 @@ export default function TradingBot() {
             } else {
               runningRef.current[botId] = false;
               toast.error(`${bot.name}: Max recovery steps reached`);
+              if (sound) playSound('error');
               break;
             }
           }
@@ -469,7 +640,7 @@ export default function TradingBot() {
     
     setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: false, status: 'idle' } : b));
     runningRef.current[botId] = false;
-  }, [bots, isAuthorized, balance]);
+  }, [bots, isAuthorized, balance, analyses, checkVolatilityCondition, updateMarketData, sound]);
 
   // ==================== BOT CONTROLS ====================
   
@@ -500,7 +671,7 @@ export default function TradingBot() {
               <Brain className="w-5 h-5 text-primary" />
               <div>
                 <h2 className="text-sm font-bold">Deriv Trading Bot</h2>
-                <p className="text-xs text-muted-foreground">Auto market analysis • Martingale recovery</p>
+                <p className="text-xs text-muted-foreground">Auto market analysis • Volatility check • Martingale recovery</p>
               </div>
             </div>
             
@@ -512,6 +683,11 @@ export default function TradingBot() {
               <div className="flex items-center gap-1 px-2 bg-muted/30 rounded text-xs">
                 <span>Auto</span>
                 <Switch checked={autoCreate} onCheckedChange={setAutoCreate} className="scale-75" />
+              </div>
+              
+              <div className="flex items-center gap-1 px-2 bg-muted/30 rounded text-xs">
+                <span>Vol Check</span>
+                <Switch checked={globalVolatilityCheck} onCheckedChange={setGlobalVolatilityCheck} className="scale-75" />
               </div>
               
               <Button variant="default" size="sm" className="h-7 text-xs px-2" onClick={scanMarkets} disabled={scanning}>
@@ -570,6 +746,7 @@ export default function TradingBot() {
               {bots.map(bot => {
                 const style = BOT_STYLES[bot.type];
                 const market = MARKETS.find(m => m.value === bot.market);
+                const volatility = bot.lastVolatilityCheck || (analyses[bot.market]?.volatility);
                 
                 return (
                   <Card key={bot.id} className={`border-2 ${style.border} ${style.bg}`}>
@@ -608,10 +785,28 @@ export default function TradingBot() {
                             {bot.status === 'trading' && <Activity className="w-3 h-3 text-green-500" />}
                             {bot.status === 'recovery' && <RefreshCw className="w-3 h-3 text-orange-500 animate-spin" />}
                             {bot.status === 'watching' && <Eye className="w-3 h-3 text-yellow-500" />}
+                            {bot.status === 'waiting' && <Timer className="w-3 h-3 text-blue-500" />}
                             <span className="text-[8px]">{bot.status}</span>
                           </div>
                         </div>
                       </div>
+                      
+                      {/* Volatility Display */}
+                      {volatility && (
+                        <div className="flex items-center gap-1 mb-2 text-[8px] bg-background/50 rounded p-1">
+                          {VOLATILITY_ICONS[volatility.volatilityIndex]}
+                          <span className="text-muted-foreground">Vol:</span>
+                          <span className={`
+                            ${volatility.volatilityIndex === 'LOW' ? 'text-blue-400' : ''}
+                            ${volatility.volatilityIndex === 'MEDIUM' ? 'text-yellow-400' : ''}
+                            ${volatility.volatilityIndex === 'HIGH' ? 'text-orange-400' : ''}
+                            ${volatility.volatilityIndex === 'EXTREME' ? 'text-red-400' : ''}
+                          `}>
+                            {volatility.volatilityIndex}
+                          </span>
+                          <span className="text-muted-foreground ml-auto">Δ{volatility.averageChange.toFixed(2)}</span>
+                        </div>
+                      )}
                       
                       {bot.recoveryStep > 0 && (
                         <div className="mb-2">
@@ -666,6 +861,48 @@ export default function TradingBot() {
                               <Label className="text-[8px]">Stop Loss</Label>
                               <Input type="number" value={bot.stopLoss} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stopLoss: parseFloat(e.target.value) || 0 } : b))} disabled={bot.isRunning} className="h-6 text-[8px]" />
                             </div>
+                            
+                            {/* Volatility Settings */}
+                            <div className="col-span-2">
+                              <div className="flex items-center gap-2 mb-1">
+                                <Switch 
+                                  checked={bot.checkVolatility} 
+                                  onCheckedChange={v => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, checkVolatility: v } : b))}
+                                  disabled={bot.isRunning}
+                                  className="scale-75"
+                                />
+                                <Label className="text-[8px]">Check Volatility</Label>
+                              </div>
+                              
+                              {bot.checkVolatility && (
+                                <div className="grid grid-cols-2 gap-1 mt-1">
+                                  <div>
+                                    <Label className="text-[8px]">Min Vol (0-100)</Label>
+                                    <Input 
+                                      type="number" 
+                                      value={bot.minVolatility} 
+                                      onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, minVolatility: parseFloat(e.target.value) || 0 } : b))}
+                                      disabled={bot.isRunning}
+                                      className="h-6 text-[8px]" 
+                                      min="0" 
+                                      max="100"
+                                    />
+                                  </div>
+                                  <div>
+                                    <Label className="text-[8px]">Max Vol (0-100)</Label>
+                                    <Input 
+                                      type="number" 
+                                      value={bot.maxVolatility} 
+                                      onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, maxVolatility: parseFloat(e.target.value) || 100 } : b))}
+                                      disabled={bot.isRunning}
+                                      className="h-6 text-[8px]" 
+                                      min="0" 
+                                      max="100"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -709,7 +946,10 @@ export default function TradingBot() {
                           <span className="text-lg">{market?.icon}</span>
                           <span className="text-sm font-medium">{symbol}</span>
                         </div>
-                        {hasCondition && <Badge className={BOT_STYLES[a.condition]?.badge}>{a.condition}</Badge>}
+                        <div className="flex items-center gap-1">
+                          {VOLATILITY_ICONS[a.volatility.volatilityIndex]}
+                          {hasCondition && <Badge className={BOT_STYLES[a.condition]?.badge}>{a.condition}</Badge>}
+                        </div>
                       </div>
                     </CardHeader>
                     <CardContent className="p-2 pt-0">
@@ -730,6 +970,25 @@ export default function TradingBot() {
                         <div><span className="text-muted-foreground">7-8-9:</span> <span className={a.percentages.high789 < 10 ? 'text-blue-500 font-bold' : ''}>{a.percentages.high789.toFixed(1)}%</span></div>
                         <div><span className="text-muted-foreground">Even:</span> <span className={a.percentages.even > 55 ? 'text-purple-500 font-bold' : ''}>{a.percentages.even.toFixed(1)}%</span></div>
                         <div><span className="text-muted-foreground">Odd:</span> <span className={a.percentages.odd > 55 ? 'text-orange-500 font-bold' : ''}>{a.percentages.odd.toFixed(1)}%</span></div>
+                      </div>
+                      
+                      {/* Volatility Info */}
+                      <div className="grid grid-cols-3 gap-1 mb-2 text-[8px]">
+                        <div className="bg-muted/30 rounded p-1">
+                          <span className="text-muted-foreground">Volatility:</span>
+                          <div className="font-bold">{a.volatility.volatilityIndex}</div>
+                        </div>
+                        <div className="bg-muted/30 rounded p-1">
+                          <span className="text-muted-foreground">Avg Δ:</span>
+                          <div className="font-bold">{a.volatility.averageChange.toFixed(2)}</div>
+                        </div>
+                        <div className="bg-muted/30 rounded p-1">
+                          <span className="text-muted-foreground">Trend:</span>
+                          <div className={`font-bold ${
+                            a.volatility.trend === 'UP' ? 'text-green-500' : 
+                            a.volatility.trend === 'DOWN' ? 'text-red-500' : 'text-yellow-500'
+                          }`}>{a.volatility.trend}</div>
+                        </div>
                       </div>
                       
                       {hasCondition && (
@@ -771,6 +1030,9 @@ export default function TradingBot() {
                       {t.digit !== undefined && <span className="text-[8px] text-muted-foreground">→ {t.digit}</span>}
                     </div>
                     <div className="flex items-center gap-3">
+                      {t.volatility !== undefined && (
+                        <span className="text-[6px] text-muted-foreground">Vol:{t.volatility.toFixed(0)}</span>
+                      )}
                       <span className="text-[8px] font-mono">{formatMoney(t.stake)}</span>
                       <span className={`text-[8px] font-bold w-16 text-right ${
                         t.result === 'win' ? 'text-green-500' : t.result === 'loss' ? 'text-red-500' : 'text-yellow-500'
