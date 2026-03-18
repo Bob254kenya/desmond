@@ -328,8 +328,9 @@ export default function ProScannerBot() {
         1000
       );
 
-      if (response?.history?.ticks && Array.isArray(response.history.ticks)) {
-        const ticks = response.history.ticks;
+      // Fix: Check for history.prices array (based on the HTML/JS code)
+      if (response?.history?.prices && Array.isArray(response.history.prices)) {
+        const prices = response.history.prices;
         
         // Ensure buffer exists with 1000 capacity
         if (!turboBuffersRef.current.has(symbol)) {
@@ -339,8 +340,9 @@ export default function ProScannerBot() {
         buffer.clear();
 
         // Push historical ticks in chronological order
-        ticks.forEach((tick: { epoch: number; quote: number }) => {
-          const digit = getLastDigit(tick.quote);
+        prices.forEach((price: number | string) => {
+          const numPrice = typeof price === 'string' ? parseFloat(price) : price;
+          const digit = getLastDigit(numPrice);
           buffer.push(digit);
           
           // Update legacy tick map
@@ -358,7 +360,35 @@ export default function ProScannerBot() {
         
         toast.success(`Loaded ${buffer.size} historical ticks for ${symbol}${buffer.size < 1000 ? ` (API returned ${buffer.size})` : ''}`);
         setHistoryLoaded(true);
-      } else {
+      } 
+      // Also check for ticks array as fallback
+      else if (response?.history?.ticks && Array.isArray(response.history.ticks)) {
+        const ticks = response.history.ticks;
+        
+        if (!turboBuffersRef.current.has(symbol)) {
+          turboBuffersRef.current.set(symbol, new CircularTickBuffer(1000));
+        }
+        const buffer = turboBuffersRef.current.get(symbol)!;
+        buffer.clear();
+
+        ticks.forEach((tick: { epoch: number; quote: number }) => {
+          const digit = getLastDigit(tick.quote);
+          buffer.push(digit);
+          
+          const map = tickMapRef.current;
+          const arr = map.get(symbol) || [];
+          arr.push(digit);
+          if (arr.length > 200) arr.shift();
+          map.set(symbol, arr);
+        });
+
+        setTickCounts(prev => ({ ...prev, [symbol]: buffer.size }));
+        updateDigitPercentages(symbol);
+        
+        toast.success(`Loaded ${buffer.size} historical ticks for ${symbol}`);
+        setHistoryLoaded(true);
+      }
+      else {
         throw new Error('No historical data received');
       }
     } catch (error) {
@@ -422,7 +452,6 @@ export default function ProScannerBot() {
     }
 
     let active = true;
-    let reconnectTimeout: NodeJS.Timeout;
     
     const handler = (data: any) => {
       if (!data.tick || !active) return;
@@ -483,19 +512,9 @@ export default function ProScannerBot() {
     };
     
     subscribeWithRetry();
-
-    // Reconnection logic
-    const handleReconnect = () => {
-      if (!active) return;
-      subscribeWithRetry();
-    };
-
-    // Listen for connection events if your derivApi emits them
-    // This is a simplified version - adjust based on your actual derivApi implementation
     
     return () => { 
       active = false; 
-      clearTimeout(reconnectTimeout);
       unsub(); 
     };
   }, [selectedPercentMarket, updateDigitPercentages, fetchHistoricalTicks, historyLoaded, isLoadingHistory]);
