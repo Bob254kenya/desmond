@@ -165,6 +165,7 @@ const analyzeVolatility = (ticks: number[]): VolatilityAnalysis => {
   }
   
   const avgChange = changes.reduce((a, b) => a + b, 0) / changes.length;
+  const maxChange = Math.max(...changes);
   
   let volatilityIndex: 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME' = 'LOW';
   let volatilityScore = 0;
@@ -251,7 +252,6 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
   
   if (low012 < 10) {
     condition = 'TYPE_A';
-    // For TYPE_A, we want to bet on the digit that appears MOST among 0,1,2
     const lowDigits = [0,1,2];
     let best = lowDigits.reduce((a,b) => counts[a] > counts[b] ? a : b);
     entry = best;
@@ -259,7 +259,6 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
   }
   else if (high789 < 10) {
     condition = 'TYPE_B';
-    // For TYPE_B, we want to bet on the digit that appears MOST among 7,8,9
     const highDigits = [7,8,9];
     let best = highDigits.reduce((a,b) => counts[a] > counts[b] ? a : b);
     entry = best;
@@ -295,19 +294,13 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
 const waitForNextTick = (symbol: string): Promise<number> => {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => resolve(0), 5000);
-    
-    // Subscribe to ticks
-    derivApi.subscribeTicks(symbol);
-    
-    const handleMessage = (data: any) => {
+    const unsub = derivApi.onMessage((data: any) => {
       if (data.tick && data.tick.symbol === symbol) {
         clearTimeout(timeout);
-        derivApi.unsubscribeTicks(symbol);
+        unsub();
         resolve(data.tick.quote);
       }
-    };
-    
-    derivApi.onMessage(handleMessage);
+    });
   });
 };
 
@@ -344,19 +337,11 @@ export default function TradingBot() {
   // Refs
   const runningRef = useRef<Record<string, boolean>>({});
   const marketTicks = useRef<Record<string, number[]>>({});
-  const abortControllerRef = useRef<AbortController | null>(null);
 
   // ==================== SCAN MARKETS ====================
   
   const scanMarkets = useCallback(async () => {
     if (scanning) return;
-    
-    // Cancel any ongoing scan
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    
-    abortControllerRef.current = new AbortController();
     
     setScanning(true);
     setScanProgress(0);
@@ -367,11 +352,6 @@ export default function TradingBot() {
     toast.info(`Scanning ${total} markets...`);
     
     for (let i = 0; i < MARKETS.length; i++) {
-      // Check if scan was aborted
-      if (abortControllerRef.current.signal.aborted) {
-        break;
-      }
-      
       const market = MARKETS[i].value;
       setScanProgress(Math.round((i + 1) / total * 100));
       
@@ -389,7 +369,7 @@ export default function TradingBot() {
             const exists = bots.some(b => b.market === market && b.type === analysis.condition);
             if (!exists) {
               const newBot: Bot = {
-                id: `bot-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}`,
+                id: `bot-${Date.now()}-${i}`,
                 market,
                 type: analysis.condition,
                 name: `${market} - ${analysis.condition}`,
@@ -401,7 +381,7 @@ export default function TradingBot() {
                 maxSteps: defSteps,
                 takeProfit: defTP,
                 stopLoss: defSL,
-                checkVolatility: globalVolatilityCheck,
+                checkVolatility: true,
                 minVolatility: defMinVol,
                 maxVolatility: defMaxVol,
                 isRunning: false,
@@ -431,7 +411,7 @@ export default function TradingBot() {
     setScanning(false);
     toast.success(`Scan complete! Found ${Object.values(results).filter(r => r.condition !== 'NONE').length} qualifying markets`);
     if (sound) playSound('success');
-  }, [scanning, autoCreate, bots, defStake, defDuration, defMult, defSteps, defTP, defSL, defMinVol, defMaxVol, globalVolatilityCheck, sound]);
+  }, [scanning, autoCreate, bots, defStake, defDuration, defMult, defSteps, defTP, defSL, defMinVol, defMaxVol, sound]);
 
   // ==================== CHECK VOLATILITY ====================
   
@@ -454,11 +434,9 @@ export default function TradingBot() {
         marketTicks.current[symbol] = ticks;
         
         // Update analysis
-        const newAnalysis = analyzeMarket(ticks);
-        newAnalysis.symbol = symbol;
         setAnalyses(prev => ({
           ...prev,
-          [symbol]: newAnalysis
+          [symbol]: analyzeMarket(ticks)
         }));
       }
       return newTick;
@@ -477,47 +455,18 @@ export default function TradingBot() {
       const gain = ctx.createGain();
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.frequency.value = type === 'success' ? 880 : type === 'error' ? 220 : 440;
+      osc.frequency.value = type === 'success' ? 880 : 220;
       gain.gain.value = 0.1;
       osc.start();
       osc.stop(ctx.currentTime + 0.1);
     } catch (e) {}
   };
 
-  // ==================== CHECK MARKET CONDITION ====================
-  
-  const checkMarketCondition = useCallback((bot: Bot, analysis: MarketAnalysis): boolean => {
-    if (!analysis) return false;
-    
-    switch (bot.type) {
-      case 'TYPE_A':
-        return analysis.percentages.low012 < 10;
-      case 'TYPE_B':
-        return analysis.percentages.high789 < 10;
-      case 'EVEN':
-        return analysis.percentages.even > 55;
-      case 'ODD':
-        return analysis.percentages.odd > 55;
-      default:
-        return false;
-    }
-  }, []);
-
   // ==================== RUN BOT ====================
   
   const runBot = useCallback(async (botId: string) => {
     const bot = bots.find(b => b.id === botId);
-    if (!bot || !isAuthorized || balance < bot.currentStake) {
-      toast.error('Insufficient balance or not authorized');
-      return;
-    }
-    
-    // Check initial market condition
-    const initialAnalysis = analyses[bot.market];
-    if (!checkMarketCondition(bot, initialAnalysis)) {
-      toast.error(`Market ${bot.market} no longer meets conditions for ${bot.type}`);
-      return;
-    }
+    if (!bot || !isAuthorized || balance < bot.currentStake) return;
     
     setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: true, status: 'watching' } : b));
     runningRef.current[botId] = true;
@@ -530,24 +479,18 @@ export default function TradingBot() {
     let run = 0;
     let step = 0;
     let recovering = false;
+    let consecutiveLosses = 0;
     
     while (runningRef.current[botId] && run < 3) {
-      // Check profit/loss limits
-      if (pnl >= bot.takeProfit) {
-        toast.success(`${bot.name}: Take profit reached!`);
-        break;
-      }
-      if (pnl <= -bot.stopLoss) {
-        toast.error(`${bot.name}: Stop loss reached!`);
-        break;
-      }
+      if (pnl >= bot.takeProfit || pnl <= -bot.stopLoss) break;
       
+      // Update market data and check conditions
       setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'waiting' } : b));
       
       const tick = await updateMarketData(bot.market);
       if (tick === 0) continue;
       
-      // Get latest analysis
+      // Check current market conditions
       const currentAnalysis = analyses[bot.market];
       if (!currentAnalysis) continue;
       
@@ -559,12 +502,7 @@ export default function TradingBot() {
       
       // Check volatility condition
       if (!checkVolatilityCondition(bot, currentAnalysis.volatility)) {
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
-      }
-      
-      // Check market condition
-      if (!checkMarketCondition(bot, currentAnalysis)) {
+        // Volatility not suitable, wait and continue watching
         await new Promise(r => setTimeout(r, 1000));
         continue;
       }
@@ -572,7 +510,7 @@ export default function TradingBot() {
       const digit = Math.floor(tick % 10);
       let shouldEnter = false;
       
-      // Check entry condition
+      // Check digit condition based on bot type
       if (bot.entryType === 'digit') {
         shouldEnter = digit === bot.entryValue;
       } else if (bot.entryType === 'even') {
@@ -583,14 +521,25 @@ export default function TradingBot() {
       
       if (!shouldEnter) continue;
       
+      // Double-check conditions for Type A/B bots
+      if (bot.type === 'TYPE_A') {
+        const low012 = currentAnalysis.percentages.low012;
+        if (low012 >= 10) {
+          // Condition no longer valid, skip this entry
+          continue;
+        }
+      } else if (bot.type === 'TYPE_B') {
+        const high789 = currentAnalysis.percentages.high789;
+        if (high789 >= 10) {
+          continue;
+        }
+      }
+      
       setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'trading' } : b));
       
       try {
-        const contractType = bot.entryType === 'digit' ? 'DIGITMATCH' : 
-                           bot.entryType === 'even' ? 'DIGITEVEN' : 'DIGITODD';
-        
         const params: any = {
-          contract_type: contractType,
+          contract_type: bot.entryType === 'digit' ? 'DIGITMATCH' : bot.entryType === 'even' ? 'DIGITEVEN' : 'DIGITODD',
           symbol: bot.market,
           duration: bot.duration,
           duration_unit: 't',
@@ -598,11 +547,9 @@ export default function TradingBot() {
           amount: stake
         };
         
-        if (bot.entryType === 'digit') {
-          params.barrier = bot.entryValue.toString();
-        }
+        if (bot.entryType === 'digit') params.barrier = bot.entryValue.toString();
         
-        const tradeId = `${botId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const tradeId = `${botId}-${Date.now()}`;
         setActiveTrade(tradeId);
         
         setTrades(prev => [{
@@ -618,12 +565,11 @@ export default function TradingBot() {
           volatility: currentAnalysis.volatility.volatilityScore
         }, ...prev].slice(0, 50));
         
-        // Buy contract
         const { contractId } = await derivApi.buyContract(params);
         const result = await derivApi.waitForContractResult(contractId);
         
         const won = result.status === 'won';
-        const profit = result.profit || (won ? stake * 0.95 : -stake); // Approximate profit
+        const profit = result.profit;
         
         setTrades(prev => prev.map(t => t.id === tradeId ? { ...t, result: won ? 'win' : 'loss', profit } : t));
         
@@ -632,9 +578,10 @@ export default function TradingBot() {
         
         if (won) {
           wins++;
+          consecutiveLosses = 0;
           if (recovering) {
-            // Recovery successful - stop bot
-            toast.success(`${bot.name}: Recovery successful! Profit: ${formatMoney(profit)}`);
+            runningRef.current[botId] = false;
+            toast.success(`${bot.name}: Recovery successful!`);
             if (sound) playSound('success');
             break;
           } else {
@@ -643,27 +590,26 @@ export default function TradingBot() {
             step = 0;
             recovering = false;
             if (run >= 3) {
-              toast.success(`${bot.name}: Completed 3 runs! Total P&L: ${formatMoney(pnl)}`);
+              toast.success(`${bot.name}: Completed 3 runs!`);
               if (sound) playSound('success');
               break;
             }
           }
         } else {
           losses++;
+          consecutiveLosses++;
           
           if (!recovering) {
-            // Start recovery mode
             recovering = true;
             step = 1;
             stake = bot.stake * bot.multiplier;
             setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'recovery' } : b));
-            toast.info(`${bot.name}: Loss - Starting recovery mode`);
           } else {
             step++;
             if (step <= bot.maxSteps) {
               stake = bot.stake * Math.pow(bot.multiplier, step);
             } else {
-              // Max recovery steps reached
+              runningRef.current[botId] = false;
               toast.error(`${bot.name}: Max recovery steps reached`);
               if (sound) playSound('error');
               break;
@@ -673,7 +619,6 @@ export default function TradingBot() {
         
         setActiveTrade(null);
         
-        // Update bot state
         setBots(prev => prev.map(b => b.id === botId ? {
           ...b,
           totalPnl: pnl,
@@ -687,8 +632,7 @@ export default function TradingBot() {
         
         await new Promise(r => setTimeout(r, 500));
         
-      } catch (error) {
-        console.error('Trade error:', error);
+      } catch (e) {
         setActiveTrade(null);
         await new Promise(r => setTimeout(r, 1000));
       }
@@ -696,64 +640,19 @@ export default function TradingBot() {
     
     setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: false, status: 'idle' } : b));
     runningRef.current[botId] = false;
-  }, [bots, isAuthorized, balance, analyses, checkVolatilityCondition, checkMarketCondition, updateMarketData, sound]);
+  }, [bots, isAuthorized, balance, analyses, checkVolatilityCondition, updateMarketData, sound]);
 
   // ==================== BOT CONTROLS ====================
   
   const startBot = (id: string) => runBot(id);
-  
-  const stopBot = (id: string) => { 
-    runningRef.current[id] = false; 
-    setBots(prev => prev.map(b => b.id === id ? { ...b, isRunning: false, status: 'idle' } : b));
-    toast.info('Bot stopped');
-  };
-  
-  const stopAll = () => { 
-    bots.forEach(b => runningRef.current[b.id] = false); 
-    setBots(prev => prev.map(b => ({ ...b, isRunning: false, status: 'idle' })));
-    toast.info('All bots stopped');
-  };
-  
-  const removeBot = (id: string) => { 
-    stopBot(id); 
-    setBots(prev => prev.filter(b => b.id !== id)); 
-  };
-  
-  const duplicateBot = (bot: Bot) => {
-    setBots(prev => [...prev, { 
-      ...bot, 
-      id: `bot-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
-      isRunning: false, 
-      totalPnl: 0, 
-      trades: 0, 
-      wins: 0, 
-      losses: 0, 
-      currentStake: bot.stake,
-      currentRun: 0,
-      recoveryStep: 0
-    }]);
-    toast.success('Bot duplicated');
-  };
-  
-  const clearAll = () => { 
-    stopAll(); 
-    setBots([]); 
-    setTrades([]);
-    toast.success('All bots and trades cleared');
-  };
+  const stopBot = (id: string) => { runningRef.current[id] = false; setBots(prev => prev.map(b => b.id === id ? { ...b, isRunning: false, status: 'idle' } : b)); };
+  const stopAll = () => { bots.forEach(b => runningRef.current[b.id] = false); setBots(prev => prev.map(b => ({ ...b, isRunning: false, status: 'idle' }))); };
+  const removeBot = (id: string) => { stopBot(id); setBots(prev => prev.filter(b => b.id !== id)); };
+  const duplicateBot = (bot: Bot) => setBots(prev => [...prev, { ...bot, id: `bot-${Date.now()}`, isRunning: false, totalPnl: 0, trades: 0, wins: 0, losses: 0, currentStake: bot.stake }]);
+  const clearAll = () => { stopAll(); setBots([]); setTrades([]); };
 
   // Auto scan on load
-  useEffect(() => { 
-    scanMarkets(); 
-    
-    // Cleanup on unmount
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      stopAll();
-    };
-  }, []);
+  useEffect(() => { scanMarkets(); }, []);
 
   // Stats
   const totalPnl = bots.reduce((s, b) => s + b.totalPnl, 0);
@@ -808,41 +707,14 @@ export default function TradingBot() {
           
           {/* Stats */}
           <div className="grid grid-cols-4 sm:grid-cols-8 gap-1 mt-2 text-[10px]">
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">Balance</span>
-              <div className="font-bold">{formatMoney(balance || 0)}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">P&L</span>
-              <div className={`font-bold ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{formatMoney(totalPnl)}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">Win%</span>
-              <div className="font-bold">{formatPercent(winRate)}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">Trades</span>
-              <div className="font-bold">{totalTrades}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">Active</span>
-              <div className="font-bold text-green-500">{activeBots}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">Bots</span>
-              <div className="font-bold">{bots.length}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">Markets</span>
-              <div className="font-bold">{Object.keys(analyses).length}</div>
-            </div>
-            <div className="bg-muted/30 rounded p-1">
-              <span className="text-muted-foreground">W/L</span>
-              <div className="font-bold">
-                <span className="text-green-500">{totalWins}</span>/
-                <span className="text-red-500">{totalTrades - totalWins}</span>
-              </div>
-            </div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Balance</span><div className="font-bold">{formatMoney(balance || 0)}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">P&L</span><div className={`font-bold ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{formatMoney(totalPnl)}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Win%</span><div className="font-bold">{formatPercent(winRate)}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Trades</span><div className="font-bold">{totalTrades}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Active</span><div className="font-bold text-green-500">{activeBots}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Bots</span><div className="font-bold">{bots.length}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Markets</span><div className="font-bold">{Object.keys(analyses).length}</div></div>
+            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">W/L</span><div className="font-bold"><span className="text-green-500">{totalWins}</span>/<span className="text-red-500">{totalTrades - totalWins}</span></div></div>
           </div>
         </CardHeader>
       </Card>
@@ -875,7 +747,6 @@ export default function TradingBot() {
                 const style = BOT_STYLES[bot.type];
                 const market = MARKETS.find(m => m.value === bot.market);
                 const volatility = bot.lastVolatilityCheck || (analyses[bot.market]?.volatility);
-                const marketAnalysis = analyses[bot.market];
                 
                 return (
                   <Card key={bot.id} className={`border-2 ${style.border} ${style.bg}`}>
@@ -885,21 +756,12 @@ export default function TradingBot() {
                           <div className={`p-1.5 rounded ${style.badge}`}>{style.icon}</div>
                           <div>
                             <h4 className="text-sm font-medium">{market?.icon} {bot.market}</h4>
-                            <p className="text-[10px] text-muted-foreground">
-                              Entry: {bot.entryValue.toString()}
-                              {marketAnalysis && !checkMarketCondition(bot, marketAnalysis) && (
-                                <span className="ml-1 text-red-500">(Invalid)</span>
-                              )}
-                            </p>
+                            <p className="text-[10px] text-muted-foreground">Entry: {bot.entryValue.toString()}</p>
                           </div>
                         </div>
                         <div className="flex gap-1">
-                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => duplicateBot(bot)}>
-                            <Copy className="w-3 h-3" />
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500" onClick={() => removeBot(bot.id)} disabled={bot.isRunning}>
-                            <XCircle className="w-3 h-3" />
-                          </Button>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => duplicateBot(bot)}><Copy className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500" onClick={() => removeBot(bot.id)} disabled={bot.isRunning}><XCircle className="w-3 h-3" /></Button>
                           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, expanded: !b.expanded } : b))}>
                             {bot.expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                           </Button>
@@ -911,26 +773,20 @@ export default function TradingBot() {
                       <div className="grid grid-cols-3 gap-1 text-xs mb-2">
                         <div className="bg-background/50 rounded p-1">
                           <div className="text-[8px] text-muted-foreground">P&L</div>
-                          <div className={`font-bold ${bot.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                            {formatMoney(bot.totalPnl)}
-                          </div>
+                          <div className={`font-bold ${bot.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{formatMoney(bot.totalPnl)}</div>
                         </div>
                         <div className="bg-background/50 rounded p-1">
                           <div className="text-[8px] text-muted-foreground">W/L</div>
-                          <div>
-                            <span className="text-green-500">{bot.wins}</span>/
-                            <span className="text-red-500">{bot.losses}</span>
-                          </div>
+                          <div><span className="text-green-500">{bot.wins}</span>/<span className="text-red-500">{bot.losses}</span></div>
                         </div>
                         <div className="bg-background/50 rounded p-1">
                           <div className="text-[8px] text-muted-foreground">Status</div>
                           <div className="flex items-center gap-0.5">
-                            {bot.status === 'trading' && <Activity className="w-3 h-3 text-green-500 animate-pulse" />}
+                            {bot.status === 'trading' && <Activity className="w-3 h-3 text-green-500" />}
                             {bot.status === 'recovery' && <RefreshCw className="w-3 h-3 text-orange-500 animate-spin" />}
                             {bot.status === 'watching' && <Eye className="w-3 h-3 text-yellow-500" />}
                             {bot.status === 'waiting' && <Timer className="w-3 h-3 text-blue-500" />}
-                            {bot.status === 'idle' && <CircleDot className="w-3 h-3 text-gray-500" />}
-                            <span className="text-[8px] capitalize">{bot.status}</span>
+                            <span className="text-[8px]">{bot.status}</span>
                           </div>
                         </div>
                       </div>
@@ -948,19 +804,7 @@ export default function TradingBot() {
                           `}>
                             {volatility.volatilityIndex}
                           </span>
-                          <span className="text-muted-foreground ml-auto">
-                            Δ{volatility.averageChange.toFixed(2)}
-                          </span>
-                          {bot.checkVolatility && (
-                            <span className={`ml-1 text-[6px] ${
-                              volatility.volatilityScore >= bot.minVolatility && 
-                              volatility.volatilityScore <= bot.maxVolatility 
-                                ? 'text-green-500' 
-                                : 'text-red-500'
-                            }`}>
-                              ({volatility.volatilityScore.toFixed(0)})
-                            </span>
-                          )}
+                          <span className="text-muted-foreground ml-auto">Δ{volatility.averageChange.toFixed(2)}</span>
                         </div>
                       )}
                       
@@ -987,97 +831,35 @@ export default function TradingBot() {
                             <div>
                               <Label className="text-[8px]">Stake ($)</Label>
                               <div className="flex items-center gap-1">
-                                <Button 
-                                  variant="outline" 
-                                  size="sm" 
-                                  className="h-6 w-6 p-0" 
-                                  onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: Math.max(0.1, b.stake - 0.1) } : b))} 
-                                  disabled={bot.isRunning}
-                                >
-                                  <Minus className="w-3 h-3" />
-                                </Button>
-                                <Input 
-                                  type="number" 
-                                  value={bot.stake} 
-                                  onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: Math.max(0.1, parseFloat(e.target.value) || 0.1) } : b))} 
-                                  disabled={bot.isRunning} 
-                                  className="h-6 text-[8px] text-center p-0" 
-                                  step="0.1" 
-                                  min="0.1"
-                                />
-                                <Button 
-                                  variant="outline" 
-                                  size="sm" 
-                                  className="h-6 w-6 p-0" 
-                                  onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: b.stake + 0.1 } : b))} 
-                                  disabled={bot.isRunning}
-                                >
-                                  <Plus className="w-3 h-3" />
-                                </Button>
+                                <Button variant="outline" size="sm" className="h-6 w-6 p-0" onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: Math.max(0.1, b.stake - 0.1) } : b))} disabled={bot.isRunning}>-</Button>
+                                <Input type="number" value={bot.stake} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: parseFloat(e.target.value) || 0.1 } : b))} disabled={bot.isRunning} className="h-6 text-[8px] text-center p-0" step="0.1" />
+                                <Button variant="outline" size="sm" className="h-6 w-6 p-0" onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: b.stake + 0.1 } : b))} disabled={bot.isRunning}>+</Button>
                               </div>
                             </div>
                             <div>
                               <Label className="text-[8px]">Duration</Label>
-                              <Select 
-                                value={bot.duration.toString()} 
-                                onValueChange={v => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, duration: parseInt(v) } : b))} 
-                                disabled={bot.isRunning}
-                              >
-                                <SelectTrigger className="h-6 text-[8px]">
-                                  <SelectValue />
-                                </SelectTrigger>
+                              <Select value={bot.duration.toString()} onValueChange={v => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, duration: parseInt(v) } : b))} disabled={bot.isRunning}>
+                                <SelectTrigger className="h-6 text-[8px]"><SelectValue /></SelectTrigger>
                                 <SelectContent>
-                                  {[1,2,3,4,5,6,7,8,9,10].map(d => (
-                                    <SelectItem key={d} value={d.toString()} className="text-[8px]">
-                                      {d} ticks
-                                    </SelectItem>
-                                  ))}
+                                  {[1,2,3,4,5,6,7,8,9,10].map(d => <SelectItem key={d} value={d.toString()} className="text-[8px]">{d} ticks</SelectItem>)}
                                 </SelectContent>
                               </Select>
                             </div>
                             <div>
                               <Label className="text-[8px]">Multiplier</Label>
-                              <Input 
-                                type="number" 
-                                value={bot.multiplier} 
-                                onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, multiplier: parseFloat(e.target.value) || 1.5 } : b))} 
-                                disabled={bot.isRunning} 
-                                className="h-6 text-[8px]" 
-                                step="0.1" 
-                                min="1.1"
-                              />
+                              <Input type="number" value={bot.multiplier} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, multiplier: parseFloat(e.target.value) || 1.5 } : b))} disabled={bot.isRunning} className="h-6 text-[8px]" step="0.1" />
                             </div>
                             <div>
                               <Label className="text-[8px]">Max Steps</Label>
-                              <Input 
-                                type="number" 
-                                value={bot.maxSteps} 
-                                onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, maxSteps: parseInt(e.target.value) || 1 } : b))} 
-                                disabled={bot.isRunning} 
-                                className="h-6 text-[8px]" 
-                                min="1" 
-                                max="5"
-                              />
+                              <Input type="number" value={bot.maxSteps} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, maxSteps: parseInt(e.target.value) || 1 } : b))} disabled={bot.isRunning} className="h-6 text-[8px]" min="1" max="5" />
                             </div>
                             <div>
                               <Label className="text-[8px]">Take Profit</Label>
-                              <Input 
-                                type="number" 
-                                value={bot.takeProfit} 
-                                onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, takeProfit: parseFloat(e.target.value) || 0 } : b))} 
-                                disabled={bot.isRunning} 
-                                className="h-6 text-[8px]" 
-                              />
+                              <Input type="number" value={bot.takeProfit} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, takeProfit: parseFloat(e.target.value) || 0 } : b))} disabled={bot.isRunning} className="h-6 text-[8px]" />
                             </div>
                             <div>
                               <Label className="text-[8px]">Stop Loss</Label>
-                              <Input 
-                                type="number" 
-                                value={bot.stopLoss} 
-                                onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stopLoss: parseFloat(e.target.value) || 0 } : b))} 
-                                disabled={bot.isRunning} 
-                                className="h-6 text-[8px]" 
-                              />
+                              <Input type="number" value={bot.stopLoss} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stopLoss: parseFloat(e.target.value) || 0 } : b))} disabled={bot.isRunning} className="h-6 text-[8px]" />
                             </div>
                             
                             {/* Volatility Settings */}
@@ -1128,11 +910,7 @@ export default function TradingBot() {
                     
                     <CardFooter className="p-3 pt-0">
                       {!bot.isRunning ? (
-                        <Button 
-                          className="w-full h-7 text-xs" 
-                          onClick={() => startBot(bot.id)} 
-                          disabled={!isAuthorized || balance < bot.stake || !!activeTrade}
-                        >
+                        <Button className="w-full h-7 text-xs" onClick={() => startBot(bot.id)} disabled={!isAuthorized || balance < bot.stake || !!activeTrade}>
                           <Play className="w-3 h-3 mr-1" /> Start
                         </Button>
                       ) : (
@@ -1170,11 +948,7 @@ export default function TradingBot() {
                         </div>
                         <div className="flex items-center gap-1">
                           {VOLATILITY_ICONS[a.volatility.volatilityIndex]}
-                          {hasCondition && (
-                            <Badge className={BOT_STYLES[a.condition]?.badge}>
-                              {a.condition}
-                            </Badge>
-                          )}
+                          {hasCondition && <Badge className={BOT_STYLES[a.condition]?.badge}>{a.condition}</Badge>}
                         </div>
                       </div>
                     </CardHeader>
@@ -1192,30 +966,10 @@ export default function TradingBot() {
                       </div>
                       
                       <div className="grid grid-cols-4 gap-1 text-[8px] mb-2">
-                        <div>
-                          <span className="text-muted-foreground">0-1-2:</span>{' '}
-                          <span className={a.percentages.low012 < 10 ? 'text-emerald-500 font-bold' : ''}>
-                            {a.percentages.low012.toFixed(1)}%
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">7-8-9:</span>{' '}
-                          <span className={a.percentages.high789 < 10 ? 'text-blue-500 font-bold' : ''}>
-                            {a.percentages.high789.toFixed(1)}%
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Even:</span>{' '}
-                          <span className={a.percentages.even > 55 ? 'text-purple-500 font-bold' : ''}>
-                            {a.percentages.even.toFixed(1)}%
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Odd:</span>{' '}
-                          <span className={a.percentages.odd > 55 ? 'text-orange-500 font-bold' : ''}>
-                            {a.percentages.odd.toFixed(1)}%
-                          </span>
-                        </div>
+                        <div><span className="text-muted-foreground">0-1-2:</span> <span className={a.percentages.low012 < 10 ? 'text-emerald-500 font-bold' : ''}>{a.percentages.low012.toFixed(1)}%</span></div>
+                        <div><span className="text-muted-foreground">7-8-9:</span> <span className={a.percentages.high789 < 10 ? 'text-blue-500 font-bold' : ''}>{a.percentages.high789.toFixed(1)}%</span></div>
+                        <div><span className="text-muted-foreground">Even:</span> <span className={a.percentages.even > 55 ? 'text-purple-500 font-bold' : ''}>{a.percentages.even.toFixed(1)}%</span></div>
+                        <div><span className="text-muted-foreground">Odd:</span> <span className={a.percentages.odd > 55 ? 'text-orange-500 font-bold' : ''}>{a.percentages.odd.toFixed(1)}%</span></div>
                       </div>
                       
                       {/* Volatility Info */}
@@ -1233,9 +987,7 @@ export default function TradingBot() {
                           <div className={`font-bold ${
                             a.volatility.trend === 'UP' ? 'text-green-500' : 
                             a.volatility.trend === 'DOWN' ? 'text-red-500' : 'text-yellow-500'
-                          }`}>
-                            {a.volatility.trend}
-                          </div>
+                          }`}>{a.volatility.trend}</div>
                         </div>
                       </div>
                       
@@ -1246,9 +998,6 @@ export default function TradingBot() {
                             <span className="text-[8px]">Confidence: {a.confidence.toFixed(0)}%</span>
                           </div>
                           <Progress value={a.confidence} className="h-1" />
-                          <p className="text-[8px] text-muted-foreground mt-1">
-                            Entry: {a.entry.toString()}
-                          </p>
                         </div>
                       )}
                     </CardContent>
@@ -1272,30 +1021,23 @@ export default function TradingBot() {
               ) : (
                 trades.map((t, i) => (
                   <div key={i} className={`flex items-center justify-between p-1.5 rounded text-xs mb-1 ${
-                    t.result === 'win' ? 'bg-green-500/10' : 
-                    t.result === 'loss' ? 'bg-red-500/10' : 'bg-yellow-500/10'
+                    t.result === 'win' ? 'bg-green-500/10' : t.result === 'loss' ? 'bg-red-500/10' : 'bg-yellow-500/10'
                   }`}>
                     <div className="flex items-center gap-2">
                       <span className="text-[8px] text-muted-foreground w-12">{t.time}</span>
                       <Badge variant="outline" className="text-[6px] px-1 py-0">{t.botName}</Badge>
                       <span className="text-[8px]">{t.entry}</span>
-                      {t.digit !== undefined && (
-                        <span className="text-[8px] text-muted-foreground">→ {t.digit}</span>
-                      )}
+                      {t.digit !== undefined && <span className="text-[8px] text-muted-foreground">→ {t.digit}</span>}
                     </div>
                     <div className="flex items-center gap-3">
                       {t.volatility !== undefined && (
-                        <span className="text-[6px] text-muted-foreground">
-                          Vol:{t.volatility.toFixed(0)}
-                        </span>
+                        <span className="text-[6px] text-muted-foreground">Vol:{t.volatility.toFixed(0)}</span>
                       )}
                       <span className="text-[8px] font-mono">{formatMoney(t.stake)}</span>
                       <span className={`text-[8px] font-bold w-16 text-right ${
-                        t.result === 'win' ? 'text-green-500' : 
-                        t.result === 'loss' ? 'text-red-500' : 'text-yellow-500'
+                        t.result === 'win' ? 'text-green-500' : t.result === 'loss' ? 'text-red-500' : 'text-yellow-500'
                       }`}>
-                        {t.result === 'win' ? `+${formatMoney(t.profit)}` : 
-                         t.result === 'loss' ? `-${formatMoney(Math.abs(t.profit))}` : 'Pending'}
+                        {t.result === 'win' ? `+${formatMoney(t.profit)}` : t.result === 'loss' ? `-${formatMoney(Math.abs(t.profit))}` : 'Pending'}
                       </span>
                     </div>
                   </div>
