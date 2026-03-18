@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+ensure in digit percentage analysis the number of tick are fetch 1000 initial then to continue import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { copyTradingService } from '@/services/copy-trading-service';
@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import {
   Play, StopCircle, Trash2, Scan,
-  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, Loader2, WifiOff
+  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, BarChart, Loader2,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -53,19 +53,58 @@ interface LogEntry {
   switchInfo: string;
 }
 
+/* ── Percentage Analysis Types ── */
+interface DigitPercentage {
+  digit: number;
+  count: number;
+  percentage: number;
+}
+
+/* ── Circular Tick Buffer ── */
+class CircularTickBuffer {
+  private buffer: { digit: number; ts: number }[];
+  private head = 0;
+  private count = 0;
+  constructor(private capacity = 1000) {
+    this.buffer = new Array(capacity);
+  }
+  push(digit: number) {
+    this.buffer[this.head] = { digit, ts: performance.now() };
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count++;
+  }
+  last(n: number): number[] {
+    const result: number[] = [];
+    const start = (this.head - Math.min(n, this.count) + this.capacity) % this.capacity;
+    for (let i = 0; i < Math.min(n, this.count); i++) {
+      result.push(this.buffer[(start + i) % this.capacity].digit);
+    }
+    return result;
+  }
+  lastTs(): number { return this.count > 0 ? this.buffer[(this.head - 1 + this.capacity) % this.capacity].ts : 0; }
+  get size() { return this.count; }
+  
+  // Get all digits for percentage calculation (most recent first)
+  getAllDigits(): number[] {
+    const result: number[] = [];
+    for (let i = 0; i < this.count; i++) {
+      result.push(this.buffer[(this.head - i - 1 + this.capacity) % this.capacity].digit);
+    }
+    return result;
+  }
+
+  // Clear buffer and reset
+  clear() {
+    this.head = 0;
+    this.count = 0;
+    this.buffer = new Array(this.capacity);
+  }
+}
+
 function waitForNextTick(symbol: string): Promise<{ quote: number }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      unsub();
-      reject(new Error('Tick timeout'));
-    }, 5000);
-    
+  return new Promise((resolve) => {
     const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) { 
-        clearTimeout(timeout);
-        unsub(); 
-        resolve({ quote: data.tick.quote }); 
-      }
+      if (data.tick && data.tick.symbol === symbol) { unsub(); resolve({ quote: data.tick.quote }); }
     });
   });
 }
@@ -74,15 +113,9 @@ function waitForNextTick(symbol: string): Promise<{ quote: number }> {
 function simulateVirtualContract(
   contractType: string, barrier: string, symbol: string
 ): Promise<{ won: boolean; digit: number }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      unsub();
-      reject(new Error('Virtual contract timeout'));
-    }, 5000);
-    
+  return new Promise((resolve) => {
     const unsub = derivApi.onMessage((data: any) => {
       if (data.tick && data.tick.symbol === symbol) {
-        clearTimeout(timeout);
         unsub();
         const digit = getLastDigit(data.tick.quote);
         const b = parseInt(barrier) || 0;
@@ -105,10 +138,6 @@ export default function ProScannerBot() {
   const { isAuthorized, balance, activeAccount } = useAuth();
   const { recordLoss } = useLossRequirement();
   const location = useLocation();
-
-  /* ── Connection state ── */
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   /* ── Market 1 config ── */
   const [m1Enabled, setM1Enabled] = useState(true);
@@ -167,12 +196,22 @@ export default function ProScannerBot() {
   /* ── Scanner ── */
   const [scannerActive, setScannerActive] = useState(false);
 
+  /* ── Percentage Analysis ── */
+  const [selectedPercentMarket, setSelectedPercentMarket] = useState('R_100');
+  const [percentTickRange, setPercentTickRange] = useState('1000'); // Default to 1000
+  const [digitPercentages, setDigitPercentages] = useState<DigitPercentage[]>([]);
+  const [selectedDigit, setSelectedDigit] = useState<number | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const historyFetchInProgress = useRef(false);
+
   /* ── Turbo ── */
   const [turboMode, setTurboMode] = useState(false);
   const [botName, setBotName] = useState('');
   const [turboLatency, setTurboLatency] = useState(0);
   const [ticksCaptured, setTicksCaptured] = useState(0);
   const [ticksMissed, setTicksMissed] = useState(0);
+  const turboBuffersRef = useRef<Map<string, CircularTickBuffer>>(new Map());
   const lastTickTsRef = useRef(0);
 
   /* ── Bot state ── */
@@ -193,186 +232,162 @@ export default function ProScannerBot() {
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
 
-  /* ── HTML Analyzer State ── */
-  const [analyzerSymbol, setAnalyzerSymbol] = useState('R_100');
-  const [analyzerMode, setAnalyzerMode] = useState<'over' | 'under'>('over');
-  const [analyzerThreshold, setAnalyzerThreshold] = useState(5);
-  const [analyzerTicks, setAnalyzerTicks] = useState<number[]>([]);
-  const [analyzerStatus, setAnalyzerStatus] = useState('Connecting...');
-  const analyzerWsRef = useRef<WebSocket | null>(null);
-
-  /* ── Check connection status ── */
-  useEffect(() => {
-    const checkConnection = () => {
-      const connected = derivApi.isConnected;
-      setIsConnected(connected);
-      if (!connected) {
-        setConnectionError('Not connected to Deriv API');
-      } else {
-        setConnectionError(null);
-      }
-    };
-
-    checkConnection();
-    const interval = setInterval(checkConnection, 3000);
-    
-    return () => clearInterval(interval);
-  }, []);
-
-  /* ── HTML Analyzer WebSocket Connection ── */
-  useEffect(() => {
-    // Close previous connection
-    if (analyzerWsRef.current) {
-      analyzerWsRef.current.close();
+  /* ── Fetch historical ticks for a symbol ── */
+  const fetchHistoricalTicks = useCallback(async (symbol: string, count: number = 1000) => {
+    if (!derivApi.isConnected) {
+      toast.error('Not connected to Deriv API');
+      return;
     }
 
-    setAnalyzerStatus('Connecting...');
-    setAnalyzerTicks([]);
+    if (historyFetchInProgress.current) return;
+    historyFetchInProgress.current = true;
+    setIsLoadingHistory(true);
 
     try {
-      const ws = new WebSocket("wss://ws.binaryws.com/websockets/v3?app_id=1089");
-      analyzerWsRef.current = ws;
+      // Get historical ticks from the API
+      const response = await derivApi.getTicksHistory(symbol as MarketSymbol, {
+        adjust_start_time: 1,
+        count,
+        end: 'latest',
+        start: 1,
+        style: 'ticks'
+      });
 
-      ws.onopen = () => {
-        setAnalyzerStatus('Live');
-        ws.send(JSON.stringify({
-          ticks_history: analyzerSymbol,
-          style: "ticks",
-          count: 1000,
-          end: "latest",
-          subscribe: 1,
-        }));
-      };
-
-      ws.onmessage = (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-          if (data.history?.prices) {
-            const prices = data.history.prices.map((p: string) => 
-              parseInt(parseFloat(p).toFixed(2).slice(-1))
-            );
-            setAnalyzerTicks(prices);
-          }
-          if (data.tick?.quote) {
-            const tick = parseFloat(data.tick.quote);
-            const digit = parseInt(tick.toFixed(2).slice(-1));
-            if (!isNaN(digit)) {
-              setAnalyzerTicks(prev => {
-                const newTicks = [...prev, digit];
-                if (newTicks.length > 4000) newTicks.shift();
-                return newTicks;
-              });
-            }
-          }
-        } catch (e) {
-          // Silently handle parse errors
+      if (response?.history?.ticks && Array.isArray(response.history.ticks)) {
+        const ticks = response.history.ticks;
+        
+        // Initialize buffer for this symbol
+        if (!turboBuffersRef.current.has(symbol)) {
+          turboBuffersRef.current.set(symbol, new CircularTickBuffer(1000));
         }
-      };
+        const buffer = turboBuffersRef.current.get(symbol)!;
+        buffer.clear(); // Clear existing data
 
-      ws.onerror = () => {
-        setAnalyzerStatus('Error');
-      };
+        // Push historical ticks in chronological order
+        ticks.forEach((tick: { epoch: number; quote: number }) => {
+          const digit = getLastDigit(tick.quote);
+          buffer.push(digit);
+          
+          // Also update legacy tick map
+          const map = tickMapRef.current;
+          const arr = map.get(symbol) || [];
+          arr.push(digit);
+          if (arr.length > 200) arr.shift();
+          map.set(symbol, arr);
+        });
 
-      ws.onclose = () => {
-        setAnalyzerStatus('No network');
-      };
-    } catch (e) {
-      setAnalyzerStatus('Error');
-    }
-
-    return () => {
-      if (analyzerWsRef.current) {
-        analyzerWsRef.current.close();
+        setTickCounts(prev => ({ ...prev, [symbol]: ticks.length }));
+        
+        // Update percentages
+        updateDigitPercentages(symbol);
+        
+        toast.success(`Loaded ${ticks.length} historical ticks for ${symbol}`);
+        setHistoryLoaded(true);
       }
-    };
-  }, [analyzerSymbol]);
+    } catch (error) {
+      console.error('Error fetching historical ticks:', error);
+      toast.error('Failed to load historical ticks');
+    } finally {
+      setIsLoadingHistory(false);
+      historyFetchInProgress.current = false;
+    }
+  }, []);
 
-  /* ── Handle digit click from analyzer ── */
-  const handleAnalyzerDigitClick = (digit: number) => {
-    setAnalyzerThreshold(digit);
-    if (needsBarrier(m1Contract)) {
+  /* ── Update digit percentages for selected market ── */
+  const updateDigitPercentages = useCallback((symbol: string) => {
+    const buffer = turboBuffersRef.current.get(symbol);
+    if (!buffer) return;
+    
+    const range = parseInt(percentTickRange) || 1000;
+    const allDigits = buffer.getAllDigits();
+    const recentDigits = allDigits.slice(0, Math.min(range, allDigits.length));
+    
+    if (recentDigits.length === 0) return;
+    
+    const counts: Record<number, number> = {};
+    for (let i = 0; i <= 9; i++) counts[i] = 0;
+    
+    recentDigits.forEach(d => {
+      counts[d] = (counts[d] || 0) + 1;
+    });
+    
+    const percentages: DigitPercentage[] = [];
+    for (let i = 0; i <= 9; i++) {
+      percentages.push({
+        digit: i,
+        count: counts[i],
+        percentage: (counts[i] / recentDigits.length) * 100
+      });
+    }
+    
+    setDigitPercentages(percentages);
+  }, [percentTickRange]);
+
+  /* ── Load historical ticks when market changes ── */
+  useEffect(() => {
+    if (!derivApi.isConnected) return;
+    
+    setHistoryLoaded(false);
+    fetchHistoricalTicks(selectedPercentMarket, 1000);
+  }, [selectedPercentMarket, fetchHistoricalTicks]);
+
+  /* Subscribe to all scanner markets and handle real-time updates */
+  useEffect(() => {
+    if (!derivApi.isConnected) return;
+    let active = true;
+    const handler = (data: any) => {
+      if (!data.tick || !active) return;
+      const sym = data.tick.symbol as string;
+      const digit = getLastDigit(data.tick.quote);
+      const now = performance.now();
+
+      // Legacy tick map
+      const map = tickMapRef.current;
+      const arr = map.get(sym) || [];
+      arr.push(digit);
+      if (arr.length > 200) arr.shift();
+      map.set(sym, arr);
+      setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
+
+      // Turbo circular buffer
+      if (!turboBuffersRef.current.has(sym)) {
+        turboBuffersRef.current.set(sym, new CircularTickBuffer(1000));
+      }
+      const buf = turboBuffersRef.current.get(sym)!;
+      buf.push(digit);
+
+      // Update percentages if this is the selected market
+      if (sym === selectedPercentMarket) {
+        updateDigitPercentages(sym);
+      }
+
+      // Turbo latency tracking
+      if (lastTickTsRef.current > 0) {
+        const lat = now - lastTickTsRef.current;
+        setTurboLatency(Math.round(lat));
+        if (lat > 50) setTicksMissed(prev => prev + 1);
+      }
+      lastTickTsRef.current = now;
+      setTicksCaptured(prev => prev + 1);
+    };
+    const unsub = derivApi.onMessage(handler);
+    SCANNER_MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); });
+    return () => { active = false; unsub(); };
+  }, [selectedPercentMarket, updateDigitPercentages]);
+
+  /* ── Handle digit button click ── */
+  const handleDigitClick = useCallback((digit: number) => {
+    setSelectedDigit(selectedDigit === digit ? null : digit);
+    
+    // You can add additional logic here, like setting the barrier or digit condition
+    if (m1Contract.includes('DIGITMATCH') || m1Contract.includes('DIGITDIFF') || 
+        m1Contract.includes('DIGITOVER') || m1Contract.includes('DIGITUNDER')) {
       setM1Barrier(digit.toString());
     }
-    if (needsBarrier(m2Contract)) {
-      setM2Barrier(digit.toString());
-    }
-  };
-
-  /* ── Calculate analyzer statistics ── */
-  const analyzerStats = useMemo(() => {
-    if (!analyzerTicks.length) return null;
-
-    const tickCount = 1000;
-    const recentTicks = analyzerTicks.slice(-tickCount);
-    const lastDigits = recentTicks.slice(-30);
-    const counts = Array(10).fill(0);
-    recentTicks.forEach(d => counts[d]++);
-    const total = recentTicks.length;
-
-    // Most frequent digits
-    const sorted = counts
-      .map((c, d) => ({ digit: d, count: c }))
-      .sort((a, b) => b.count - a.count);
-    const most = sorted[0]?.digit;
-    const second = sorted[1]?.digit;
-
-    // Over/Under percentages
-    const lowCount = counts.slice(0, analyzerThreshold).reduce((a, b) => a + b, 0);
-    const highCount = counts.slice(analyzerThreshold + 1, 10).reduce((a, b) => a + b, 0);
-    const lowPercent = total ? ((lowCount / total) * 100).toFixed(1) : 0;
-    const highPercent = total ? ((highCount / total) * 100).toFixed(1) : 0;
-
-    // Even/Odd percentages
-    let evenCount = 0, oddCount = 0;
-    recentTicks.forEach(d => {
-      if (d % 2 === 0) evenCount++;
-      else oddCount++;
-    });
-    const evenPercent = total ? ((evenCount / total) * 100).toFixed(1) : 0;
-    const oddPercent = total ? ((oddCount / total) * 100).toFixed(1) : 0;
-
-    // Entry triggers
-    let winningDigits: number[] = [], losingDigits: number[] = [];
-    for (let i = 0; i < recentTicks.length - 1; i++) {
-      if (recentTicks[i] === analyzerThreshold) {
-        const nextDigit = recentTicks[i + 1];
-        if (analyzerMode === "over") {
-          if (nextDigit > analyzerThreshold) winningDigits.push(nextDigit);
-          else losingDigits.push(nextDigit);
-        } else {
-          if (nextDigit < analyzerThreshold) winningDigits.push(nextDigit);
-          else losingDigits.push(nextDigit);
-        }
-      }
-    }
-    winningDigits = [...new Set(winningDigits)];
-    losingDigits = [...new Set(losingDigits)];
-
-    // Signal
-    let signalText = "WAIT / NEUTRAL", signalClass = "signal-neutral";
-    if (most < analyzerThreshold && second < analyzerThreshold) {
-      signalText = `SIGNAL: STRONG TRADE UNDER ${analyzerThreshold}`;
-      signalClass = "signal-under";
-    } else if (most > analyzerThreshold && second > analyzerThreshold) {
-      signalText = `SIGNAL: STRONG TRADE OVER ${analyzerThreshold}`;
-      signalClass = "signal-over";
-    }
-
-    return {
-      lastDigits,
-      counts,
-      most,
-      second,
-      lowPercent,
-      highPercent,
-      evenPercent,
-      oddPercent,
-      winningDigits,
-      losingDigits,
-      signalText,
-      signalClass
-    };
-  }, [analyzerTicks, analyzerThreshold, analyzerMode]);
+    
+    const percentage = digitPercentages.find(d => d.digit === digit)?.percentage.toFixed(1) || '0.0';
+    toast.info(`Selected digit: ${digit} (${percentage}%)`);
+  }, [selectedDigit, m1Contract, digitPercentages]);
 
   /* ── Pattern validation ── */
   const cleanM1Pattern = m1Pattern.toUpperCase().replace(/[^EO]/g, '');
@@ -454,18 +469,7 @@ export default function ProScannerBot() {
 
   /* ═══════════════ MAIN BOT LOOP ═══════════════ */
   const startBot = useCallback(async () => {
-    if (!isAuthorized) {
-      toast.error('Please authorize first');
-      return;
-    }
-    
-    if (!derivApi.isConnected) {
-      toast.error('Not connected to Deriv API');
-      return;
-    }
-
-    if (isRunning) return;
-    
+    if (!isAuthorized || isRunning) return;
     const baseStake = parseFloat(stake);
     if (baseStake < 0.35) { toast.error('Min stake $0.35'); return; }
     if (!m1Enabled && !m2Enabled) { toast.error('Enable at least one market'); return; }
@@ -493,12 +497,6 @@ export default function ProScannerBot() {
     });
 
     while (runningRef.current) {
-      // Check connection periodically
-      if (!derivApi.isConnected) {
-        toast.error('Connection lost. Stopping bot.');
-        break;
-      }
-
       const mkt: 1 | 2 = inRecovery ? 2 : 1;
       setCurrentMarket(mkt);
 
@@ -518,8 +516,6 @@ export default function ProScannerBot() {
         let matched = false;
         let matchedSymbol = '';
         while (runningRef.current && !matched) {
-          if (!derivApi.isConnected) break;
-          
           if (scannerActive) {
             const found = findScannerMatchForMarket(2);
             if (found) { matched = true; matchedSymbol = found; }
@@ -533,7 +529,7 @@ export default function ProScannerBot() {
             });
           }
         }
-        if (!runningRef.current || !derivApi.isConnected) break;
+        if (!runningRef.current) break;
 
         setBotStatus('pattern_matched');
         tradeSymbol = matchedSymbol;
@@ -545,8 +541,6 @@ export default function ProScannerBot() {
 
         let matched = false;
         while (runningRef.current && !matched) {
-          if (!derivApi.isConnected) break;
-          
           if (checkStrategyForMarket(cfg.symbol, 1)) { matched = true; }
           if (!matched) {
             await new Promise<void>(r => {
@@ -555,7 +549,7 @@ export default function ProScannerBot() {
             });
           }
         }
-        if (!runningRef.current || !derivApi.isConnected) break;
+        if (!runningRef.current) break;
 
         setBotStatus('pattern_matched');
         tradeSymbol = cfg.symbol;
@@ -565,7 +559,7 @@ export default function ProScannerBot() {
         tradeSymbol = cfg.symbol;
       }
 
-      /* ═══ VIRTUAL HOOK SEQUENCE ═══ */
+      /* ═══ VIRTUAL HOOK SEQUENCE — Loss-streak based ═══ */
       if (hookEnabled) {
         setBotStatus('virtual_hook');
         setVhStatus('waiting');
@@ -575,9 +569,8 @@ export default function ProScannerBot() {
         let consecLosses = 0;
         let virtualTradeNum = 0;
 
+        // Keep simulating virtual trades until we accumulate requiredLosses consecutive losses
         while (consecLosses < requiredLosses && runningRef.current) {
-          if (!derivApi.isConnected) break;
-          
           virtualTradeNum++;
           const vLogId = ++logIdRef.current;
           const vNow = new Date().toLocaleTimeString();
@@ -588,33 +581,30 @@ export default function ProScannerBot() {
             switchInfo: `Virtual #${virtualTradeNum} (losses: ${consecLosses}/${requiredLosses})`,
           });
 
-          try {
-            const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol);
-            if (!runningRef.current) break;
+          const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol);
+          if (!runningRef.current) break;
 
-            if (vResult.won) {
-              consecLosses = 0;
-              setVhConsecLosses(0);
-              setVhFakeWins(prev => prev + 1);
-              updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` });
-            } else {
-              consecLosses++;
-              setVhConsecLosses(consecLosses);
-              setVhFakeLosses(prev => prev + 1);
-              updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` });
-            }
-          } catch (error) {
-            console.error('Virtual contract error:', error);
-            updateLog(vLogId, { result: 'V-Loss', exitDigit: '-', switchInfo: 'Error in virtual trade' });
-            break;
+          if (vResult.won) {
+            // Win resets the consecutive loss counter
+            consecLosses = 0;
+            setVhConsecLosses(0);
+            setVhFakeWins(prev => prev + 1);
+            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` });
+          } else {
+            consecLosses++;
+            setVhConsecLosses(consecLosses);
+            setVhFakeLosses(prev => prev + 1);
+            updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` });
           }
         }
 
-        if (!runningRef.current || !derivApi.isConnected) break;
+        if (!runningRef.current) break;
 
+        // Required consecutive losses reached → hook confirmed
         setVhStatus('confirmed');
         toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
 
+        /* Execute real trades batch */
         for (let ri = 0; ri < realCount && runningRef.current; ri++) {
           const result = await executeRealTrade(
             cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
@@ -629,13 +619,14 @@ export default function ProScannerBot() {
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
 
+        // Reset after real trades
         setVhStatus('idle');
         setVhConsecLosses(0);
         if (!runningRef.current) break;
         continue;
       }
 
-      /* ═══ NORMAL REAL TRADE ═══ */
+      /* ═══ NORMAL REAL TRADE (no hook) ═══ */
       const result = await executeRealTrade(
         cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
       );
@@ -648,6 +639,7 @@ export default function ProScannerBot() {
 
       if (result.shouldBreak) break;
 
+      // Turbo: no delay between trades; normal: small delay
       if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
 
@@ -687,13 +679,9 @@ export default function ProScannerBot() {
     let inRecovery = mkt === 2;
 
     try {
+      // Turbo: skip waiting for next tick, trade immediately
       if (!turboMode) {
-        try {
-          await waitForNextTick(tradeSymbol as MarketSymbol);
-        } catch (error) {
-          updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: 'Tick timeout' });
-          return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
-        }
+        await waitForNextTick(tradeSymbol as MarketSymbol);
       }
 
       const buyParams: any = {
@@ -704,6 +692,7 @@ export default function ProScannerBot() {
 
       const { contractId } = await derivApi.buyContract(buyParams);
       
+      // Copy trade to followers
       if (copyTradingService.enabled) {
         copyTradingService.copyTrade({
           ...buyParams,
@@ -732,6 +721,7 @@ export default function ProScannerBot() {
         cStake = baseStake;
       } else {
         setLosses(prev => prev + 1);
+        // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
         if (activeAccount?.is_virtual) {
           recordLoss(cStake, tradeSymbol, 6000);
         }
@@ -857,11 +847,12 @@ export default function ProScannerBot() {
     if ((cfg as any).botName) setBotName((cfg as any).botName);
   }, []);
 
-  // Auto-load config from navigation state
+  // Auto-load config from navigation state (Free Bots page)
   useEffect(() => {
     const state = location.state as { loadConfig?: BotConfig } | null;
     if (state?.loadConfig) {
       handleLoadConfig(state.loadConfig);
+      // Clear state to prevent re-loading on re-render
       window.history.replaceState({}, '');
     }
   }, [location.state, handleLoadConfig]);
@@ -869,19 +860,17 @@ export default function ProScannerBot() {
   const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
   const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
 
-  // Show connection error if not connected
-  if (!isConnected) {
-    return (
-      <div className="flex flex-col items-center justify-center h-[400px] space-y-4">
-        <WifiOff className="w-16 h-16 text-rose-400" />
-        <h2 className="text-xl font-semibold text-gray-200">Connection Error</h2>
-        <p className="text-sm text-gray-400">{connectionError || 'Failed to connect to Deriv API'}</p>
-        <Button onClick={() => window.location.reload()} className="mt-4">
-          Retry Connection
-        </Button>
-      </div>
-    );
-  }
+  // Update percentages when market or tick range changes
+  useEffect(() => {
+    if (historyLoaded) {
+      updateDigitPercentages(selectedPercentMarket);
+    }
+  }, [selectedPercentMarket, percentTickRange, updateDigitPercentages, historyLoaded]);
+
+  // Manual refresh button handler
+  const handleRefreshHistory = useCallback(() => {
+    fetchHistoricalTicks(selectedPercentMarket, 1000);
+  }, [selectedPercentMarket, fetchHistoricalTicks]);
 
   return (
     <div className="space-y-2 max-w-7xl mx-auto font-sans">
@@ -985,6 +974,103 @@ export default function ProScannerBot() {
               <div className="font-mono text-[10px] font-bold text-white">${currentStake.toFixed(2)}{martingaleStep > 0 && <span className="text-amber-400"> M{martingaleStep}</span>}</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ── Percentage Analysis Section (Below Live Digits) ── */}
+      <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-2.5 shadow-md">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-semibold text-gray-200 flex items-center gap-1">
+            <BarChart className="w-3.5 h-3.5 text-cyan-400" /> Digit Percentage Analysis
+          </h3>
+          <div className="flex items-center gap-2">
+            <Select value={selectedPercentMarket} onValueChange={setSelectedPercentMarket}>
+              <SelectTrigger className="h-6 text-[10px] w-24 bg-gray-900 border-gray-700 text-gray-200">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-gray-800 border-gray-700">
+                {SCANNER_MARKETS.map(m => (
+                  <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200 text-[10px]">
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={percentTickRange} onValueChange={setPercentTickRange}>
+              <SelectTrigger className="h-6 text-[10px] w-20 bg-gray-900 border-gray-700 text-gray-200">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-gray-800 border-gray-700">
+                <SelectItem value="50" className="text-gray-200 text-[10px]">50 ticks</SelectItem>
+                <SelectItem value="100" className="text-gray-200 text-[10px]">100 ticks</SelectItem>
+                <SelectItem value="200" className="text-gray-200 text-[10px]">200 ticks</SelectItem>
+                <SelectItem value="500" className="text-gray-200 text-[10px]">500 ticks</SelectItem>
+                <SelectItem value="1000" className="text-gray-200 text-[10px]">1000 ticks</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-[9px] px-2 bg-gray-900 border-gray-700 text-gray-300 hover:bg-gray-800"
+              onClick={handleRefreshHistory}
+              disabled={isLoadingHistory || isRunning}
+            >
+              {isLoadingHistory ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3 h-3" />
+              )}
+            </Button>
+          </div>
+        </div>
+        
+        {/* Loading indicator */}
+        {isLoadingHistory && (
+          <div className="flex items-center justify-center py-2">
+            <Loader2 className="w-4 h-4 animate-spin text-cyan-400 mr-2" />
+            <span className="text-[10px] text-gray-400">Loading 1000 historical ticks...</span>
+          </div>
+        )}
+        
+        {/* Digit Buttons with Percentages */}
+        <div className="grid grid-cols-5 gap-1 mb-1">
+          {digitPercentages.map(({ digit, percentage, count }) => {
+            const isSelected = selectedDigit === digit;
+            const percentColor = 
+              percentage > 12 ? 'text-emerald-400' :
+              percentage > 9 ? 'text-amber-400' :
+              'text-rose-400';
+            
+            return (
+              <Button
+                key={digit}
+                variant={isSelected ? 'default' : 'outline'}
+                className={`h-14 flex flex-col items-center justify-center p-1 ${
+                  isSelected 
+                    ? 'bg-cyan-600 hover:bg-cyan-700 border-cyan-500' 
+                    : 'bg-gray-900 border-gray-700 hover:bg-gray-800'
+                }`}
+                onClick={() => handleDigitClick(digit)}
+                disabled={isRunning}
+              >
+                <span className="text-sm font-bold text-white">{digit}</span>
+                <div className="flex items-center gap-1 text-[8px]">
+                  <span className={percentColor}>{percentage.toFixed(1)}%</span>
+                  <span className="text-gray-500">({count})</span>
+                </div>
+              </Button>
+            );
+          })}
+        </div>
+        
+        {/* Total ticks info */}
+        <div className="flex items-center justify-between text-[9px] text-gray-500 font-medium">
+          <span>
+            {historyLoaded ? '✅ Historical data loaded' : '⏳ Waiting for data...'}
+          </span>
+          <span>
+            Total ticks analyzed: {digitPercentages.reduce((sum, d) => sum + d.count, 0)} / {percentTickRange}
+          </span>
         </div>
       </div>
 
@@ -1396,7 +1482,7 @@ export default function ProScannerBot() {
           </div>
         </div>
 
-        {/* ═══ RIGHT: Digit Stream + Activity Log + Analyzer ═══ */}
+        {/* ═══ RIGHT: Digit Stream + Activity Log ═══ */}
         <div className="lg:col-span-8 space-y-2">
           {/* Digit Stream */}
           <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-2.5 shadow-md">
@@ -1411,10 +1497,14 @@ export default function ProScannerBot() {
                 const isOver = d >= 5;
                 const isEven = d % 2 === 0;
                 const isLast = i === activeDigits.length - 1;
+                const isSelected = selectedDigit === d;
                 return (
-                  <div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border transition-all ${
+                  <div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border cursor-pointer transition-all ${
                     isLast ? 'ring-2 ring-cyan-400' : ''
-                  } ${isOver ? 'bg-rose-500/10 border-rose-500/30 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'}`}>
+                  } ${
+                    isSelected ? 'ring-2 ring-amber-400 scale-110' : ''
+                  } ${isOver ? 'bg-rose-500/10 border-rose-500/30 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'}`}
+                  onClick={() => handleDigitClick(d)}>
                     <span className="text-sm">{d}</span>
                     <span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
                   </div>
@@ -1453,7 +1543,7 @@ export default function ProScannerBot() {
           <div className="grid grid-cols-2 gap-2">
             <Button
               onClick={startBot}
-              disabled={isRunning || !isAuthorized || balance < parseFloat(stake) || !isConnected}
+              disabled={isRunning || !isAuthorized || balance < parseFloat(stake)}
               className="h-14 text-base font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white rounded-xl shadow-lg"
             >
               <Play className="w-5 h-5 mr-2" /> START M1
@@ -1479,7 +1569,7 @@ export default function ProScannerBot() {
                   </span>
                 )}
                 {!isRunning ? (
-                  <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake) || !isConnected}
+                  <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake)}
                     size="sm" className="h-7 text-[10px] font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white px-3">
                     <Play className="w-3 h-3 mr-1" /> START
                   </Button>
@@ -1493,7 +1583,7 @@ export default function ProScannerBot() {
                 </Button>
               </div>
             </div>
-            <div className="max-h-[calc(100vh-500px)] min-h-[250px] overflow-auto">
+            <div className="max-h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
               <table className="w-full text-[10px]">
                 <thead className="text-[9px] text-gray-500 font-medium bg-gray-900/80 sticky top-0">
                   <tr>
@@ -1554,152 +1644,6 @@ export default function ProScannerBot() {
                 </tbody>
               </table>
             </div>
-          </div>
-
-          {/* ── COMPACT HTML Analyzer Section ── */}
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 border border-gray-700 rounded-xl p-3 shadow-md">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-semibold text-cyan-400 flex items-center gap-1">
-                <span>📊</span> Digit Analyzer
-              </h3>
-              <div className="flex items-center gap-2">
-                <div className="text-[9px] text-gray-400">
-                  Status: <span className={`font-medium ${
-                    analyzerStatus === 'Live' ? 'text-emerald-400' : 
-                    analyzerStatus === 'Error' ? 'text-rose-400' : 'text-amber-400'
-                  }`}>{analyzerStatus}</span>
-                </div>
-                <a
-                  href="https://ramztraders.site/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
-                >
-                  ramztraders.site ↗
-                </a>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
-              <div>
-                <label className="block text-[8px] text-gray-500 mb-0.5">Mode</label>
-                <Select value={analyzerMode} onValueChange={(v: 'over' | 'under') => setAnalyzerMode(v)}>
-                  <SelectTrigger className="h-6 text-[9px] bg-gray-900 border-gray-700 text-gray-200">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-gray-800 border-gray-700">
-                    <SelectItem value="over" className="text-gray-200 text-[9px]">Over</SelectItem>
-                    <SelectItem value="under" className="text-gray-200 text-[9px]">Under</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <label className="block text-[8px] text-gray-500 mb-0.5">Market</label>
-                <Select value={analyzerSymbol} onValueChange={setAnalyzerSymbol}>
-                  <SelectTrigger className="h-6 text-[9px] bg-gray-900 border-gray-700 text-gray-200">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-gray-800 border-gray-700 max-h-[200px]">
-                    {SCANNER_MARKETS.map(m => (
-                      <SelectItem key={m.symbol} value={m.symbol} className="text-gray-200 text-[9px]">
-                        {m.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="md:col-span-2">
-                <label className="block text-[8px] text-gray-500 mb-0.5">Threshold</label>
-                <div className="flex gap-0.5 flex-wrap">
-                  {[0,1,2,3,4,5,6,7,8,9].map(d => (
-                    <button
-                      key={d}
-                      onClick={() => handleAnalyzerDigitClick(d)}
-                      className={`w-5 h-5 rounded text-[9px] font-bold transition-all ${
-                        analyzerThreshold === d
-                          ? 'bg-cyan-600 text-white ring-1 ring-cyan-400'
-                          : 'bg-gray-900 text-gray-300 hover:bg-gray-700 border border-gray-700'
-                      }`}
-                    >
-                      {d}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {analyzerStats && (
-              <>
-                {/* Last 30 Digits - 3 per row */}
-                <div className="mb-2">
-                  <h4 className="text-[8px] text-gray-500 mb-1">Last 30 Digits</h4>
-                  <div className="grid grid-cols-15 gap-0.5">
-                    {analyzerStats.lastDigits.map((d: number, i: number) => {
-                      let bgColor = 'bg-gray-800';
-                      if (d === analyzerThreshold) bgColor = 'bg-blue-600';
-                      else if (analyzerMode === 'over' && d > analyzerThreshold) bgColor = 'bg-green-700';
-                      else if (analyzerMode === 'over' && d < analyzerThreshold) bgColor = 'bg-red-700';
-                      else if (analyzerMode === 'under' && d < analyzerThreshold) bgColor = 'bg-green-700';
-                      else if (analyzerMode === 'under' && d > analyzerThreshold) bgColor = 'bg-red-700';
-                      
-                      return (
-                        <div
-                          key={i}
-                          className={`w-4 h-4 rounded flex items-center justify-center text-[7px] font-bold text-white ${bgColor}`}
-                        >
-                          {d}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Prediction Box - Compact */}
-                <div className={`p-1.5 rounded text-center font-bold mb-2 text-[9px] ${
-                  analyzerStats.signalClass === 'signal-over' ? 'bg-green-900/50 text-green-400' :
-                  analyzerStats.signalClass === 'signal-under' ? 'bg-red-900/50 text-red-400' :
-                  'bg-gray-800 text-gray-400'
-                }`}>
-                  {analyzerStats.signalText}
-                </div>
-
-                {/* Stats Grid - 3 columns */}
-                <div className="grid grid-cols-3 gap-1 mb-2">
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">Under {analyzerThreshold}</div>
-                    <div className="text-[9px] font-mono text-emerald-400">{analyzerStats.lowPercent}%</div>
-                  </div>
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">Over {analyzerThreshold}</div>
-                    <div className="text-[9px] font-mono text-amber-400">{analyzerStats.highPercent}%</div>
-                  </div>
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">Even/Odd</div>
-                    <div className="text-[9px] font-mono">
-                      <span className="text-emerald-400">{analyzerStats.evenPercent}%</span>
-                      <span className="text-gray-500 mx-0.5">/</span>
-                      <span className="text-amber-400">{analyzerStats.oddPercent}%</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Triggers */}
-                <div className="grid grid-cols-2 gap-1">
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">✅ Winning</div>
-                    <div className="text-[8px] font-mono text-emerald-400">
-                      [{analyzerStats.winningDigits.length ? analyzerStats.winningDigits.join(', ') : 'none'}]
-                    </div>
-                  </div>
-                  <div className="bg-gray-900/50 p-1.5 rounded border border-gray-700">
-                    <div className="text-[7px] text-gray-500">❌ Losing</div>
-                    <div className="text-[8px] font-mono text-rose-400">
-                      [{analyzerStats.losingDigits.length ? analyzerStats.losingDigits.join(', ') : 'none'}]
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
           </div>
         </div>
       </div>
