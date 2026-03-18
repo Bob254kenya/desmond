@@ -301,7 +301,7 @@ export default function ProScannerBot() {
     return () => clearInterval(interval);
   }, []);
 
-  /* ── Fetch historical ticks for a symbol with retry logic ── */
+  /* ── FIXED: Fetch historical ticks for a symbol with proper response handling ── */
   const fetchHistoricalTicks = useCallback(async (symbol: string) => {
     if (!derivApi.isConnected) {
       setHistoryError('Not connected to Deriv API');
@@ -328,69 +328,84 @@ export default function ProScannerBot() {
         1000
       );
 
-      // Fix: Check for history.prices array (based on the HTML/JS code)
+      console.log('API Response:', response); // For debugging
+
+      // Extract prices from various possible response structures
+      let prices: number[] = [];
+      
+      // Case 1: response.history?.prices (standard Deriv API)
       if (response?.history?.prices && Array.isArray(response.history.prices)) {
-        const prices = response.history.prices;
-        
-        // Ensure buffer exists with 1000 capacity
-        if (!turboBuffersRef.current.has(symbol)) {
-          turboBuffersRef.current.set(symbol, new CircularTickBuffer(1000));
-        }
-        const buffer = turboBuffersRef.current.get(symbol)!;
-        buffer.clear();
-
-        // Push historical ticks in chronological order
-        prices.forEach((price: number | string) => {
-          const numPrice = typeof price === 'string' ? parseFloat(price) : price;
-          const digit = getLastDigit(numPrice);
-          buffer.push(digit);
-          
-          // Update legacy tick map
-          const map = tickMapRef.current;
-          const arr = map.get(symbol) || [];
-          arr.push(digit);
-          if (arr.length > 200) arr.shift();
-          map.set(symbol, arr);
-        });
-
-        setTickCounts(prev => ({ ...prev, [symbol]: buffer.size }));
-        
-        // Update percentages immediately
-        updateDigitPercentages(symbol);
-        
-        toast.success(`Loaded ${buffer.size} historical ticks for ${symbol}${buffer.size < 1000 ? ` (API returned ${buffer.size})` : ''}`);
-        setHistoryLoaded(true);
-      } 
-      // Also check for ticks array as fallback
+        prices = response.history.prices;
+      }
+      // Case 2: response.history?.ticks (alternative format)
       else if (response?.history?.ticks && Array.isArray(response.history.ticks)) {
-        const ticks = response.history.ticks;
-        
-        if (!turboBuffersRef.current.has(symbol)) {
-          turboBuffersRef.current.set(symbol, new CircularTickBuffer(1000));
-        }
-        const buffer = turboBuffersRef.current.get(symbol)!;
-        buffer.clear();
-
-        ticks.forEach((tick: { epoch: number; quote: number }) => {
-          const digit = getLastDigit(tick.quote);
-          buffer.push(digit);
-          
-          const map = tickMapRef.current;
-          const arr = map.get(symbol) || [];
-          arr.push(digit);
-          if (arr.length > 200) arr.shift();
-          map.set(symbol, arr);
+        prices = response.history.ticks.map((tick: any) => {
+          if (typeof tick === 'number') return tick;
+          if (typeof tick === 'string') return parseFloat(tick);
+          return tick.quote || tick.price || 0;
         });
-
-        setTickCounts(prev => ({ ...prev, [symbol]: buffer.size }));
-        updateDigitPercentages(symbol);
-        
-        toast.success(`Loaded ${buffer.size} historical ticks for ${symbol}`);
-        setHistoryLoaded(true);
+      }
+      // Case 3: response.prices (direct array)
+      else if (response?.prices && Array.isArray(response.prices)) {
+        prices = response.prices;
+      }
+      // Case 4: response.ticks (direct array of tick objects)
+      else if (response?.ticks && Array.isArray(response.ticks)) {
+        prices = response.ticks.map((tick: any) => {
+          if (typeof tick === 'number') return tick;
+          if (typeof tick === 'string') return parseFloat(tick);
+          return tick.quote || tick.price || 0;
+        });
+      }
+      // Case 5: response is directly an array
+      else if (Array.isArray(response)) {
+        prices = response.map((item: any) => {
+          if (typeof item === 'number') return item;
+          if (typeof item === 'string') return parseFloat(item);
+          return item.quote || item.price || 0;
+        });
       }
       else {
-        throw new Error('No historical data received');
+        console.error('Unexpected response structure:', response);
+        throw new Error('No historical data received - unexpected API response format');
       }
+
+      // Filter out invalid prices
+      prices = prices.filter(p => !isNaN(p) && p !== null && p !== undefined);
+      
+      if (prices.length === 0) {
+        throw new Error('Empty or invalid price data received');
+      }
+
+      console.log(`Extracted ${prices.length} prices for ${symbol}`);
+
+      // Ensure buffer exists with 1000 capacity
+      if (!turboBuffersRef.current.has(symbol)) {
+        turboBuffersRef.current.set(symbol, new CircularTickBuffer(1000));
+      }
+      const buffer = turboBuffersRef.current.get(symbol)!;
+      buffer.clear();
+
+      // Push historical ticks in chronological order
+      prices.forEach((price: number) => {
+        const digit = getLastDigit(price);
+        buffer.push(digit);
+        
+        // Update legacy tick map (keep last 200 for pattern matching)
+        const map = tickMapRef.current;
+        const arr = map.get(symbol) || [];
+        arr.push(digit);
+        if (arr.length > 200) arr.shift();
+        map.set(symbol, arr);
+      });
+
+      setTickCounts(prev => ({ ...prev, [symbol]: buffer.size }));
+      
+      // Update percentages immediately
+      updateDigitPercentages(symbol);
+      
+      toast.success(`Loaded ${buffer.size} historical ticks for ${symbol}`);
+      setHistoryLoaded(true);
     } catch (error) {
       console.error('Error fetching historical ticks:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to load historical ticks';
@@ -405,19 +420,27 @@ export default function ProScannerBot() {
   /* ── Update digit percentages for selected market ── */
   const updateDigitPercentages = useCallback((symbol: string) => {
     const buffer = turboBuffersRef.current.get(symbol);
-    if (!buffer || buffer.size === 0) return;
+    if (!buffer || buffer.size === 0) {
+      setDigitPercentages([]);
+      return;
+    }
     
     const range = Math.min(parseInt(percentTickRange) || 1000, buffer.size);
     const allDigits = buffer.getAllDigits();
     const recentDigits = allDigits.slice(0, range);
     
-    if (recentDigits.length === 0) return;
+    if (recentDigits.length === 0) {
+      setDigitPercentages([]);
+      return;
+    }
     
     const counts: Record<number, number> = {};
     for (let i = 0; i <= 9; i++) counts[i] = 0;
     
     recentDigits.forEach(d => {
-      counts[d] = (counts[d] || 0) + 1;
+      if (d >= 0 && d <= 9) {
+        counts[d] = (counts[d] || 0) + 1;
+      }
     });
     
     const percentages: DigitPercentage[] = [];
