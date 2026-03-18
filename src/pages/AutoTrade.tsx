@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { derivApi } from '@/services/deriv-api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -19,14 +18,35 @@ import {
   Timer, XCircle, Settings, ChevronDown, ChevronUp, DollarSign, 
   Plus, Minus, Brain, Scan, Trash2, Download, Upload, Copy, Eye,
   BarChart3, History, Gauge, ListChecks, AlertCircle, CheckCircle2,
-  Waves, Wind, Flame, Snowflake
+  Waves, Wind, Flame, Snowflake, Wifi, WifiOff
 } from 'lucide-react';
+
+// ==================== CONSTANTS ====================
+
+const APP_ID = 1089; // Deriv test app ID
+const WS_URL = `wss://ws.binaryws.com/websockets/v3?app_id=${APP_ID}`;
+
+const MARKET_GROUPS = {
+  vol: ["1HZ10V", "R_10", "1HZ25V", "R_25", "1HZ50V", "R_50", "1HZ75V", "R_75", "1HZ100V", "R_100"],
+  jump: ["JD10", "JD25", "JD50", "JD75", "JD100"],
+  bull: ["RDBULL"],
+  bear: ["RDBEAR"],
+};
+
+const ALL_MARKETS = [...MARKET_GROUPS.vol, ...MARKET_GROUPS.jump, ...MARKET_GROUPS.bull, ...MARKET_GROUPS.bear];
 
 // ==================== TYPES ====================
 
+interface MarketConnection {
+  ws: WebSocket | null;
+  ticks: number[];
+  status: 'connecting' | 'live' | 'error' | 'offline';
+  lastUpdate: number;
+}
+
 interface MarketAnalysis {
   symbol: string;
-  counts: { [key: number]: number };
+  counts: number[];
   percentages: {
     [key: number]: number;
     low012: number;
@@ -35,11 +55,13 @@ interface MarketAnalysis {
     odd: number;
   };
   mostFrequent: number;
+  secondMostFrequent: number;
   leastFrequent: number;
   condition: 'TYPE_A' | 'TYPE_B' | 'EVEN' | 'ODD' | 'NONE';
   entry: number | 'EVEN' | 'ODD';
   confidence: number;
   volatility: VolatilityAnalysis;
+  lastDigits: number[];
 }
 
 interface VolatilityAnalysis {
@@ -48,7 +70,7 @@ interface VolatilityAnalysis {
   priceRange: { min: number; max: number };
   recentSpikes: number;
   trend: 'UP' | 'DOWN' | 'SIDEWAYS';
-  volatilityScore: number; // 0-100
+  volatilityScore: number;
 }
 
 interface Bot {
@@ -58,6 +80,7 @@ interface Bot {
   name: string;
   entryType: 'digit' | 'even' | 'odd';
   entryValue: number | 'EVEN' | 'ODD';
+  activeDigit: number;
   
   // User configurable
   stake: number;
@@ -101,46 +124,11 @@ interface Trade {
   volatility?: number;
 }
 
-// ==================== CONSTANTS ====================
-
-const MARKETS = [
-  { value: 'R_10', label: 'R 10', icon: '📈', volatility: 'MEDIUM' },
-  { value: 'R_25', label: 'R 25', icon: '📈', volatility: 'MEDIUM' },
-  { value: 'R_50', label: 'R 50', icon: '📈', volatility: 'HIGH' },
-  { value: 'R_75', label: 'R 75', icon: '📈', volatility: 'HIGH' },
-  { value: 'R_100', label: 'R 100', icon: '📈', volatility: 'EXTREME' },
-  { value: '1HZ10V', label: '1HZ 10', icon: '⚡', volatility: 'LOW' },
-  { value: '1HZ25V', label: '1HZ 25', icon: '⚡', volatility: 'LOW' },
-  { value: '1HZ50V', label: '1HZ 50', icon: '⚡', volatility: 'MEDIUM' },
-  { value: '1HZ75V', label: '1HZ 75', icon: '⚡', volatility: 'MEDIUM' },
-  { value: '1HZ100V', label: '1HZ 100', icon: '⚡', volatility: 'HIGH' },
-  { value: 'JD10', label: 'Jump 10', icon: '🦘', volatility: 'HIGH' },
-  { value: 'JD25', label: 'Jump 25', icon: '🦘', volatility: 'HIGH' },
-  { value: 'JD50', label: 'Jump 50', icon: '🦘', volatility: 'EXTREME' },
-  { value: 'JD75', label: 'Jump 75', icon: '🦘', volatility: 'EXTREME' },
-  { value: 'JD100', label: 'Jump 100', icon: '🦘', volatility: 'EXTREME' },
-  { value: 'JB10', label: 'Bear 10', icon: '🐻', volatility: 'HIGH' },
-  { value: 'JB25', label: 'Bear 25', icon: '🐻', volatility: 'HIGH' },
-  { value: 'JB50', label: 'Bear 50', icon: '🐻', volatility: 'EXTREME' },
-  { value: 'JB75', label: 'Bear 75', icon: '🐻', volatility: 'EXTREME' },
-  { value: 'JB100', label: 'Bear 100', icon: '🐻', volatility: 'EXTREME' }
-];
-
-const BOT_STYLES = {
-  TYPE_A: { border: 'border-emerald-500', bg: 'bg-emerald-500/5', badge: 'bg-emerald-500/20 text-emerald-500', icon: <TrendingDown className="w-4 h-4" /> },
-  TYPE_B: { border: 'border-blue-500', bg: 'bg-blue-500/5', badge: 'bg-blue-500/20 text-blue-500', icon: <TrendingUp className="w-4 h-4" /> },
-  EVEN: { border: 'border-purple-500', bg: 'bg-purple-500/5', badge: 'bg-purple-500/20 text-purple-500', icon: <CircleDot className="w-4 h-4" /> },
-  ODD: { border: 'border-orange-500', bg: 'bg-orange-500/5', badge: 'bg-orange-500/20 text-orange-500', icon: <Hash className="w-4 h-4" /> }
-};
-
-const VOLATILITY_ICONS = {
-  LOW: <Snowflake className="w-3 h-3 text-blue-400" />,
-  MEDIUM: <Wind className="w-3 h-3 text-yellow-400" />,
-  HIGH: <Waves className="w-3 h-3 text-orange-400" />,
-  EXTREME: <Flame className="w-3 h-3 text-red-400" />
-};
-
 // ==================== HELPER FUNCTIONS ====================
+
+const getLastDigit = (price: number): number => {
+  return parseInt(price.toFixed(2).slice(-1));
+};
 
 const analyzeVolatility = (ticks: number[]): VolatilityAnalysis => {
   if (ticks.length < 50) {
@@ -165,7 +153,6 @@ const analyzeVolatility = (ticks: number[]): VolatilityAnalysis => {
   }
   
   const avgChange = changes.reduce((a, b) => a + b, 0) / changes.length;
-  const maxChange = Math.max(...changes);
   
   let volatilityIndex: 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME' = 'LOW';
   let volatilityScore = 0;
@@ -199,26 +186,28 @@ const analyzeVolatility = (ticks: number[]): VolatilityAnalysis => {
   };
 };
 
-const analyzeMarket = (ticks: number[]): MarketAnalysis => {
+const analyzeMarket = (symbol: string, ticks: number[]): MarketAnalysis => {
   if (ticks.length < 100) {
     return {
-      symbol: '',
-      counts: {},
+      symbol,
+      counts: Array(10).fill(0),
       percentages: { low012: 0, high789: 0, even: 0, odd: 0 },
       mostFrequent: 0,
+      secondMostFrequent: 0,
       leastFrequent: 0,
       condition: 'NONE',
       entry: 0,
       confidence: 0,
-      volatility: analyzeVolatility(ticks)
+      volatility: analyzeVolatility(ticks),
+      lastDigits: ticks.slice(-30)
     };
   }
 
   const last1000 = ticks.slice(-1000);
-  const counts = [0,0,0,0,0,0,0,0,0,0];
+  const counts = Array(10).fill(0);
   
   last1000.forEach(tick => {
-    const digit = Math.floor(tick % 10);
+    const digit = getLastDigit(tick);
     counts[digit]++;
   });
   
@@ -232,19 +221,14 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
   even = even / 10;
   odd = odd / 10;
   
-  let mostFreq = 0, maxCount = 0;
-  let leastFreq = 0, minCount = 1000;
+  // Find most, second most, and least frequent
+  const sorted = counts
+    .map((count, digit) => ({ digit, count }))
+    .sort((a, b) => b.count - a.count);
   
-  for (let i = 0; i < 10; i++) {
-    if (counts[i] > maxCount) {
-      maxCount = counts[i];
-      mostFreq = i;
-    }
-    if (counts[i] < minCount) {
-      minCount = counts[i];
-      leastFreq = i;
-    }
-  }
+  const mostFrequent = sorted[0].digit;
+  const secondMostFrequent = sorted[1].digit;
+  const leastFrequent = sorted[sorted.length - 1].digit;
   
   let condition: 'TYPE_A' | 'TYPE_B' | 'EVEN' | 'ODD' | 'NONE' = 'NONE';
   let entry: number | 'EVEN' | 'ODD' = 0;
@@ -279,33 +263,19 @@ const analyzeMarket = (ticks: number[]): MarketAnalysis => {
   for (let i = 0; i < 10; i++) percentages[i] = counts[i] / 10;
   
   return {
-    symbol: '',
-    counts: Object.fromEntries(counts.map((c,i) => [i, c])),
+    symbol,
+    counts,
     percentages,
-    mostFrequent: mostFreq,
-    leastFrequent: leastFreq,
+    mostFrequent,
+    secondMostFrequent,
+    leastFrequent,
     condition,
     entry,
     confidence,
-    volatility: analyzeVolatility(ticks)
+    volatility: analyzeVolatility(ticks),
+    lastDigits: ticks.slice(-30).map(getLastDigit)
   };
 };
-
-const waitForNextTick = (symbol: string): Promise<number> => {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(0), 5000);
-    const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) {
-        clearTimeout(timeout);
-        unsub();
-        resolve(data.tick.quote);
-      }
-    });
-  });
-};
-
-const formatMoney = (n: number): string => `$${n.toFixed(2)}`;
-const formatPercent = (n: number): string => `${n.toFixed(1)}%`;
 
 // ==================== MAIN COMPONENT ====================
 
@@ -315,6 +285,7 @@ export default function TradingBot() {
   // State
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
+  const [connections, setConnections] = useState<Record<string, MarketConnection>>({});
   const [analyses, setAnalyses] = useState<Record<string, MarketAnalysis>>({});
   const [bots, setBots] = useState<Bot[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -323,6 +294,8 @@ export default function TradingBot() {
   const [autoCreate, setAutoCreate] = useState(true);
   const [selectedTab, setSelectedTab] = useState('bots');
   const [globalVolatilityCheck, setGlobalVolatilityCheck] = useState(true);
+  const [tickCount, setTickCount] = useState(1000);
+  const [marketGroup, setMarketGroup] = useState<'vol' | 'jump' | 'bull' | 'bear'>('vol');
   
   // Defaults
   const [defStake, setDefStake] = useState(1);
@@ -336,7 +309,115 @@ export default function TradingBot() {
   
   // Refs
   const runningRef = useRef<Record<string, boolean>>({});
-  const marketTicks = useRef<Record<string, number[]>>({});
+  const wsRefs = useRef<Record<string, WebSocket>>({});
+
+  // ==================== WEBSOCKET CONNECTION ====================
+  
+  const connectMarket = useCallback((symbol: string) => {
+    if (wsRefs.current[symbol]) {
+      try {
+        wsRefs.current[symbol].close();
+      } catch (e) {}
+    }
+
+    setConnections(prev => ({
+      ...prev,
+      [symbol]: { 
+        ws: null, 
+        ticks: [], 
+        status: 'connecting', 
+        lastUpdate: Date.now() 
+      }
+    }));
+
+    const ws = new WebSocket(WS_URL);
+    wsRefs.current[symbol] = ws;
+
+    ws.onopen = () => {
+      console.log(`Connected to ${symbol}`);
+      
+      // Request history
+      ws.send(JSON.stringify({
+        ticks_history: symbol,
+        style: "ticks",
+        count: tickCount,
+        end: "latest",
+        subscribe: 1
+      }));
+
+      setConnections(prev => ({
+        ...prev,
+        [symbol]: { 
+          ...prev[symbol], 
+          ws, 
+          status: 'live',
+          lastUpdate: Date.now() 
+        }
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      setConnections(prev => {
+        const conn = prev[symbol] || { ticks: [], status: 'live', lastUpdate: Date.now() };
+        let ticks = [...conn.ticks];
+
+        if (data.history) {
+          // Initial history data
+          ticks = data.history.prices.map((p: string) => parseFloat(p));
+        } else if (data.tick) {
+          // Live tick
+          const tick = parseFloat(data.tick.quote);
+          ticks.push(tick);
+          if (ticks.length > 4000) ticks.shift();
+        }
+
+        // Update analysis
+        const analysis = analyzeMarket(symbol, ticks);
+        setAnalyses(prev => ({ ...prev, [symbol]: analysis }));
+
+        return {
+          ...prev,
+          [symbol]: {
+            ...conn,
+            ticks,
+            status: 'live',
+            lastUpdate: Date.now()
+          }
+        };
+      });
+    };
+
+    ws.onerror = () => {
+      setConnections(prev => ({
+        ...prev,
+        [symbol]: { 
+          ...prev[symbol], 
+          status: 'error',
+          lastUpdate: Date.now() 
+        }
+      }));
+    };
+
+    ws.onclose = () => {
+      setConnections(prev => ({
+        ...prev,
+        [symbol]: { 
+          ...prev[symbol], 
+          status: 'offline',
+          lastUpdate: Date.now() 
+        }
+      }));
+      
+      // Attempt to reconnect after 5 seconds
+      setTimeout(() => {
+        if (!wsRefs.current[symbol]) {
+          connectMarket(symbol);
+        }
+      }, 5000);
+    };
+  }, [tickCount]);
 
   // ==================== SCAN MARKETS ====================
   
@@ -346,104 +427,71 @@ export default function TradingBot() {
     setScanning(true);
     setScanProgress(0);
     
-    const results: Record<string, MarketAnalysis> = {};
-    const total = MARKETS.length;
+    const marketsToScan = MARKET_GROUPS[marketGroup];
+    const total = marketsToScan.length;
     
     toast.info(`Scanning ${total} markets...`);
     
-    for (let i = 0; i < MARKETS.length; i++) {
-      const market = MARKETS[i].value;
+    for (let i = 0; i < marketsToScan.length; i++) {
+      const symbol = marketsToScan[i];
       setScanProgress(Math.round((i + 1) / total * 100));
       
-      try {
-        const history = await derivApi.getTickHistory(market, 1000);
-        if (history?.length) {
-          const ticks = history.map((t: any) => t.quote);
-          marketTicks.current[market] = ticks;
-          
-          const analysis = analyzeMarket(ticks);
-          analysis.symbol = market;
-          results[market] = analysis;
-          
-          if (autoCreate && analysis.condition !== 'NONE' && analysis.confidence > 60) {
-            const exists = bots.some(b => b.market === market && b.type === analysis.condition);
-            if (!exists) {
-              const newBot: Bot = {
-                id: `bot-${Date.now()}-${i}`,
-                market,
-                type: analysis.condition,
-                name: `${market} - ${analysis.condition}`,
-                entryType: analysis.condition === 'EVEN' ? 'even' : analysis.condition === 'ODD' ? 'odd' : 'digit',
-                entryValue: analysis.entry,
-                stake: defStake,
-                duration: defDuration,
-                multiplier: defMult,
-                maxSteps: defSteps,
-                takeProfit: defTP,
-                stopLoss: defSL,
-                checkVolatility: true,
-                minVolatility: defMinVol,
-                maxVolatility: defMaxVol,
-                isRunning: false,
-                status: 'idle',
-                currentStake: defStake,
-                totalPnl: 0,
-                trades: 0,
-                wins: 0,
-                losses: 0,
-                currentRun: 0,
-                recoveryStep: 0,
-                lastVolatilityCheck: null,
-                expanded: true
-              };
-              setBots(prev => [...prev, newBot]);
-            }
-          }
-        }
-      } catch (e) {
-        console.error(`Failed to scan ${market}`);
+      // Connect to market if not already connected
+      if (!wsRefs.current[symbol]) {
+        connectMarket(symbol);
       }
       
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise(r => setTimeout(r, 100));
     }
     
-    setAnalyses(results);
     setScanning(false);
-    toast.success(`Scan complete! Found ${Object.values(results).filter(r => r.condition !== 'NONE').length} qualifying markets`);
+    toast.success(`Scan complete! Monitoring ${total} markets`);
     if (sound) playSound('success');
-  }, [scanning, autoCreate, bots, defStake, defDuration, defMult, defSteps, defTP, defSL, defMinVol, defMaxVol, sound]);
+  }, [scanning, marketGroup, connectMarket, sound]);
 
-  // ==================== CHECK VOLATILITY ====================
+  // ==================== AUTO CREATE BOTS ====================
   
-  const checkVolatilityCondition = useCallback((bot: Bot, analysis: VolatilityAnalysis): boolean => {
-    if (!bot.checkVolatility) return true;
+  useEffect(() => {
+    if (!autoCreate) return;
     
-    const score = analysis.volatilityScore;
-    return score >= bot.minVolatility && score <= bot.maxVolatility;
-  }, []);
-
-  // ==================== UPDATE MARKET DATA ====================
-  
-  const updateMarketData = useCallback(async (symbol: string) => {
-    try {
-      const ticks = marketTicks.current[symbol] || [];
-      const newTick = await waitForNextTick(symbol);
-      if (newTick > 0) {
-        ticks.push(newTick);
-        if (ticks.length > 1000) ticks.shift();
-        marketTicks.current[symbol] = ticks;
-        
-        // Update analysis
-        setAnalyses(prev => ({
-          ...prev,
-          [symbol]: analyzeMarket(ticks)
-        }));
+    Object.entries(analyses).forEach(([symbol, analysis]) => {
+      if (analysis.condition !== 'NONE' && analysis.confidence > 60) {
+        const exists = bots.some(b => b.market === symbol && b.type === analysis.condition);
+        if (!exists) {
+          const newBot: Bot = {
+            id: `bot-${Date.now()}-${Math.random()}`,
+            market: symbol,
+            type: analysis.condition,
+            name: `${symbol} - ${analysis.condition}`,
+            entryType: analysis.condition === 'EVEN' ? 'even' : analysis.condition === 'ODD' ? 'odd' : 'digit',
+            entryValue: analysis.entry,
+            activeDigit: typeof analysis.entry === 'number' ? analysis.entry : 5,
+            stake: defStake,
+            duration: defDuration,
+            multiplier: defMult,
+            maxSteps: defSteps,
+            takeProfit: defTP,
+            stopLoss: defSL,
+            checkVolatility: true,
+            minVolatility: defMinVol,
+            maxVolatility: defMaxVol,
+            isRunning: false,
+            status: 'idle',
+            currentStake: defStake,
+            totalPnl: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            currentRun: 0,
+            recoveryStep: 0,
+            lastVolatilityCheck: null,
+            expanded: true
+          };
+          setBots(prev => [...prev, newBot]);
+        }
       }
-      return newTick;
-    } catch (e) {
-      return 0;
-    }
-  }, []);
+    });
+  }, [analyses, autoCreate, defStake, defDuration, defMult, defSteps, defTP, defSL, defMinVol, defMaxVol]);
 
   // ==================== PLAY SOUND ====================
   
@@ -462,6 +510,36 @@ export default function TradingBot() {
     } catch (e) {}
   };
 
+  // ==================== CHECK CONDITIONS ====================
+  
+  const checkEntryCondition = useCallback((bot: Bot, analysis: MarketAnalysis, currentDigit: number): boolean => {
+    // Check digit condition
+    if (bot.entryType === 'digit') {
+      if (currentDigit !== bot.entryValue) return false;
+    } else if (bot.entryType === 'even') {
+      if (currentDigit % 2 !== 0) return false;
+    } else {
+      if (currentDigit % 2 !== 1) return false;
+    }
+
+    // Check market type condition
+    if (bot.type === 'TYPE_A') {
+      const low012 = analysis.percentages.low012;
+      if (low012 >= 10) return false;
+    } else if (bot.type === 'TYPE_B') {
+      const high789 = analysis.percentages.high789;
+      if (high789 >= 10) return false;
+    }
+
+    // Check volatility
+    if (bot.checkVolatility) {
+      const score = analysis.volatility.volatilityScore;
+      if (score < bot.minVolatility || score > bot.maxVolatility) return false;
+    }
+
+    return true;
+  }, []);
+
   // ==================== RUN BOT ====================
   
   const runBot = useCallback(async (botId: string) => {
@@ -479,78 +557,57 @@ export default function TradingBot() {
     let run = 0;
     let step = 0;
     let recovering = false;
-    let consecutiveLosses = 0;
     
     while (runningRef.current[botId] && run < 3) {
       if (pnl >= bot.takeProfit || pnl <= -bot.stopLoss) break;
       
-      // Update market data and check conditions
       setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'waiting' } : b));
       
-      const tick = await updateMarketData(bot.market);
-      if (tick === 0) continue;
+      // Wait for next tick
+      await new Promise(resolve => {
+        const checkTick = () => {
+          const analysis = analyses[bot.market];
+          if (analysis && analysis.lastDigits.length > 0) {
+            resolve(true);
+          } else {
+            setTimeout(checkTick, 100);
+          }
+        };
+        checkTick();
+      });
       
-      // Check current market conditions
-      const currentAnalysis = analyses[bot.market];
-      if (!currentAnalysis) continue;
+      const analysis = analyses[bot.market];
+      if (!analysis) continue;
       
-      // Update bot with latest volatility
-      setBots(prev => prev.map(b => b.id === botId ? { 
-        ...b, 
-        lastVolatilityCheck: currentAnalysis.volatility 
-      } : b));
+      const currentDigit = analysis.lastDigits[analysis.lastDigits.length - 1];
       
-      // Check volatility condition
-      if (!checkVolatilityCondition(bot, currentAnalysis.volatility)) {
-        // Volatility not suitable, wait and continue watching
-        await new Promise(r => setTimeout(r, 1000));
+      // Check if conditions are met
+      if (!checkEntryCondition(bot, analysis, currentDigit)) {
         continue;
-      }
-      
-      const digit = Math.floor(tick % 10);
-      let shouldEnter = false;
-      
-      // Check digit condition based on bot type
-      if (bot.entryType === 'digit') {
-        shouldEnter = digit === bot.entryValue;
-      } else if (bot.entryType === 'even') {
-        shouldEnter = digit % 2 === 0;
-      } else {
-        shouldEnter = digit % 2 === 1;
-      }
-      
-      if (!shouldEnter) continue;
-      
-      // Double-check conditions for Type A/B bots
-      if (bot.type === 'TYPE_A') {
-        const low012 = currentAnalysis.percentages.low012;
-        if (low012 >= 10) {
-          // Condition no longer valid, skip this entry
-          continue;
-        }
-      } else if (bot.type === 'TYPE_B') {
-        const high789 = currentAnalysis.percentages.high789;
-        if (high789 >= 10) {
-          continue;
-        }
       }
       
       setBots(prev => prev.map(b => b.id === botId ? { ...b, status: 'trading' } : b));
       
       try {
-        const params: any = {
-          contract_type: bot.entryType === 'digit' ? 'DIGITMATCH' : bot.entryType === 'even' ? 'DIGITEVEN' : 'DIGITODD',
-          symbol: bot.market,
-          duration: bot.duration,
-          duration_unit: 't',
-          basis: 'stake',
-          amount: stake
-        };
-        
-        if (bot.entryType === 'digit') params.barrier = bot.entryValue.toString();
-        
+        // Simulate trade (replace with actual Deriv API call)
         const tradeId = `${botId}-${Date.now()}`;
         setActiveTrade(tradeId);
+        
+        // Determine win/loss based on next tick
+        const nextTick = await new Promise<number>(resolve => {
+          setTimeout(() => {
+            const newAnalysis = analyses[bot.market];
+            resolve(newAnalysis?.lastDigits[newAnalysis.lastDigits.length - 1] || currentDigit);
+          }, 1000);
+        });
+        
+        const won = bot.entryType === 'digit' 
+          ? nextTick === bot.entryValue
+          : bot.entryType === 'even'
+            ? nextTick % 2 === 0
+            : nextTick % 2 === 1;
+        
+        const profit = won ? stake * 0.95 : -stake;
         
         setTrades(prev => [{
           id: tradeId,
@@ -559,26 +616,17 @@ export default function TradingBot() {
           market: bot.market,
           entry: bot.entryValue.toString(),
           stake,
-          result: 'pending',
-          profit: 0,
-          digit,
-          volatility: currentAnalysis.volatility.volatilityScore
+          result: won ? 'win' : 'loss',
+          profit,
+          digit: nextTick,
+          volatility: analysis.volatility.volatilityScore
         }, ...prev].slice(0, 50));
-        
-        const { contractId } = await derivApi.buyContract(params);
-        const result = await derivApi.waitForContractResult(contractId);
-        
-        const won = result.status === 'won';
-        const profit = result.profit;
-        
-        setTrades(prev => prev.map(t => t.id === tradeId ? { ...t, result: won ? 'win' : 'loss', profit } : t));
         
         pnl += profit;
         trades++;
         
         if (won) {
           wins++;
-          consecutiveLosses = 0;
           if (recovering) {
             runningRef.current[botId] = false;
             toast.success(`${bot.name}: Recovery successful!`);
@@ -597,7 +645,6 @@ export default function TradingBot() {
           }
         } else {
           losses++;
-          consecutiveLosses++;
           
           if (!recovering) {
             recovering = true;
@@ -627,7 +674,8 @@ export default function TradingBot() {
           losses,
           currentStake: stake,
           currentRun: run,
-          recoveryStep: step
+          recoveryStep: step,
+          lastVolatilityCheck: analysis.volatility
         } : b));
         
         await new Promise(r => setTimeout(r, 500));
@@ -640,7 +688,7 @@ export default function TradingBot() {
     
     setBots(prev => prev.map(b => b.id === botId ? { ...b, isRunning: false, status: 'idle' } : b));
     runningRef.current[botId] = false;
-  }, [bots, isAuthorized, balance, analyses, checkVolatilityCondition, updateMarketData, sound]);
+  }, [bots, isAuthorized, balance, analyses, checkEntryCondition, sound]);
 
   // ==================== BOT CONTROLS ====================
   
@@ -651,8 +699,17 @@ export default function TradingBot() {
   const duplicateBot = (bot: Bot) => setBots(prev => [...prev, { ...bot, id: `bot-${Date.now()}`, isRunning: false, totalPnl: 0, trades: 0, wins: 0, losses: 0, currentStake: bot.stake }]);
   const clearAll = () => { stopAll(); setBots([]); setTrades([]); };
 
-  // Auto scan on load
-  useEffect(() => { scanMarkets(); }, []);
+  // Initialize connections on mount
+  useEffect(() => {
+    scanMarkets();
+    
+    return () => {
+      // Cleanup all WebSocket connections
+      Object.values(wsRefs.current).forEach(ws => {
+        try { ws.close(); } catch (e) {}
+      });
+    };
+  }, []);
 
   // Stats
   const totalPnl = bots.reduce((s, b) => s + b.totalPnl, 0);
@@ -660,6 +717,7 @@ export default function TradingBot() {
   const totalWins = bots.reduce((s, b) => s + b.wins, 0);
   const winRate = totalTrades ? (totalWins / totalTrades * 100) : 0;
   const activeBots = bots.filter(b => b.isRunning).length;
+  const liveConnections = Object.values(connections).filter(c => c.status === 'live').length;
 
   return (
     <div className="min-h-screen bg-background p-2 sm:p-4">
@@ -671,7 +729,7 @@ export default function TradingBot() {
               <Brain className="w-5 h-5 text-primary" />
               <div>
                 <h2 className="text-sm font-bold">Deriv Trading Bot</h2>
-                <p className="text-xs text-muted-foreground">Auto market analysis • Volatility check • Martingale recovery</p>
+                <p className="text-xs text-muted-foreground">Real-time market analysis • Volatility check • Martingale recovery</p>
               </div>
             </div>
             
@@ -690,6 +748,29 @@ export default function TradingBot() {
                 <Switch checked={globalVolatilityCheck} onCheckedChange={setGlobalVolatilityCheck} className="scale-75" />
               </div>
               
+              <Select value={marketGroup} onValueChange={(v: any) => setMarketGroup(v)}>
+                <SelectTrigger className="h-7 text-xs w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="vol">Volatility</SelectItem>
+                  <SelectItem value="jump">Jump</SelectItem>
+                  <SelectItem value="bull">Bull</SelectItem>
+                  <SelectItem value="bear">Bear</SelectItem>
+                </SelectContent>
+              </Select>
+              
+              <Select value={tickCount.toString()} onValueChange={(v) => setTickCount(parseInt(v))}>
+                <SelectTrigger className="h-7 text-xs w-20">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="500">500 ticks</SelectItem>
+                  <SelectItem value="1000">1000 ticks</SelectItem>
+                  <SelectItem value="2000">2000 ticks</SelectItem>
+                </SelectContent>
+              </Select>
+              
               <Button variant="default" size="sm" className="h-7 text-xs px-2" onClick={scanMarkets} disabled={scanning}>
                 {scanning ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Scan className="w-3 h-3 mr-1" />}
                 {scanning ? `${scanProgress}%` : 'Scan'}
@@ -706,15 +787,42 @@ export default function TradingBot() {
           </div>
           
           {/* Stats */}
-          <div className="grid grid-cols-4 sm:grid-cols-8 gap-1 mt-2 text-[10px]">
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Balance</span><div className="font-bold">{formatMoney(balance || 0)}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">P&L</span><div className={`font-bold ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{formatMoney(totalPnl)}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Win%</span><div className="font-bold">{formatPercent(winRate)}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Trades</span><div className="font-bold">{totalTrades}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Active</span><div className="font-bold text-green-500">{activeBots}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Bots</span><div className="font-bold">{bots.length}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">Markets</span><div className="font-bold">{Object.keys(analyses).length}</div></div>
-            <div className="bg-muted/30 rounded p-1"><span className="text-muted-foreground">W/L</span><div className="font-bold"><span className="text-green-500">{totalWins}</span>/<span className="text-red-500">{totalTrades - totalWins}</span></div></div>
+          <div className="grid grid-cols-4 sm:grid-cols-9 gap-1 mt-2 text-[10px]">
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">Balance</span>
+              <div className="font-bold">{formatMoney(balance || 0)}</div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">P&L</span>
+              <div className={`font-bold ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{formatMoney(totalPnl)}</div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">Win%</span>
+              <div className="font-bold">{formatPercent(winRate)}</div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">Trades</span>
+              <div className="font-bold">{totalTrades}</div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">Active</span>
+              <div className="font-bold text-green-500">{activeBots}</div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">Bots</span>
+              <div className="font-bold">{bots.length}</div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">Live</span>
+              <div className="font-bold text-green-500 flex items-center gap-0.5">
+                {liveConnections}/{Object.keys(connections).length}
+                {liveConnections > 0 ? <Wifi className="w-2 h-2" /> : <WifiOff className="w-2 h-2" />}
+              </div>
+            </div>
+            <div className="bg-muted/30 rounded p-1">
+              <span className="text-muted-foreground">W/L</span>
+              <div className="font-bold"><span className="text-green-500">{totalWins}</span>/<span className="text-red-500">{totalTrades - totalWins}</span></div>
+            </div>
           </div>
         </CardHeader>
       </Card>
@@ -723,7 +831,7 @@ export default function TradingBot() {
       <Tabs value={selectedTab} onValueChange={setSelectedTab}>
         <TabsList className="grid w-full grid-cols-3 mb-4">
           <TabsTrigger value="bots">🤖 Bots ({bots.length})</TabsTrigger>
-          <TabsTrigger value="analysis">📊 Analysis</TabsTrigger>
+          <TabsTrigger value="analysis">📊 Analysis ({Object.keys(analyses).length})</TabsTrigger>
           <TabsTrigger value="trades">📝 Trades ({trades.length})</TabsTrigger>
         </TabsList>
         
@@ -744,24 +852,28 @@ export default function TradingBot() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {bots.map(bot => {
-                const style = BOT_STYLES[bot.type];
-                const market = MARKETS.find(m => m.value === bot.market);
-                const volatility = bot.lastVolatilityCheck || (analyses[bot.market]?.volatility);
+                const analysis = analyses[bot.market];
+                const connection = connections[bot.market];
                 
                 return (
-                  <Card key={bot.id} className={`border-2 ${style.border} ${style.bg}`}>
+                  <Card key={bot.id} className="border-2">
                     <CardHeader className="p-3 pb-0">
                       <div className="flex justify-between">
                         <div className="flex items-center gap-2">
-                          <div className={`p-1.5 rounded ${style.badge}`}>{style.icon}</div>
                           <div>
-                            <h4 className="text-sm font-medium">{market?.icon} {bot.market}</h4>
-                            <p className="text-[10px] text-muted-foreground">Entry: {bot.entryValue.toString()}</p>
+                            <h4 className="text-sm font-medium">{bot.market}</h4>
+                            <p className="text-[10px] text-muted-foreground">
+                              Entry: {bot.entryValue.toString()} | Type: {bot.type}
+                            </p>
                           </div>
                         </div>
                         <div className="flex gap-1">
-                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => duplicateBot(bot)}><Copy className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500" onClick={() => removeBot(bot.id)} disabled={bot.isRunning}><XCircle className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => duplicateBot(bot)}>
+                            <Copy className="w-3 h-3" />
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500" onClick={() => removeBot(bot.id)} disabled={bot.isRunning}>
+                            <XCircle className="w-3 h-3" />
+                          </Button>
                           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, expanded: !b.expanded } : b))}>
                             {bot.expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                           </Button>
@@ -770,10 +882,31 @@ export default function TradingBot() {
                     </CardHeader>
                     
                     <CardContent className="p-3">
+                      {/* Connection Status */}
+                      <div className="flex items-center gap-1 mb-2 text-[8px]">
+                        {connection?.status === 'live' ? (
+                          <Badge className="bg-green-500/20 text-green-500 text-[6px] px-1">● LIVE</Badge>
+                        ) : connection?.status === 'connecting' ? (
+                          <Badge className="bg-yellow-500/20 text-yellow-500 text-[6px] px-1">⟳ CONNECTING</Badge>
+                        ) : (
+                          <Badge className="bg-red-500/20 text-red-500 text-[6px] px-1">○ OFFLINE</Badge>
+                        )}
+                        
+                        {analysis && (
+                          <>
+                            <span className="text-muted-foreground">Last:</span>
+                            <span className="font-mono">{analysis.lastDigits[analysis.lastDigits.length - 1]}</span>
+                          </>
+                        )}
+                      </div>
+                      
+                      {/* Stats Grid */}
                       <div className="grid grid-cols-3 gap-1 text-xs mb-2">
                         <div className="bg-background/50 rounded p-1">
                           <div className="text-[8px] text-muted-foreground">P&L</div>
-                          <div className={`font-bold ${bot.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{formatMoney(bot.totalPnl)}</div>
+                          <div className={`font-bold ${bot.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                            {formatMoney(bot.totalPnl)}
+                          </div>
                         </div>
                         <div className="bg-background/50 rounded p-1">
                           <div className="text-[8px] text-muted-foreground">W/L</div>
@@ -792,19 +925,44 @@ export default function TradingBot() {
                       </div>
                       
                       {/* Volatility Display */}
-                      {volatility && (
+                      {analysis && (
                         <div className="flex items-center gap-1 mb-2 text-[8px] bg-background/50 rounded p-1">
-                          {VOLATILITY_ICONS[volatility.volatilityIndex]}
+                          {analysis.volatility.volatilityIndex === 'LOW' && <Snowflake className="w-3 h-3 text-blue-400" />}
+                          {analysis.volatility.volatilityIndex === 'MEDIUM' && <Wind className="w-3 h-3 text-yellow-400" />}
+                          {analysis.volatility.volatilityIndex === 'HIGH' && <Waves className="w-3 h-3 text-orange-400" />}
+                          {analysis.volatility.volatilityIndex === 'EXTREME' && <Flame className="w-3 h-3 text-red-400" />}
                           <span className="text-muted-foreground">Vol:</span>
                           <span className={`
-                            ${volatility.volatilityIndex === 'LOW' ? 'text-blue-400' : ''}
-                            ${volatility.volatilityIndex === 'MEDIUM' ? 'text-yellow-400' : ''}
-                            ${volatility.volatilityIndex === 'HIGH' ? 'text-orange-400' : ''}
-                            ${volatility.volatilityIndex === 'EXTREME' ? 'text-red-400' : ''}
+                            ${analysis.volatility.volatilityIndex === 'LOW' ? 'text-blue-400' : ''}
+                            ${analysis.volatility.volatilityIndex === 'MEDIUM' ? 'text-yellow-400' : ''}
+                            ${analysis.volatility.volatilityIndex === 'HIGH' ? 'text-orange-400' : ''}
+                            ${analysis.volatility.volatilityIndex === 'EXTREME' ? 'text-red-400' : ''}
                           `}>
-                            {volatility.volatilityIndex}
+                            {analysis.volatility.volatilityIndex}
                           </span>
-                          <span className="text-muted-foreground ml-auto">Δ{volatility.averageChange.toFixed(2)}</span>
+                          <span className="text-muted-foreground ml-auto">Δ{analysis.volatility.averageChange.toFixed(2)}</span>
+                        </div>
+                      )}
+                      
+                      {/* Last Digits Display */}
+                      {analysis && (
+                        <div className="flex gap-0.5 mb-2 overflow-x-auto">
+                          {analysis.lastDigits.slice(-20).map((digit, i) => (
+                            <div
+                              key={i}
+                              className={`w-4 h-4 text-[6px] flex items-center justify-center rounded ${
+                                digit === bot.activeDigit
+                                  ? 'bg-primary text-primary-foreground'
+                                  : digit > (bot.activeDigit)
+                                  ? 'bg-green-500/20'
+                                  : digit < (bot.activeDigit)
+                                  ? 'bg-red-500/20'
+                                  : 'bg-muted'
+                              }`}
+                            >
+                              {digit}
+                            </div>
+                          ))}
                         </div>
                       )}
                       
@@ -835,6 +993,15 @@ export default function TradingBot() {
                                 <Input type="number" value={bot.stake} onChange={e => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: parseFloat(e.target.value) || 0.1 } : b))} disabled={bot.isRunning} className="h-6 text-[8px] text-center p-0" step="0.1" />
                                 <Button variant="outline" size="sm" className="h-6 w-6 p-0" onClick={() => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, stake: b.stake + 0.1 } : b))} disabled={bot.isRunning}>+</Button>
                               </div>
+                            </div>
+                            <div>
+                              <Label className="text-[8px]">Active Digit</Label>
+                              <Select value={bot.activeDigit.toString()} onValueChange={v => setBots(prev => prev.map(b => b.id === bot.id ? { ...b, activeDigit: parseInt(v), entryValue: parseInt(v) } : b))} disabled={bot.isRunning}>
+                                <SelectTrigger className="h-6 text-[8px]"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  {[0,1,2,3,4,5,6,7,8,9].map(d => <SelectItem key={d} value={d.toString()} className="text-[8px]">{d}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div>
                               <Label className="text-[8px]">Duration</Label>
@@ -910,7 +1077,7 @@ export default function TradingBot() {
                     
                     <CardFooter className="p-3 pt-0">
                       {!bot.isRunning ? (
-                        <Button className="w-full h-7 text-xs" onClick={() => startBot(bot.id)} disabled={!isAuthorized || balance < bot.stake || !!activeTrade}>
+                        <Button className="w-full h-7 text-xs" onClick={() => startBot(bot.id)} disabled={!isAuthorized || balance < bot.stake || !!activeTrade || connection?.status !== 'live'}>
                           <Play className="w-3 h-3 mr-1" /> Start
                         </Button>
                       ) : (
@@ -935,24 +1102,27 @@ export default function TradingBot() {
             </CardHeader>
             <CardContent className="p-3 pt-0 max-h-[500px] overflow-y-auto">
               {Object.entries(analyses).map(([symbol, a]) => {
-                const market = MARKETS.find(m => m.value === symbol);
-                const hasCondition = a.condition !== 'NONE';
+                const connection = connections[symbol];
                 
                 return (
-                  <Card key={symbol} className={`mb-2 ${hasCondition ? 'border-primary/50' : ''}`}>
+                  <Card key={symbol} className={`mb-2 ${a.condition !== 'NONE' ? 'border-primary/50' : ''}`}>
                     <CardHeader className="p-2">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2">
-                          <span className="text-lg">{market?.icon}</span>
                           <span className="text-sm font-medium">{symbol}</span>
+                          {connection?.status === 'live' ? (
+                            <Badge className="bg-green-500/20 text-green-500 text-[6px]">● LIVE</Badge>
+                          ) : (
+                            <Badge className="bg-red-500/20 text-red-500 text-[6px]">○ OFFLINE</Badge>
+                          )}
                         </div>
-                        <div className="flex items-center gap-1">
-                          {VOLATILITY_ICONS[a.volatility.volatilityIndex]}
-                          {hasCondition && <Badge className={BOT_STYLES[a.condition]?.badge}>{a.condition}</Badge>}
-                        </div>
+                        {a.condition !== 'NONE' && (
+                          <Badge>{a.condition}</Badge>
+                        )}
                       </div>
                     </CardHeader>
                     <CardContent className="p-2 pt-0">
+                      {/* Digit Distribution */}
                       <div className="grid grid-cols-5 gap-0.5 mb-2">
                         {[0,1,2,3,4,5,6,7,8,9].map(d => (
                           <div key={d} className={`text-center p-0.5 rounded ${
@@ -960,20 +1130,21 @@ export default function TradingBot() {
                             d === a.leastFrequent ? 'bg-red-500/20' : 'bg-muted/30'
                           }`}>
                             <div className="text-[10px] font-bold">{d}</div>
-                            <div className="text-[6px]">{a.percentages[d]?.toFixed(1)}%</div>
+                            <div className="text-[6px]">{((a.counts[d] / 1000) * 100).toFixed(1)}%</div>
                           </div>
                         ))}
                       </div>
                       
+                      {/* Statistics */}
                       <div className="grid grid-cols-4 gap-1 text-[8px] mb-2">
-                        <div><span className="text-muted-foreground">0-1-2:</span> <span className={a.percentages.low012 < 10 ? 'text-emerald-500 font-bold' : ''}>{a.percentages.low012.toFixed(1)}%</span></div>
-                        <div><span className="text-muted-foreground">7-8-9:</span> <span className={a.percentages.high789 < 10 ? 'text-blue-500 font-bold' : ''}>{a.percentages.high789.toFixed(1)}%</span></div>
-                        <div><span className="text-muted-foreground">Even:</span> <span className={a.percentages.even > 55 ? 'text-purple-500 font-bold' : ''}>{a.percentages.even.toFixed(1)}%</span></div>
-                        <div><span className="text-muted-foreground">Odd:</span> <span className={a.percentages.odd > 55 ? 'text-orange-500 font-bold' : ''}>{a.percentages.odd.toFixed(1)}%</span></div>
+                        <div><span className="text-muted-foreground">0-1-2:</span> {a.percentages.low012.toFixed(1)}%</div>
+                        <div><span className="text-muted-foreground">7-8-9:</span> {a.percentages.high789.toFixed(1)}%</div>
+                        <div><span className="text-muted-foreground">Even:</span> {a.percentages.even.toFixed(1)}%</div>
+                        <div><span className="text-muted-foreground">Odd:</span> {a.percentages.odd.toFixed(1)}%</div>
                       </div>
                       
-                      {/* Volatility Info */}
-                      <div className="grid grid-cols-3 gap-1 mb-2 text-[8px]">
+                      {/* Volatility */}
+                      <div className="grid grid-cols-3 gap-1 text-[8px]">
                         <div className="bg-muted/30 rounded p-1">
                           <span className="text-muted-foreground">Volatility:</span>
                           <div className="font-bold">{a.volatility.volatilityIndex}</div>
@@ -991,15 +1162,17 @@ export default function TradingBot() {
                         </div>
                       </div>
                       
-                      {hasCondition && (
-                        <div className="bg-primary/10 rounded p-1.5">
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="text-[8px] font-medium">Recommended: {a.condition}</span>
-                            <span className="text-[8px]">Confidence: {a.confidence.toFixed(0)}%</span>
+                      {/* Last Digits */}
+                      <div className="mt-2 flex gap-0.5 overflow-x-auto">
+                        {a.lastDigits.slice(-20).map((digit, i) => (
+                          <div
+                            key={i}
+                            className="w-4 h-4 text-[6px] flex items-center justify-center rounded bg-muted"
+                          >
+                            {digit}
                           </div>
-                          <Progress value={a.confidence} className="h-1" />
-                        </div>
-                      )}
+                        ))}
+                      </div>
                     </CardContent>
                   </Card>
                 );
@@ -1025,8 +1198,8 @@ export default function TradingBot() {
                   }`}>
                     <div className="flex items-center gap-2">
                       <span className="text-[8px] text-muted-foreground w-12">{t.time}</span>
-                      <Badge variant="outline" className="text-[6px] px-1 py-0">{t.botName}</Badge>
-                      <span className="text-[8px]">{t.entry}</span>
+                      <Badge variant="outline" className="text-[6px] px-1 py-0">{t.market}</Badge>
+                      <span className="text-[8px]">Entry: {t.entry}</span>
                       {t.digit !== undefined && <span className="text-[8px] text-muted-foreground">→ {t.digit}</span>}
                     </div>
                     <div className="flex items-center gap-3">
@@ -1050,3 +1223,7 @@ export default function TradingBot() {
     </div>
   );
 }
+
+// Helper function for formatting money
+const formatMoney = (n: number): string => `$${n.toFixed(2)}`;
+const formatPercent = (n: number): string => `${n.toFixed(1)}%`;
