@@ -75,6 +75,9 @@ class CircularTickBuffer {
     }
     return result;
   }
+  getAll(): number[] {
+    return this.last(this.count);
+  }
   lastTs(): number { return this.count > 0 ? this.buffer[(this.head - 1 + this.capacity) % this.capacity].ts : 0; }
   get size() { return this.count; }
 }
@@ -219,7 +222,7 @@ export default function ProScannerBot() {
       map.set(sym, arr);
       setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
 
-      // Turbo circular buffer
+      // Turbo circular buffer (store up to 1000 ticks for each symbol)
       if (!turboBuffersRef.current.has(sym)) {
         turboBuffersRef.current.set(sym, new CircularTickBuffer(1000));
       }
@@ -234,6 +237,9 @@ export default function ProScannerBot() {
       }
       lastTickTsRef.current = now;
       setTicksCaptured(prev => prev + 1);
+      
+      // Force re-render to update digit analysis
+      setTickCounts(prev => ({ ...prev, _lastUpdate: Date.now() }));
     };
     const unsub = derivApi.onMessage(handler);
     SCANNER_MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); });
@@ -641,29 +647,70 @@ export default function ProScannerBot() {
   const status = statusConfig[botStatus];
   const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : '0.0';
 
-  /* ── Digit analysis for active symbol ── */
+  /* ── Digit analysis for active symbol using last 1000 ticks from circular buffer ── */
   const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
-  const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-26); // Get last 26 digits for analysis
   
-  // Digit analysis
-  const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => {
-    if (activeDigits.length === 0) {
-      return { frequency: {}, percentages: [], mostCommon: 0, leastCommon: 0 };
+  // Get last 1000 digits from circular buffer (or all available if less than 1000)
+  const last1000Digits = useMemo(() => {
+    const buffer = turboBuffersRef.current.get(activeSymbol);
+    if (!buffer || buffer.size === 0) return [];
+    return buffer.getAll(); // Returns all digits in buffer (up to 1000)
+  }, [activeSymbol, tickCounts]); // Re-run when tickCounts updates (every tick)
+  
+  // Live digits for display (last 26)
+  const liveDigits = useMemo(() => {
+    return last1000Digits.slice(-26);
+  }, [last1000Digits]);
+  
+  // Digit analysis based on last 1000 ticks
+  const digitAnalysis = useMemo(() => {
+    if (last1000Digits.length === 0) {
+      return {
+        frequency: {},
+        percentages: [],
+        mostCommon: 0,
+        leastCommon: 0,
+        evenCount: 0,
+        oddCount: 0,
+        evenPct: 50,
+        oddPct: 50,
+        overCount: 0,
+        underCount: 0,
+        overPct: 50,
+        underPct: 50
+      };
     }
-    return analyzeDigits(activeDigits.map((d, i) => d)); // Use digits directly
-  }, [activeDigits]);
-
-  // Even/Odd stats
-  const evenCount = useMemo(() => activeDigits.filter(d => d % 2 === 0).length, [activeDigits]);
-  const oddCount = activeDigits.length - evenCount;
-  const evenPct = activeDigits.length > 0 ? (evenCount / activeDigits.length * 100) : 50;
-  const oddPct = 100 - evenPct;
-  
-  // Over/Under stats
-  const overCount = useMemo(() => activeDigits.filter(d => d > 4).length, [activeDigits]);
-  const underCount = activeDigits.length - overCount;
-  const overPct = activeDigits.length > 0 ? (overCount / activeDigits.length * 100) : 50;
-  const underPct = 100 - overPct;
+    
+    const { frequency, percentages, mostCommon, leastCommon } = analyzeDigits(last1000Digits);
+    
+    // Even/Odd stats
+    const evenCount = last1000Digits.filter(d => d % 2 === 0).length;
+    const oddCount = last1000Digits.length - evenCount;
+    const evenPct = (evenCount / last1000Digits.length * 100);
+    const oddPct = 100 - evenPct;
+    
+    // Over/Under stats
+    const overCount = last1000Digits.filter(d => d > 4).length;
+    const underCount = last1000Digits.length - overCount;
+    const overPct = (overCount / last1000Digits.length * 100);
+    const underPct = 100 - overPct;
+    
+    return {
+      frequency,
+      percentages,
+      mostCommon,
+      leastCommon,
+      evenCount,
+      oddCount,
+      evenPct,
+      oddPct,
+      overCount,
+      underCount,
+      overPct,
+      underPct,
+      totalTicks: last1000Digits.length
+    };
+  }, [last1000Digits]);
 
   /* ── Build config object for preview ── */
   const currentConfig = useMemo<BotConfig>(() => ({
@@ -1251,120 +1298,125 @@ export default function ProScannerBot() {
           <div className="bg-card border border-border rounded-xl p-2.5">
             <div className="flex items-center justify-between mb-1.5">
               <h3 className="text-[10px] font-semibold text-foreground">Live Digits — {activeSymbol}</h3>
-              <span className="text-[9px] text-muted-foreground font-mono">Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)}</span>
+              <span className="text-[9px] text-muted-foreground font-mono">
+                Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)} | Analysis: {digitAnalysis.totalTicks}/1000 ticks
+              </span>
             </div>
             <div className="flex gap-1 flex-wrap justify-center">
-              {activeDigits.length === 0 ? (
+              {liveDigits.length === 0 ? (
                 <span className="text-[10px] text-muted-foreground">Waiting for ticks...</span>
-              ) : activeDigits.slice(-26).map((d, i) => { // Show last 26 digits in the stream
+              ) : liveDigits.map((d, i) => {
                 const isOver = d >= 5;
                 const isEven = d % 2 === 0;
-                const isLast = i === activeDigits.slice(-26).length - 1;
+                const isLast = i === liveDigits.length - 1;
                 return (
-                  <div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
+                  <div key={i} className={`w-7 h-9 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
                     isLast ? 'ring-2 ring-primary' : ''
                   } ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}>
                     <span className="text-sm">{d}</span>
-                    <span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
+                    <span className="text-[6px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
                   </div>
                 );
               })}
             </div>
           </div>
 
-          {/* Digit Analysis Panel - New section below live digits */}
-          <div className="bg-card border border-border rounded-xl p-3 space-y-3">
-            <h3 className="text-xs font-semibold text-foreground">Digit Analysis — {activeSymbol}</h3>
+          {/* Digit Analysis Panel - Based on last 1000 ticks with smaller buttons */}
+          <div className="bg-card border border-border rounded-xl p-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground">Digit Analysis — {activeSymbol} <span className="text-[9px] text-muted-foreground ml-1">(last {digitAnalysis.totalTicks} ticks)</span></h3>
+            </div>
 
-            {/* Stats cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2">
-                <div className="text-[9px] text-[#D29922]">Odd</div>
-                <div className="font-mono text-sm font-bold text-[#D29922]">{oddPct.toFixed(1)}%</div>
-                <Progress value={oddPct} className="h-1.5 mt-1 bg-muted" indicatorClassName="bg-[#D29922]" />
+            {/* Stats cards - compact version */}
+            <div className="grid grid-cols-4 gap-1.5">
+              <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded p-1.5">
+                <div className="text-[8px] text-[#D29922]">Odd</div>
+                <div className="font-mono text-xs font-bold text-[#D29922]">{digitAnalysis.oddPct.toFixed(1)}%</div>
+                <Progress value={digitAnalysis.oddPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-[#D29922]" />
               </div>
-              <div className="bg-[#3FB950]/10 border border-[#3FB950]/30 rounded-lg p-2">
-                <div className="text-[9px] text-[#3FB950]">Even</div>
-                <div className="font-mono text-sm font-bold text-[#3FB950]">{evenPct.toFixed(1)}%</div>
-                <Progress value={evenPct} className="h-1.5 mt-1 bg-muted" indicatorClassName="bg-[#3FB950]" />
+              <div className="bg-[#3FB950]/10 border border-[#3FB950]/30 rounded p-1.5">
+                <div className="text-[8px] text-[#3FB950]">Even</div>
+                <div className="font-mono text-xs font-bold text-[#3FB950]">{digitAnalysis.evenPct.toFixed(1)}%</div>
+                <Progress value={digitAnalysis.evenPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-[#3FB950]" />
               </div>
-              <div className="bg-primary/10 border border-primary/30 rounded-lg p-2">
-                <div className="text-[9px] text-primary">Over 4 (5-9)</div>
-                <div className="font-mono text-sm font-bold text-primary">{overPct.toFixed(1)}%</div>
-                <Progress value={overPct} className="h-1.5 mt-1 bg-muted" indicatorClassName="bg-primary" />
+              <div className="bg-primary/10 border border-primary/30 rounded p-1.5">
+                <div className="text-[8px] text-primary">Over</div>
+                <div className="font-mono text-xs font-bold text-primary">{digitAnalysis.overPct.toFixed(1)}%</div>
+                <Progress value={digitAnalysis.overPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-primary" />
               </div>
-              <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2">
-                <div className="text-[9px] text-[#D29922]">Under 5 (0-4)</div>
-                <div className="font-mono text-sm font-bold text-[#D29922]">{underPct.toFixed(1)}%</div>
-                <Progress value={underPct} className="h-1.5 mt-1 bg-muted" indicatorClassName="bg-[#D29922]" />
+              <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded p-1.5">
+                <div className="text-[8px] text-[#D29922]">Under</div>
+                <div className="font-mono text-xs font-bold text-[#D29922]">{digitAnalysis.underPct.toFixed(1)}%</div>
+                <Progress value={digitAnalysis.underPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-[#D29922]" />
               </div>
             </div>
 
-            {/* Digit Grid 0-9 */}
-            <div className="grid grid-cols-5 md:grid-cols-10 gap-1.5">
+            {/* Digit Grid 0-9 - Smaller buttons */}
+            <div className="grid grid-cols-5 md:grid-cols-10 gap-1">
               {Array.from({ length: 10 }, (_, d) => {
-                const pct = percentages[d] || 0;
-                const count = frequency[d] || 0;
+                const pct = digitAnalysis.percentages[d] || 0;
+                const count = digitAnalysis.frequency[d] || 0;
                 const isHot = pct > 12;
                 const isWarm = pct > 9;
-                const isBestMatch = d === mostCommon;
-                const isBestDiffer = d === leastCommon;
+                const isBestMatch = d === digitAnalysis.mostCommon;
+                const isBestDiffer = d === digitAnalysis.leastCommon;
                 return (
                   <button key={d}
                     onClick={() => {
-                      // Optionally set this digit as barrier for current market
+                      // Set this digit as barrier for current market if applicable
                       if (currentMarket === 1 && needsBarrier(m1Contract)) {
                         setM1Barrier(String(d));
                       } else if (currentMarket === 2 && needsBarrier(m2Contract)) {
                         setM2Barrier(String(d));
                       }
                     }}
-                    className={`relative rounded-lg p-2 text-center transition-all border cursor-pointer hover:ring-2 hover:ring-primary ${
+                    className={`relative rounded-md p-1 text-center transition-all border cursor-pointer hover:ring-1 hover:ring-primary ${
                       (currentMarket === 1 && needsBarrier(m1Contract) && m1Barrier === String(d)) ||
-                      (currentMarket === 2 && needsBarrier(m2Contract) && m2Barrier === String(d)) ? 'ring-2 ring-primary' : ''
+                      (currentMarket === 2 && needsBarrier(m2Contract) && m2Barrier === String(d)) ? 'ring-1 ring-primary' : ''
                     } ${isHot ? 'bg-loss/10 border-loss/40 text-loss' :
                       isWarm ? 'bg-warning/10 border-warning/40 text-warning' :
                       'bg-card border-border text-primary'}`}
                   >
-                    <div className="font-mono text-lg font-bold">{d}</div>
-                    <div className="text-[8px]">{count} ({pct.toFixed(1)}%)</div>
-                    <Progress value={Math.min(100, pct * 5)} className="h-1 mt-1 bg-muted" indicatorClassName={`${isHot ? 'bg-loss' : isWarm ? 'bg-warning' : 'bg-primary'}`} />
+                    <div className="font-mono text-base font-bold">{d}</div>
+                    <div className="text-[7px] leading-tight">{count}</div>
+                    <div className="text-[6px] leading-tight opacity-70">{pct.toFixed(0)}%</div>
+                    <Progress value={Math.min(100, pct * 5)} className="h-0.5 mt-0.5 bg-muted" indicatorClassName={`${isHot ? 'bg-loss' : isWarm ? 'bg-warning' : 'bg-primary'}`} />
                     {isBestMatch && (
-                      <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match</Badge>
+                      <Badge className="absolute -top-1 -right-1 text-[5px] px-0.5 py-0 h-3 min-w-0 bg-profit text-profit-foreground">M</Badge>
                     )}
                     {isBestDiffer && (
-                      <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Avoid</Badge>
+                      <Badge className="absolute -top-1 -left-1 text-[5px] px-0.5 py-0 h-3 min-w-0 bg-loss text-loss-foreground">A</Badge>
                     )}
                   </button>
                 );
               })}
             </div>
 
-            {/* Strategic Recommendations */}
-            <div className="grid grid-cols-4 gap-2">
-              <div className="bg-card border border-profit/30 rounded-lg p-2">
-                <div className="text-[9px] text-muted-foreground">Best Match</div>
-                <div className="font-mono text-lg font-bold text-profit">{mostCommon}</div>
-                <div className="text-[8px] text-muted-foreground">{percentages[mostCommon]?.toFixed(1)}% frequency</div>
+            {/* Strategic Recommendations - Compact */}
+            <div className="grid grid-cols-4 gap-1.5">
+              <div className="bg-card border border-profit/30 rounded p-1 text-center">
+                <div className="text-[7px] text-muted-foreground">Best Match</div>
+                <div className="font-mono text-sm font-bold text-profit">{digitAnalysis.mostCommon}</div>
+                <div className="text-[6px] text-muted-foreground">{digitAnalysis.percentages[digitAnalysis.mostCommon]?.toFixed(1)}%</div>
               </div>
-              <div className="bg-card border border-loss/30 rounded-lg p-2">
-                <div className="text-[9px] text-muted-foreground">Best Differ</div>
-                <div className="font-mono text-lg font-bold text-loss">{leastCommon}</div>
-                <div className="text-[8px] text-muted-foreground">{percentages[leastCommon]?.toFixed(1)}% frequency</div>
+              <div className="bg-card border border-loss/30 rounded p-1 text-center">
+                <div className="text-[7px] text-muted-foreground">Best Differ</div>
+                <div className="font-mono text-sm font-bold text-loss">{digitAnalysis.leastCommon}</div>
+                <div className="text-[6px] text-muted-foreground">{digitAnalysis.percentages[digitAnalysis.leastCommon]?.toFixed(1)}%</div>
               </div>
-              <div className="bg-card border border-[#D29922]/30 rounded-lg p-2">
-                <div className="text-[9px] text-muted-foreground">Even/Odd</div>
-                <div className={`font-mono text-lg font-bold ${evenPct > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>
-                  {evenPct > 50 ? 'EVEN' : 'ODD'}
+              <div className="bg-card border border-[#D29922]/30 rounded p-1 text-center">
+                <div className="text-[7px] text-muted-foreground">Even/Odd</div>
+                <div className={`font-mono text-sm font-bold ${digitAnalysis.evenPct > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>
+                  {digitAnalysis.evenPct > 50 ? 'EVEN' : 'ODD'}
                 </div>
-                <div className="text-[8px] text-muted-foreground">{Math.max(evenPct, oddPct).toFixed(1)}%</div>
+                <div className="text-[6px] text-muted-foreground">{Math.max(digitAnalysis.evenPct, digitAnalysis.oddPct).toFixed(1)}%</div>
               </div>
-              <div className="bg-card border border-primary/30 rounded-lg p-2">
-                <div className="text-[9px] text-muted-foreground">Over/Under</div>
-                <div className={`font-mono text-lg font-bold ${overPct > 50 ? 'text-primary' : 'text-[#D29922]'}`}>
-                  {overPct > 50 ? 'OVER' : 'UNDER'}
+              <div className="bg-card border border-primary/30 rounded p-1 text-center">
+                <div className="text-[7px] text-muted-foreground">Over/Under</div>
+                <div className={`font-mono text-sm font-bold ${digitAnalysis.overPct > 50 ? 'text-primary' : 'text-[#D29922]'}`}>
+                  {digitAnalysis.overPct > 50 ? 'OVER' : 'UNDER'}
                 </div>
-                <div className="text-[8px] text-muted-foreground">{Math.max(overPct, underPct).toFixed(1)}%</div>
+                <div className="text-[6px] text-muted-foreground">{Math.max(digitAnalysis.overPct, digitAnalysis.underPct).toFixed(1)}%</div>
               </div>
             </div>
           </div>
