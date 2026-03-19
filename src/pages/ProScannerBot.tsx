@@ -11,11 +11,10 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
   Play, StopCircle, Trash2, Scan,
-  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload, Target, Activity, ArrowUp, ArrowDown,
+  Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -54,244 +53,29 @@ interface LogEntry {
   switchInfo: string;
 }
 
-/* ── Optimized Circular Digit Buffer ── */
-class CircularDigitBuffer {
-  private buffer: number[];
+/* ── Circular Tick Buffer ── */
+class CircularTickBuffer {
+  private buffer: { digit: number; ts: number }[];
   private head = 0;
   private count = 0;
-  private capacity: number;
-  private counts: { [key: number]: number };
-  private cachedAnalysis: {
-    counts: { [key: number]: number };
-    percentages: number[];
-    mostFrequent: number;
-    leastFrequent: number;
-    top3: number[];
-    bottom3: number[];
-    evenPct: number;
-    oddPct: number;
-    overPct: number;
-    underPct: number;
-  } | null;
-
-  constructor(capacity = 1000) {
-    this.capacity = capacity;
+  constructor(private capacity = 1000) {
     this.buffer = new Array(capacity);
-    this.counts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0 };
-    this.cachedAnalysis = null;
   }
-
-  // Extract last digit from price with maximum reliability
-  static extractLastDigit(price: number | string): number | null {
-    if (price === null || price === undefined) return null;
-    
-    try {
-      // Handle number or string input
-      let num: number;
-      if (typeof price === 'string') {
-        num = parseFloat(price);
-        if (isNaN(num)) return null;
-      } else {
-        num = price;
-      }
-      
-      // Get absolute value to handle negatives
-      num = Math.abs(num);
-      
-      // Convert to string with high precision
-      const str = num.toFixed(10);
-      
-      // Extract all digits and get the last one
-      const matches = str.match(/\d/g);
-      if (!matches || matches.length === 0) return null;
-      
-      const lastDigit = parseInt(matches[matches.length - 1], 10);
-      return lastDigit >= 0 && lastDigit <= 9 ? lastDigit : null;
-    } catch (e) {
-      console.error('Digit extraction error:', e);
-      return null;
-    }
-  }
-
-  // Push new digit with O(1) update
-  push(digit: number): void {
-    // If buffer is full, remove oldest and update counts
-    if (this.count === this.capacity) {
-      const oldest = this.buffer[this.head];
-      this.counts[oldest]--;
-    }
-    
-    // Add new digit
-    this.buffer[this.head] = digit;
-    this.counts[digit]++;
-    
-    // Update head pointer
+  push(digit: number) {
+    this.buffer[this.head] = { digit, ts: performance.now() };
     this.head = (this.head + 1) % this.capacity;
-    
-    // Increment count until full
-    if (this.count < this.capacity) {
-      this.count++;
-    }
-    
-    // Invalidate cache
-    this.cachedAnalysis = null;
+    if (this.count < this.capacity) this.count++;
   }
-
-  // Process a tick and extract digit
-  processTick(tick: any): boolean {
-    if (!tick?.quote) return false;
-    const digit = CircularDigitBuffer.extractLastDigit(tick.quote);
-    if (digit === null) return false;
-    this.push(digit);
-    return true;
-  }
-
-  // Bulk load ticks
-  loadTicks(ticks: any[]): void {
-    if (!Array.isArray(ticks) || ticks.length === 0) return;
-    
-    // Reset state
-    this.buffer = new Array(this.capacity);
-    this.head = 0;
-    this.count = 0;
-    this.counts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0 };
-    
-    // Sort by timestamp to ensure correct order
-    const sortedTicks = [...ticks]
-      .filter(t => t?.quote)
-      .sort((a, b) => (a.epoch || 0) - (b.epoch || 0));
-    
-    // Take only the last capacity ticks
-    const recentTicks = sortedTicks.slice(-this.capacity);
-    
-    // Process each tick
-    recentTicks.forEach(tick => {
-      const digit = CircularDigitBuffer.extractLastDigit(tick.quote);
-      if (digit !== null) {
-        this.buffer[this.head] = digit;
-        this.counts[digit]++;
-        this.head = (this.head + 1) % this.capacity;
-        this.count++;
-      }
-    });
-    
-    this.cachedAnalysis = null;
-  }
-
-  // Get last n digits
   last(n: number): number[] {
-    if (n > this.count) n = this.count;
-    const result = new Array(n);
-    const start = (this.head - n + this.capacity) % this.capacity;
-    for (let i = 0; i < n; i++) {
-      result[i] = this.buffer[(start + i) % this.capacity];
+    const result: number[] = [];
+    const start = (this.head - Math.min(n, this.count) + this.capacity) % this.capacity;
+    for (let i = 0; i < Math.min(n, this.count); i++) {
+      result.push(this.buffer[(start + i) % this.capacity].digit);
     }
     return result;
   }
-
-  // Get all digits
-  getAll(): number[] {
-    return this.last(this.count);
-  }
-
-  // Get current count
-  get size(): number {
-    return this.count;
-  }
-
-  // Get counts for each digit
-  getCounts(): { [key: number]: number } {
-    return { ...this.counts };
-  }
-
-  // Perform complete analysis (cached)
-  analyze() {
-    if (this.cachedAnalysis) {
-      return this.cachedAnalysis;
-    }
-    
-    if (this.count === 0) {
-      const emptyResult = {
-        counts: this.counts,
-        percentages: new Array(10).fill(0),
-        mostFrequent: 0,
-        leastFrequent: 0,
-        top3: [0, 1, 2],
-        bottom3: [0, 1, 2],
-        evenPct: 50,
-        oddPct: 50,
-        overPct: 50,
-        underPct: 50
-      };
-      this.cachedAnalysis = emptyResult;
-      return emptyResult;
-    }
-    
-    // Calculate percentages
-    const percentages = new Array(10);
-    for (let i = 0; i <= 9; i++) {
-      percentages[i] = Number(((this.counts[i] / this.count) * 100).toFixed(2));
-    }
-    
-    // Find most and least frequent
-    let mostFrequent = 0;
-    let leastFrequent = 0;
-    let maxCount = -1;
-    let minCount = Infinity;
-    
-    const countEntries = Object.entries(this.counts).map(([digit, count]) => ({
-      digit: parseInt(digit),
-      count
-    }));
-    
-    countEntries.forEach(({ digit, count }) => {
-      if (count > maxCount) {
-        maxCount = count;
-        mostFrequent = digit;
-      }
-      if (count < minCount) {
-        minCount = count;
-        leastFrequent = digit;
-      }
-    });
-    
-    // Get top 3 and bottom 3
-    const sorted = [...countEntries].sort((a, b) => b.count - a.count);
-    const top3 = sorted.slice(0, 3).map(item => item.digit);
-    const bottom3 = sorted.slice(-3).map(item => item.digit);
-    
-    // Even/Odd stats
-    let evenCount = 0;
-    for (let i = 0; i <= 9; i += 2) {
-      evenCount += this.counts[i];
-    }
-    const evenPct = Number(((evenCount / this.count) * 100).toFixed(1));
-    const oddPct = Number((100 - evenPct).toFixed(1));
-    
-    // Over/Under stats (Over = 5-9, Under = 0-4)
-    let overCount = 0;
-    for (let i = 5; i <= 9; i++) {
-      overCount += this.counts[i];
-    }
-    const overPct = Number(((overCount / this.count) * 100).toFixed(1));
-    const underPct = Number((100 - overPct).toFixed(1));
-    
-    const result = {
-      counts: this.counts,
-      percentages,
-      mostFrequent,
-      leastFrequent,
-      top3,
-      bottom3,
-      evenPct,
-      oddPct,
-      overPct,
-      underPct
-    };
-    
-    this.cachedAnalysis = result;
-    return result;
-  }
+  lastTs(): number { return this.count > 0 ? this.buffer[(this.head - 1 + this.capacity) % this.capacity].ts : 0; }
+  get size() { return this.count; }
 }
 
 function waitForNextTick(symbol: string): Promise<{ quote: number }> {
@@ -336,7 +120,7 @@ export default function ProScannerBot() {
   const [m1Enabled, setM1Enabled] = useState(true);
   const [m1Contract, setM1Contract] = useState('DIGITEVEN');
   const [m1Barrier, setM1Barrier] = useState('5');
-  const [m1Symbol, setM1Symbol] = useState('1HZ100V');
+  const [m1Symbol, setM1Symbol] = useState('R_100');
 
   /* ── Market 2 config ── */
   const [m2Enabled, setM2Enabled] = useState(true);
@@ -395,6 +179,8 @@ export default function ProScannerBot() {
   const [turboLatency, setTurboLatency] = useState(0);
   const [ticksCaptured, setTicksCaptured] = useState(0);
   const [ticksMissed, setTicksMissed] = useState(0);
+  const turboBuffersRef = useRef<Map<string, CircularTickBuffer>>(new Map());
+  const lastTickTsRef = useRef(0);
 
   /* ── Bot state ── */
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
@@ -410,90 +196,34 @@ export default function ProScannerBot() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const logIdRef = useRef(0);
 
-  /* ── Digit analyzers for each market ── */
-  const digitAnalyzersRef = useRef<Map<string, CircularDigitBuffer>>(new Map());
-  const [lastUpdate, setLastUpdate] = useState(0);
-
-  /* ── Tick data for pattern matching ── */
+  /* ── Tick data (legacy for pattern matching) ── */
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
-
-  /* Initialize digit analyzers for all markets */
-  useEffect(() => {
-    SCANNER_MARKETS.forEach(m => {
-      if (!digitAnalyzersRef.current.has(m.symbol)) {
-        digitAnalyzersRef.current.set(m.symbol, new CircularDigitBuffer(1000));
-      }
-    });
-  }, []);
-
-  /* Load initial 1000 ticks for active markets */
-  useEffect(() => {
-    if (!derivApi.isConnected) return;
-    
-    const loadInitialTicks = async () => {
-      try {
-        // Load for M1 market
-        const m1Analyzer = digitAnalyzersRef.current.get(m1Symbol);
-        if (m1Analyzer && m1Analyzer.size === 0) {
-          const hist1 = await derivApi.getTickHistory(m1Symbol as MarketSymbol, 1000);
-          if (hist1?.history?.prices) {
-            const ticks = hist1.history.prices.map((price, idx) => ({
-              quote: price,
-              epoch: hist1.history.times?.[idx] || Date.now() - (1000 - idx) * 1000
-            }));
-            m1Analyzer.loadTicks(ticks);
-          }
-        }
-        
-        // Load for M2 market
-        const m2Analyzer = digitAnalyzersRef.current.get(m2Symbol);
-        if (m2Analyzer && m2Analyzer.size === 0) {
-          const hist2 = await derivApi.getTickHistory(m2Symbol as MarketSymbol, 1000);
-          if (hist2?.history?.prices) {
-            const ticks = hist2.history.prices.map((price, idx) => ({
-              quote: price,
-              epoch: hist2.history.times?.[idx] || Date.now() - (1000 - idx) * 1000
-            }));
-            m2Analyzer.loadTicks(ticks);
-          }
-        }
-        
-        setLastUpdate(Date.now());
-      } catch (error) {
-        console.error('Failed to load initial ticks:', error);
-      }
-    };
-    
-    loadInitialTicks();
-  }, [m1Symbol, m2Symbol]);
 
   /* Subscribe to all scanner markets */
   useEffect(() => {
     if (!derivApi.isConnected) return;
     let active = true;
-    
     const handler = (data: any) => {
       if (!data.tick || !active) return;
-      
       const sym = data.tick.symbol as string;
       const digit = getLastDigit(data.tick.quote);
       const now = performance.now();
 
-      // Legacy tick map for pattern matching
+      // Legacy tick map
       const map = tickMapRef.current;
       const arr = map.get(sym) || [];
       arr.push(digit);
       if (arr.length > 200) arr.shift();
       map.set(sym, arr);
-      
-      // Update digit analyzer
-      const analyzer = digitAnalyzersRef.current.get(sym);
-      if (analyzer) {
-        analyzer.processTick(data.tick);
-      }
-      
       setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
+
+      // Turbo circular buffer
+      if (!turboBuffersRef.current.has(sym)) {
+        turboBuffersRef.current.set(sym, new CircularTickBuffer(1000));
+      }
+      const buf = turboBuffersRef.current.get(sym)!;
+      buf.push(digit);
 
       // Turbo latency tracking
       if (lastTickTsRef.current > 0) {
@@ -503,29 +233,10 @@ export default function ProScannerBot() {
       }
       lastTickTsRef.current = now;
       setTicksCaptured(prev => prev + 1);
-      
-      // Throttle UI updates (max 30fps)
-      if (!updateScheduledRef.current) {
-        updateScheduledRef.current = true;
-        requestAnimationFrame(() => {
-          setLastUpdate(Date.now());
-          updateScheduledRef.current = false;
-        });
-      }
     };
-    
-    const updateScheduledRef = { current: false };
-    const lastTickTsRef = { current: 0 };
-    
     const unsub = derivApi.onMessage(handler);
-    SCANNER_MARKETS.forEach(m => { 
-      derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); 
-    });
-    
-    return () => { 
-      active = false; 
-      unsub(); 
-    };
+    SCANNER_MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); });
+    return () => { active = false; unsub(); };
   }, []);
 
   /* ── Pattern validation ── */
@@ -929,35 +640,6 @@ export default function ProScannerBot() {
   const status = statusConfig[botStatus];
   const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : '0.0';
 
-  /* ── Get digit analysis for active symbol ── */
-  const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
-  
-  const digitAnalysis = useMemo(() => {
-    const analyzer = digitAnalyzersRef.current.get(activeSymbol);
-    if (!analyzer) {
-      return {
-        counts: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0 },
-        percentages: new Array(10).fill(0),
-        mostFrequent: 0,
-        leastFrequent: 0,
-        top3: [0, 1, 2],
-        bottom3: [0, 1, 2],
-        evenPct: 50,
-        oddPct: 50,
-        overPct: 50,
-        underPct: 50
-      };
-    }
-    return analyzer.analyze();
-  }, [activeSymbol, lastUpdate]); // Re-run on updates
-  
-  // Live digits for display (last 26)
-  const liveDigits = useMemo(() => {
-    const analyzer = digitAnalyzersRef.current.get(activeSymbol);
-    if (!analyzer) return [];
-    return analyzer.last(26);
-  }, [activeSymbol, lastUpdate]);
-
   /* ── Build config object for preview ── */
   const currentConfig = useMemo<BotConfig>(() => ({
     version: 1,
@@ -1024,6 +706,9 @@ export default function ProScannerBot() {
       window.history.replaceState({}, '');
     }
   }, [location.state, handleLoadConfig]);
+
+  const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
+  const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
 
   return (
     <div className="space-y-2 max-w-7xl mx-auto">
@@ -1538,170 +1223,30 @@ export default function ProScannerBot() {
           </div>
         </div>
 
-        {/* ═══ RIGHT: Digit Stream + Analysis + Activity Log ═══ */}
+        {/* ═══ RIGHT: Digit Stream + Activity Log ═══ */}
         <div className="lg:col-span-8 space-y-2">
           {/* Digit Stream */}
           <div className="bg-card border border-border rounded-xl p-2.5">
             <div className="flex items-center justify-between mb-1.5">
               <h3 className="text-[10px] font-semibold text-foreground">Live Digits — {activeSymbol}</h3>
-              <span className="text-[9px] text-muted-foreground font-mono">
-                Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)} | Buffer: {digitAnalyzersRef.current.get(activeSymbol)?.size || 0}/1000
-              </span>
+              <span className="text-[9px] text-muted-foreground font-mono">Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)}</span>
             </div>
-            <div className="flex gap-1 flex-wrap justify-center">
-              {liveDigits.length === 0 ? (
+            <div className="flex gap-1 justify-center">
+              {activeDigits.length === 0 ? (
                 <span className="text-[10px] text-muted-foreground">Waiting for ticks...</span>
-              ) : liveDigits.map((d, i) => {
+              ) : activeDigits.map((d, i) => {
                 const isOver = d >= 5;
                 const isEven = d % 2 === 0;
-                const isLast = i === liveDigits.length - 1;
+                const isLast = i === activeDigits.length - 1;
                 return (
-                  <div key={i} className={`w-7 h-9 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
+                  <div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
                     isLast ? 'ring-2 ring-primary' : ''
                   } ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}>
                     <span className="text-sm">{d}</span>
-                    <span className="text-[6px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
+                    <span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
                   </div>
                 );
               })}
-            </div>
-          </div>
-
-          {/* Digit Analysis Panel - Based on last 1000 ticks */}
-          <div className="bg-card border border-border rounded-xl p-2.5 space-y-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-foreground">Digit Analysis — {activeSymbol} <span className="text-[9px] text-muted-foreground ml-1">(last {digitAnalyzersRef.current.get(activeSymbol)?.size || 0}/1000 ticks)</span></h3>
-            </div>
-
-            {/* Stats cards - compact version */}
-            <div className="grid grid-cols-4 gap-1.5">
-              <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded p-1.5">
-                <div className="text-[8px] text-[#D29922]">Odd</div>
-                <div className="font-mono text-xs font-bold text-[#D29922]">{digitAnalysis.oddPct}%</div>
-                <Progress value={digitAnalysis.oddPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-[#D29922]" />
-              </div>
-              <div className="bg-[#3FB950]/10 border border-[#3FB950]/30 rounded p-1.5">
-                <div className="text-[8px] text-[#3FB950]">Even</div>
-                <div className="font-mono text-xs font-bold text-[#3FB950]">{digitAnalysis.evenPct}%</div>
-                <Progress value={digitAnalysis.evenPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-[#3FB950]" />
-              </div>
-              <div className="bg-primary/10 border border-primary/30 rounded p-1.5">
-                <div className="text-[8px] text-primary">Over (5-9)</div>
-                <div className="font-mono text-xs font-bold text-primary">{digitAnalysis.overPct}%</div>
-                <Progress value={digitAnalysis.overPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-primary" />
-              </div>
-              <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded p-1.5">
-                <div className="text-[8px] text-[#D29922]">Under (0-4)</div>
-                <div className="font-mono text-xs font-bold text-[#D29922]">{digitAnalysis.underPct}%</div>
-                <Progress value={digitAnalysis.underPct} className="h-1 mt-0.5 bg-muted" indicatorClassName="bg-[#D29922]" />
-              </div>
-            </div>
-
-            {/* Digit Grid 0-9 - Compact */}
-            <div className="grid grid-cols-5 md:grid-cols-10 gap-1">
-              {Array.from({ length: 10 }, (_, d) => {
-                const pct = digitAnalysis.percentages[d] || 0;
-                const count = digitAnalysis.counts[d] || 0;
-                const isTop3 = digitAnalysis.top3.includes(d);
-                const isBottom3 = digitAnalysis.bottom3.includes(d);
-                const isMostFrequent = d === digitAnalysis.mostFrequent;
-                const isLeastFrequent = d === digitAnalysis.leastFrequent;
-                
-                let bgColor = 'bg-card';
-                if (isMostFrequent) bgColor = 'bg-profit/20 border-profit';
-                else if (isLeastFrequent) bgColor = 'bg-loss/20 border-loss';
-                else if (isTop3) bgColor = 'bg-profit/10 border-profit/30';
-                else if (isBottom3) bgColor = 'bg-loss/10 border-loss/30';
-                
-                return (
-                  <button
-                    key={d}
-                    onClick={() => {
-                      if (currentMarket === 1 && needsBarrier(m1Contract)) {
-                        setM1Barrier(String(d));
-                      } else if (currentMarket === 2 && needsBarrier(m2Contract)) {
-                        setM2Barrier(String(d));
-                      }
-                    }}
-                    className={`relative rounded p-1 text-center transition-all border cursor-pointer hover:ring-1 hover:ring-primary ${bgColor} ${
-                      (currentMarket === 1 && needsBarrier(m1Contract) && m1Barrier === String(d)) ||
-                      (currentMarket === 2 && needsBarrier(m2Contract) && m2Barrier === String(d)) ? 'ring-1 ring-primary' : ''
-                    }`}
-                  >
-                    <div className="font-mono text-base font-bold">{d}</div>
-                    <div className="text-[8px] leading-tight">{count}</div>
-                    <div className="text-[7px] leading-tight opacity-70">{pct.toFixed(1)}%</div>
-                    <Progress value={pct} className="h-0.5 mt-0.5 bg-muted" indicatorClassName={
-                      isMostFrequent ? 'bg-profit' : 
-                      isLeastFrequent ? 'bg-loss' : 
-                      isTop3 ? 'bg-profit/70' : 
-                      isBottom3 ? 'bg-loss/70' : 'bg-primary'
-                    } />
-                    {isMostFrequent && (
-                      <Badge className="absolute -top-1 -right-1 text-[5px] px-0.5 py-0 h-3 min-w-0 bg-profit text-profit-foreground">1</Badge>
-                    )}
-                    {isLeastFrequent && (
-                      <Badge className="absolute -top-1 -left-1 text-[5px] px-0.5 py-0 h-3 min-w-0 bg-loss text-loss-foreground">9</Badge>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Top/Bottom 3 */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-profit/5 border border-profit/20 rounded p-1.5">
-                <div className="text-[8px] text-profit font-semibold flex items-center gap-1">
-                  <ArrowUp className="w-2.5 h-2.5" /> Top 3 Digits
-                </div>
-                <div className="flex gap-1 mt-1">
-                  {digitAnalysis.top3.map(d => (
-                    <Badge key={d} variant="outline" className="bg-profit/10 text-profit border-profit/30 text-[10px] px-1.5">
-                      {d} ({digitAnalysis.counts[d]})
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-              <div className="bg-loss/5 border border-loss/20 rounded p-1.5">
-                <div className="text-[8px] text-loss font-semibold flex items-center gap-1">
-                  <ArrowDown className="w-2.5 h-2.5" /> Bottom 3 Digits
-                </div>
-                <div className="flex gap-1 mt-1">
-                  {digitAnalysis.bottom3.map(d => (
-                    <Badge key={d} variant="outline" className="bg-loss/10 text-loss border-loss/30 text-[10px] px-1.5">
-                      {d} ({digitAnalysis.counts[d]})
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Strategic Recommendations */}
-            <div className="grid grid-cols-4 gap-1.5">
-              <div className="bg-card border border-profit/30 rounded p-1 text-center">
-                <div className="text-[7px] text-muted-foreground">Best Match</div>
-                <div className="font-mono text-sm font-bold text-profit">{digitAnalysis.mostFrequent}</div>
-                <div className="text-[6px] text-muted-foreground">{digitAnalysis.percentages[digitAnalysis.mostFrequent]?.toFixed(1)}%</div>
-              </div>
-              <div className="bg-card border border-loss/30 rounded p-1 text-center">
-                <div className="text-[7px] text-muted-foreground">Best Differ</div>
-                <div className="font-mono text-sm font-bold text-loss">{digitAnalysis.leastFrequent}</div>
-                <div className="text-[6px] text-muted-foreground">{digitAnalysis.percentages[digitAnalysis.leastFrequent]?.toFixed(1)}%</div>
-              </div>
-              <div className="bg-card border border-[#D29922]/30 rounded p-1 text-center">
-                <div className="text-[7px] text-muted-foreground">Even/Odd</div>
-                <div className={`font-mono text-sm font-bold ${digitAnalysis.evenPct > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>
-                  {digitAnalysis.evenPct > 50 ? 'EVEN' : 'ODD'}
-                </div>
-                <div className="text-[6px] text-muted-foreground">{Math.max(digitAnalysis.evenPct, digitAnalysis.oddPct)}%</div>
-              </div>
-              <div className="bg-card border border-primary/30 rounded p-1 text-center">
-                <div className="text-[7px] text-muted-foreground">Over/Under</div>
-                <div className={`font-mono text-sm font-bold ${digitAnalysis.overPct > 50 ? 'text-primary' : 'text-[#D29922]'}`}>
-                  {digitAnalysis.overPct > 50 ? 'OVER' : 'UNDER'}
-                </div>
-                <div className="text-[6px] text-muted-foreground">{Math.max(digitAnalysis.overPct, digitAnalysis.underPct)}%</div>
-              </div>
             </div>
           </div>
 
@@ -1775,7 +1320,7 @@ export default function ProScannerBot() {
                 </Button>
               </div>
             </div>
-            <div className="max-h-[calc(100vh-580px)] min-h-[300px] overflow-auto">
+            <div className="max-h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
               <table className="w-full text-[10px]">
                 <thead className="text-[9px] text-muted-foreground bg-muted/30 sticky top-0">
                   <tr>
