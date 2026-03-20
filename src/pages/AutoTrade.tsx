@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { copyTradingService } from '@/services/copy-trading-service';
-import { getLastDigit, analyzeDigits, calculateRSI, calculateMACD, calculateBollingerBands } from '@/services/analysis';
+import { getLastDigit, analyzeDigits, calculateRSI } from '@/services/analysis';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLossRequirement } from '@/hooks/useLossRequirement';
 import { Input } from '@/components/ui/input';
@@ -11,12 +11,11 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   Play, StopCircle, Trash2, Scan, Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
-  TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Target, Volume2, VolumeX, Clock, Trophy,
+  TrendingUp, TrendingDown, Activity, ArrowUp, Target,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -33,23 +32,13 @@ const SCANNER_MARKETS: { symbol: string; name: string }[] = [
 ];
 
 const CONTRACT_TYPES = [
-  'DIGITEVEN', 'DIGITODD', 'DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER',
+  'CALL', 'PUT', 'DIGITEVEN', 'DIGITODD', 'DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER',
 ] as const;
-
-const CONTRACT_TYPES_WITH_LABELS = [
-  { value: 'CALL', label: 'Rise' },
-  { value: 'PUT', label: 'Fall' },
-  { value: 'DIGITMATCH', label: 'Digits Match' },
-  { value: 'DIGITDIFF', label: 'Digits Differs' },
-  { value: 'DIGITEVEN', label: 'Digits Even' },
-  { value: 'DIGITODD', label: 'Digits Odd' },
-  { value: 'DIGITOVER', label: 'Digits Over' },
-  { value: 'DIGITUNDER', label: 'Digits Under' },
-];
 
 const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct);
 
 type BotStatus = 'idle' | 'trading_m1' | 'recovery' | 'waiting_pattern' | 'pattern_matched' | 'virtual_hook';
+type StrategyMode = 'pattern' | 'digit';
 
 interface LogEntry {
   id: number;
@@ -64,12 +53,6 @@ interface LogEntry {
   pnl: number;
   balance: number;
   switchInfo: string;
-}
-
-interface Signal {
-  direction: string;
-  confidence: number;
-  digit?: number;
 }
 
 /* ── Circular Tick Buffer ── */
@@ -121,22 +104,13 @@ function simulateVirtualContract(
           case 'DIGITDIFF': won = digit !== b; break;
           case 'DIGITOVER': won = digit > b; break;
           case 'DIGITUNDER': won = digit < b; break;
+          case 'CALL': won = true; break;
+          case 'PUT': won = false; break;
         }
         resolve({ won, digit });
       }
     });
   });
-}
-
-/* ── EMA Helper ── */
-function calcEMA(prices: number[], period: number): number {
-  if (prices.length < period) return prices[prices.length - 1] || 0;
-  const k = 2 / (period + 1);
-  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < prices.length; i++) {
-    ema = prices[i] * k + ema * (1 - k);
-  }
-  return ema;
 }
 
 export default function ProScannerBot() {
@@ -146,13 +120,13 @@ export default function ProScannerBot() {
 
   /* ── Market 1 config ── */
   const [m1Enabled, setM1Enabled] = useState(true);
-  const [m1Contract, setM1Contract] = useState('DIGITEVEN');
+  const [m1Contract, setM1Contract] = useState('CALL');
   const [m1Barrier, setM1Barrier] = useState('5');
   const [m1Symbol, setM1Symbol] = useState('R_100');
 
   /* ── Market 2 config ── */
   const [m2Enabled, setM2Enabled] = useState(true);
-  const [m2Contract, setM2Contract] = useState('DIGITODD');
+  const [m2Contract, setM2Contract] = useState('PUT');
   const [m2Barrier, setM2Barrier] = useState('5');
   const [m2Symbol, setM2Symbol] = useState('R_50');
 
@@ -185,6 +159,10 @@ export default function ProScannerBot() {
   const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
   const [signalSource, setSignalSource] = useState<'rise_fall' | 'even_odd' | 'over_under' | 'digit_match'>('rise_fall');
   const [signalThreshold, setSignalThreshold] = useState('70');
+
+  /* ── Fallback pattern/digit strategy modes ── */
+  const [m1StrategyMode, setM1StrategyMode] = useState<StrategyMode>('pattern');
+  const [m2StrategyMode, setM2StrategyMode] = useState<StrategyMode>('pattern');
 
   /* ── M1 pattern/digit config (fallback) ── */
   const [m1Pattern, setM1Pattern] = useState('');
@@ -231,17 +209,23 @@ export default function ProScannerBot() {
   const [digits, setDigits] = useState<number[]>([]);
 
   /* ── Signal Analysis ── */
-  const rsi = useMemo(() => calculateRSI(prices, 14), [prices]);
+  const rsi = useMemo(() => {
+    if (prices.length < 14) return 50;
+    return calculateRSI(prices, 14);
+  }, [prices]);
+  
   const evenPct = useMemo(() => {
     if (digits.length === 0) return 50;
     const evens = digits.filter(d => d % 2 === 0).length;
     return (evens / digits.length) * 100;
   }, [digits]);
+  
   const overPct = useMemo(() => {
     if (digits.length === 0) return 50;
     const overs = digits.filter(d => d > 4).length;
     return (overs / digits.length) * 100;
   }, [digits]);
+  
   const { frequency, percentages, mostCommon } = useMemo(() => {
     if (prices.length === 0) return { frequency: {}, percentages: {}, mostCommon: 5, leastCommon: 5 };
     return analyzeDigits(prices);
@@ -263,22 +247,22 @@ export default function ProScannerBot() {
   }, [overPct]);
 
   const matchSignal = useMemo(() => {
-    const bestPct = Math.max(...percentages);
+    const bestPct = Math.max(...Object.values(percentages));
     return { digit: mostCommon, confidence: Math.min(90, Math.round(bestPct * 3)) };
   }, [percentages, mostCommon]);
 
   const currentSignal = useMemo(() => {
     switch (signalSource) {
       case 'rise_fall':
-        return { contract: riseSignal.direction === 'Rise' ? 'CALL' : 'PUT', confidence: riseSignal.confidence };
+        return { contract: riseSignal.direction === 'Rise' ? 'CALL' : 'PUT', confidence: riseSignal.confidence, digit: undefined };
       case 'even_odd':
-        return { contract: eoSignal.direction === 'Even' ? 'DIGITEVEN' : 'DIGITODD', confidence: eoSignal.confidence };
+        return { contract: eoSignal.direction === 'Even' ? 'DIGITEVEN' : 'DIGITODD', confidence: eoSignal.confidence, digit: undefined };
       case 'over_under':
-        return { contract: ouSignal.direction === 'Over' ? 'DIGITOVER' : 'DIGITUNDER', confidence: ouSignal.confidence };
+        return { contract: ouSignal.direction === 'Over' ? 'DIGITOVER' : 'DIGITUNDER', confidence: ouSignal.confidence, digit: undefined };
       case 'digit_match':
         return { contract: 'DIGITMATCH', confidence: matchSignal.confidence, digit: matchSignal.digit };
       default:
-        return { contract: 'CALL', confidence: 50 };
+        return { contract: 'CALL', confidence: 50, digit: undefined };
     }
   }, [signalSource, riseSignal, eoSignal, ouSignal, matchSignal]);
 
@@ -355,9 +339,9 @@ export default function ProScannerBot() {
 
   /* ── Check pattern match for a symbol (fallback) ── */
   const checkPatternMatchWith = useCallback((symbol: string, cleanPat: string): boolean => {
-    const digits = tickMapRef.current.get(symbol) || [];
-    if (digits.length < cleanPat.length) return false;
-    const recent = digits.slice(-cleanPat.length);
+    const digitsArr = tickMapRef.current.get(symbol) || [];
+    if (digitsArr.length < cleanPat.length) return false;
+    const recent = digitsArr.slice(-cleanPat.length);
     for (let i = 0; i < cleanPat.length; i++) {
       const expected = cleanPat[i];
       const actual = recent[i] % 2 === 0 ? 'E' : 'O';
@@ -367,12 +351,12 @@ export default function ProScannerBot() {
   }, []);
 
   /* ── Check digit condition for a symbol (fallback) ── */
-  const checkDigitConditionWith = useCallback((symbol: string, condition: string, compare: string, window: string): boolean => {
-    const digits = tickMapRef.current.get(symbol) || [];
-    const win = parseInt(window) || 3;
+  const checkDigitConditionWith = useCallback((symbol: string, condition: string, compare: string, windowStr: string): boolean => {
+    const digitsArr = tickMapRef.current.get(symbol) || [];
+    const win = parseInt(windowStr) || 3;
     const comp = parseInt(compare);
-    if (digits.length < win) return false;
-    const recent = digits.slice(-win);
+    if (digitsArr.length < win) return false;
+    const recent = digitsArr.slice(-win);
     return recent.every(d => {
       switch (condition) {
         case '>': return d > comp;
@@ -393,8 +377,9 @@ export default function ProScannerBot() {
     }
 
     // Fallback to pattern/digit strategy
-    const mode = market === 1 ? (strategyM1Enabled ? 'pattern' : null) : (strategyEnabled ? 'pattern' : null);
-    if (!mode) return false;
+    const mode = market === 1 ? m1StrategyMode : m2StrategyMode;
+    const isEnabled = market === 1 ? strategyM1Enabled : strategyEnabled;
+    if (!isEnabled) return false;
 
     if (mode === 'pattern') {
       const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern;
@@ -408,7 +393,7 @@ export default function ProScannerBot() {
     return false;
   }, [strategyM1Enabled, strategyEnabled, checkSignalCondition, cleanM1Pattern, cleanM2Pattern, 
       checkPatternMatchWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, 
-      m2DigitCondition, m2DigitCompare, m2DigitWindow]);
+      m2DigitCondition, m2DigitCompare, m2DigitWindow, m1StrategyMode, m2StrategyMode]);
 
   /* ── Find scanner match for a specific market ── */
   const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => {
@@ -1521,7 +1506,7 @@ export default function ProScannerBot() {
                         'text-purple-400'
                       }`}>{e.market}</td>
                       <td className="p-1 font-mono text-[9px]">{e.symbol}</td>
-                      <td className="p-1 text-[9px]">{e.contract.replace('DIGIT', '')}</td>
+                      <td className="p-1 text-[9px]">{e.contract.replace('DIGIT', '').replace('CALL', 'Rise').replace('PUT', 'Fall')}</td>
                       <td className="p-1 font-mono text-right text-[9px]">
                         {e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}
                         {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-warning ml-0.5">M{e.martingaleStep}</span>}
