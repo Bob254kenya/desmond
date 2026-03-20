@@ -10,33 +10,25 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
-  Play, StopCircle, Trash2, Home, RefreshCw, Shield, Zap, TrendingUp, TrendingDown, 
-  Activity, ArrowUp, ArrowDown, Target, Crown, Sparkles, Flame, Gem, Star, 
-  ChevronRight, BarChart3, AlertCircle, CheckCircle2, XCircle
+  Play, StopCircle, Trash2, Scan, Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
+  TrendingUp, TrendingDown, Activity, ArrowUp, Target,
 } from 'lucide-react';
+import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
 /* ───── CONSTANTS ───── */
-const ALL_MARKETS = [
-  { symbol: 'R_10', name: 'Vol 10', group: 'vol' },
-  { symbol: 'R_25', name: 'Vol 25', group: 'vol' },
-  { symbol: 'R_50', name: 'Vol 50', group: 'vol' },
-  { symbol: 'R_75', name: 'Vol 75', group: 'vol' },
-  { symbol: 'R_100', name: 'Vol 100', group: 'vol' },
-  { symbol: '1HZ10V', name: 'V10 1s', group: 'vol1s' },
-  { symbol: '1HZ25V', name: 'V25 1s', group: 'vol1s' },
-  { symbol: '1HZ50V', name: 'V50 1s', group: 'vol1s' },
-  { symbol: '1HZ75V', name: 'V75 1s', group: 'vol1s' },
-  { symbol: '1HZ100V', name: 'V100 1s', group: 'vol1s' },
-  { symbol: 'JD10', name: 'Jump 10', group: 'jump' },
-  { symbol: 'JD25', name: 'Jump 25', group: 'jump' },
-  { symbol: 'JD50', name: 'Jump 50', group: 'jump' },
-  { symbol: 'JD75', name: 'Jump 75', group: 'jump' },
-  { symbol: 'JD100', name: 'Jump 100', group: 'jump' },
-  { symbol: 'RDBEAR', name: 'Bear', group: 'bear' },
-  { symbol: 'RDBULL', name: 'Bull', group: 'bull' },
+const SCANNER_MARKETS: { symbol: string; name: string }[] = [
+  { symbol: 'R_10', name: 'Vol 10' }, { symbol: 'R_25', name: 'Vol 25' },
+  { symbol: 'R_50', name: 'Vol 50' }, { symbol: 'R_75', name: 'Vol 75' },
+  { symbol: 'R_100', name: 'Vol 100' },
+  { symbol: '1HZ10V', name: 'V10 1s' }, { symbol: '1HZ25V', name: 'V25 1s' },
+  { symbol: '1HZ50V', name: 'V50 1s' }, { symbol: '1HZ75V', name: 'V75 1s' },
+  { symbol: '1HZ100V', name: 'V100 1s' },
+  { symbol: 'JD10', name: 'Jump 10' }, { symbol: 'JD25', name: 'Jump 25' },
+  { symbol: 'RDBEAR', name: 'Bear' }, { symbol: 'RDBULL', name: 'Bull' },
 ];
 
 const CONTRACT_TYPES = [
@@ -45,18 +37,8 @@ const CONTRACT_TYPES = [
 
 const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct);
 
-type BotStatus = 'idle' | 'trading_m1' | 'recovery' | 'waiting_signal' | 'signal_matched' | 'virtual_hook';
-
-interface SignalData {
-  market: string;
-  name: string;
-  type: 'rise_fall' | 'even_odd' | 'over_under' | 'digit_match';
-  direction: string;
-  confidence: number;
-  digit?: number;
-  contract: string;
-  barrier?: string;
-}
+type BotStatus = 'idle' | 'trading_m1' | 'recovery' | 'waiting_pattern' | 'pattern_matched' | 'virtual_hook';
+type StrategyMode = 'pattern' | 'digit';
 
 interface LogEntry {
   id: number;
@@ -71,6 +53,30 @@ interface LogEntry {
   pnl: number;
   balance: number;
   switchInfo: string;
+}
+
+/* ── Circular Tick Buffer ── */
+class CircularTickBuffer {
+  private buffer: { digit: number; ts: number }[];
+  private head = 0;
+  private count = 0;
+  constructor(private capacity = 1000) {
+    this.buffer = new Array(capacity);
+  }
+  push(digit: number) {
+    this.buffer[this.head] = { digit, ts: performance.now() };
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count++;
+  }
+  last(n: number): number[] {
+    const result: number[] = [];
+    const start = (this.head - Math.min(n, this.count) + this.capacity) % this.capacity;
+    for (let i = 0; i < Math.min(n, this.count); i++) {
+      result.push(this.buffer[(start + i) % this.capacity].digit);
+    }
+    return result;
+  }
+  get size() { return this.count; }
 }
 
 function waitForNextTick(symbol: string): Promise<{ quote: number }> {
@@ -112,38 +118,75 @@ export default function ProScannerBot() {
   const { recordLoss } = useLossRequirement();
   const location = useLocation();
 
-  /* ── Market 1 config (Auto-configured by signals) ── */
+  /* ── Market 1 config ── */
   const [m1Enabled, setM1Enabled] = useState(true);
   const [m1Contract, setM1Contract] = useState('CALL');
   const [m1Barrier, setM1Barrier] = useState('5');
   const [m1Symbol, setM1Symbol] = useState('R_100');
 
-  /* ── Market 2 config (Auto-configured by signals) ── */
+  /* ── Market 2 config ── */
   const [m2Enabled, setM2Enabled] = useState(true);
   const [m2Contract, setM2Contract] = useState('PUT');
   const [m2Barrier, setM2Barrier] = useState('5');
   const [m2Symbol, setM2Symbol] = useState('R_50');
 
-  /* ── Virtual Hook ── */
-  const [hookEnabled, setHookEnabled] = useState(false);
-  const [virtualLossCount, setVirtualLossCount] = useState('3');
-  const [realCount, setRealCount] = useState('2');
+  /* ── Virtual Hook M1 ── */
+  const [m1HookEnabled, setM1HookEnabled] = useState(false);
+  const [m1VirtualLossCount, setM1VirtualLossCount] = useState('3');
+  const [m1RealCount, setM1RealCount] = useState('2');
+
+  /* ── Virtual Hook M2 ── */
+  const [m2HookEnabled, setM2HookEnabled] = useState(false);
+  const [m2VirtualLossCount, setM2VirtualLossCount] = useState('3');
+  const [m2RealCount, setM2RealCount] = useState('2');
+
+  /* ── Virtual Hook stats ── */
   const [vhFakeWins, setVhFakeWins] = useState(0);
   const [vhFakeLosses, setVhFakeLosses] = useState(0);
   const [vhConsecLosses, setVhConsecLosses] = useState(0);
   const [vhStatus, setVhStatus] = useState<'idle' | 'waiting' | 'confirmed' | 'failed'>('idle');
 
-  /* ── Risk Management ── */
+  /* ── Risk ── */
   const [stake, setStake] = useState('0.35');
-  const [martingaleOn, setMartingaleOn] = useState(true);
+  const [martingaleOn, setMartingaleOn] = useState(false);
   const [martingaleMultiplier, setMartingaleMultiplier] = useState('2.0');
-  const [martingaleMaxSteps, setMartingaleMaxSteps] = useState('3');
+  const [martingaleMaxSteps, setMartingaleMaxSteps] = useState('5');
   const [takeProfit, setTakeProfit] = useState('10');
   const [stopLoss, setStopLoss] = useState('5');
 
-  /* ── Signal Settings ── */
+  /* ── Strategy (Signal-based) ── */
+  const [strategyEnabled, setStrategyEnabled] = useState(false);
+  const [strategyM1Enabled, setStrategyM1Enabled] = useState(false);
+  const [signalSource, setSignalSource] = useState<'rise_fall' | 'even_odd' | 'over_under' | 'digit_match'>('rise_fall');
   const [signalThreshold, setSignalThreshold] = useState('70');
-  const [selectedMarkets, setSelectedMarkets] = useState<string[]>(['R_100', 'R_75', 'R_50', '1HZ100V', '1HZ75V']);
+
+  /* ── Fallback pattern/digit strategy modes ── */
+  const [m1StrategyMode, setM1StrategyMode] = useState<StrategyMode>('pattern');
+  const [m2StrategyMode, setM2StrategyMode] = useState<StrategyMode>('pattern');
+
+  /* ── M1 pattern/digit config (fallback) ── */
+  const [m1Pattern, setM1Pattern] = useState('');
+  const [m1DigitCondition, setM1DigitCondition] = useState('==');
+  const [m1DigitCompare, setM1DigitCompare] = useState('5');
+  const [m1DigitWindow, setM1DigitWindow] = useState('3');
+
+  /* ── M2 pattern/digit config (fallback) ── */
+  const [m2Pattern, setM2Pattern] = useState('');
+  const [m2DigitCondition, setM2DigitCondition] = useState('==');
+  const [m2DigitCompare, setM2DigitCompare] = useState('5');
+  const [m2DigitWindow, setM2DigitWindow] = useState('3');
+
+  /* ── Scanner ── */
+  const [scannerActive, setScannerActive] = useState(false);
+
+  /* ── Turbo ── */
+  const [turboMode, setTurboMode] = useState(false);
+  const [botName, setBotName] = useState('');
+  const [turboLatency, setTurboLatency] = useState(0);
+  const [ticksCaptured, setTicksCaptured] = useState(0);
+  const [ticksMissed, setTicksMissed] = useState(0);
+  const turboBuffersRef = useRef<Map<string, CircularTickBuffer>>(new Map());
+  const lastTickTsRef = useRef(0);
 
   /* ── Bot state ── */
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
@@ -161,11 +204,69 @@ export default function ProScannerBot() {
 
   /* ── Tick data for analysis ── */
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
-  const [pricesMap, setPricesMap] = useState<Map<string, number[]>>(new Map());
-  const [signals, setSignals] = useState<SignalData[]>([]);
-  const [strongSignals, setStrongSignals] = useState<SignalData[]>([]);
+  const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
+  const [prices, setPrices] = useState<number[]>([]);
+  const [digits, setDigits] = useState<number[]>([]);
 
-  /* ── Subscribe to ticks for all markets ── */
+  /* ── Signal Analysis ── */
+  const rsi = useMemo(() => {
+    if (prices.length < 14) return 50;
+    return calculateRSI(prices, 14);
+  }, [prices]);
+  
+  const evenPct = useMemo(() => {
+    if (digits.length === 0) return 50;
+    const evens = digits.filter(d => d % 2 === 0).length;
+    return (evens / digits.length) * 100;
+  }, [digits]);
+  
+  const overPct = useMemo(() => {
+    if (digits.length === 0) return 50;
+    const overs = digits.filter(d => d > 4).length;
+    return (overs / digits.length) * 100;
+  }, [digits]);
+  
+  const { frequency, percentages, mostCommon } = useMemo(() => {
+    if (prices.length === 0) return { frequency: {}, percentages: {}, mostCommon: 5, leastCommon: 5 };
+    return analyzeDigits(prices);
+  }, [prices]);
+
+  const riseSignal = useMemo(() => {
+    const conf = rsi < 30 ? 85 : rsi > 70 ? 25 : 50 + (50 - rsi);
+    return { direction: rsi < 45 ? 'Rise' : 'Fall', confidence: Math.min(95, Math.max(10, Math.round(conf))) };
+  }, [rsi]);
+
+  const eoSignal = useMemo(() => {
+    const conf = Math.abs(evenPct - 50) * 2 + 50;
+    return { direction: evenPct > 50 ? 'Even' : 'Odd', confidence: Math.min(90, Math.round(conf)) };
+  }, [evenPct]);
+
+  const ouSignal = useMemo(() => {
+    const conf = Math.abs(overPct - 50) * 2 + 50;
+    return { direction: overPct > 50 ? 'Over' : 'Under', confidence: Math.min(90, Math.round(conf)) };
+  }, [overPct]);
+
+  const matchSignal = useMemo(() => {
+    const bestPct = Math.max(...Object.values(percentages));
+    return { digit: mostCommon, confidence: Math.min(90, Math.round(bestPct * 3)) };
+  }, [percentages, mostCommon]);
+
+  const currentSignal = useMemo(() => {
+    switch (signalSource) {
+      case 'rise_fall':
+        return { contract: riseSignal.direction === 'Rise' ? 'CALL' : 'PUT', confidence: riseSignal.confidence, digit: undefined };
+      case 'even_odd':
+        return { contract: eoSignal.direction === 'Even' ? 'DIGITEVEN' : 'DIGITODD', confidence: eoSignal.confidence, digit: undefined };
+      case 'over_under':
+        return { contract: ouSignal.direction === 'Over' ? 'DIGITOVER' : 'DIGITUNDER', confidence: ouSignal.confidence, digit: undefined };
+      case 'digit_match':
+        return { contract: 'DIGITMATCH', confidence: matchSignal.confidence, digit: matchSignal.digit };
+      default:
+        return { contract: 'CALL', confidence: 50, digit: undefined };
+    }
+  }, [signalSource, riseSignal, eoSignal, ouSignal, matchSignal]);
+
+  /* ── Subscribe to ticks for signal analysis ── */
   useEffect(() => {
     if (!derivApi.isConnected) return;
     let active = true;
@@ -175,140 +276,154 @@ export default function ProScannerBot() {
       const sym = data.tick.symbol as string;
       const price = data.tick.quote;
       const digit = getLastDigit(price);
+      const now = performance.now();
 
-      // Store digits for pattern matching
-      const digitsArr = tickMapRef.current.get(sym) || [];
-      digitsArr.push(digit);
-      if (digitsArr.length > 500) digitsArr.shift();
-      tickMapRef.current.set(sym, digitsArr);
+      // Store for pattern matching
+      const map = tickMapRef.current;
+      const arr = map.get(sym) || [];
+      arr.push(digit);
+      if (arr.length > 500) arr.shift();
+      map.set(sym, arr);
+      setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
 
-      // Store prices for analysis
-      const pricesArr = pricesMap.get(sym) || [];
-      pricesArr.push(price);
-      if (pricesArr.length > 500) pricesArr.shift();
-      setPricesMap(prev => new Map(prev).set(sym, pricesArr));
+      // Store for signal analysis (using current active symbol)
+      if (sym === m1Symbol || sym === m2Symbol) {
+        setPrices(prev => [...prev.slice(-500), price]);
+        setDigits(prev => [...prev.slice(-500), digit]);
+      }
+
+      // Turbo circular buffer
+      if (!turboBuffersRef.current.has(sym)) {
+        turboBuffersRef.current.set(sym, new CircularTickBuffer(1000));
+      }
+      const buf = turboBuffersRef.current.get(sym)!;
+      buf.push(digit);
+
+      // Turbo latency tracking
+      if (lastTickTsRef.current > 0) {
+        const lat = now - lastTickTsRef.current;
+        setTurboLatency(Math.round(lat));
+        if (lat > 50) setTicksMissed(prev => prev + 1);
+      }
+      lastTickTsRef.current = now;
+      setTicksCaptured(prev => prev + 1);
     };
 
     const unsub = derivApi.onMessage(handler);
-    
-    // Subscribe to all markets
-    ALL_MARKETS.forEach(m => {
+    SCANNER_MARKETS.forEach(m => {
       derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {});
     });
 
     return () => { active = false; unsub(); };
-  }, []);
+  }, [m1Symbol, m2Symbol]);
 
-  /* ── Analyze signals for all markets ── */
-  useEffect(() => {
-    const analyzeMarket = (symbol: string, name: string): SignalData | null => {
-      const prices = pricesMap.get(symbol) || [];
-      if (prices.length < 30) return null;
+  /* ── Pattern validation (fallback) ── */
+  const cleanM1Pattern = m1Pattern.toUpperCase().replace(/[^EO]/g, '');
+  const m1PatternValid = cleanM1Pattern.length >= 2;
+  const cleanM2Pattern = m2Pattern.toUpperCase().replace(/[^EO]/g, '');
+  const m2PatternValid = cleanM2Pattern.length >= 2;
 
-      const digits = prices.map(p => getLastDigit(p));
-      const rsi = calculateRSI(prices, 14);
-      const evenCount = digits.filter(d => d % 2 === 0).length;
-      const evenPct = (evenCount / digits.length) * 100;
-      const overCount = digits.filter(d => d > 4).length;
-      const overPct = (overCount / digits.length) * 100;
-      const { mostCommon, percentages } = analyzeDigits(prices);
-      const bestPct = percentages[mostCommon] || 0;
-
-      // Calculate all signal types
-      const signals_list: SignalData[] = [];
-
-      // Rise/Fall signal
-      const riseFallConf = rsi < 30 ? 85 : rsi > 70 ? 25 : 50 + (50 - rsi);
-      const riseFallDir = rsi < 45 ? 'Rise' : 'Fall';
-      signals_list.push({
-        market: symbol, name, type: 'rise_fall',
-        direction: riseFallDir, confidence: Math.min(95, Math.max(10, Math.round(riseFallConf))),
-        contract: riseFallDir === 'Rise' ? 'CALL' : 'PUT'
-      });
-
-      // Even/Odd signal
-      const eoConf = Math.abs(evenPct - 50) * 2 + 50;
-      signals_list.push({
-        market: symbol, name, type: 'even_odd',
-        direction: evenPct > 50 ? 'Even' : 'Odd', confidence: Math.min(90, Math.round(eoConf)),
-        contract: evenPct > 50 ? 'DIGITEVEN' : 'DIGITODD'
-      });
-
-      // Over/Under signal
-      const ouConf = Math.abs(overPct - 50) * 2 + 50;
-      signals_list.push({
-        market: symbol, name, type: 'over_under',
-        direction: overPct > 50 ? 'Over' : 'Under', confidence: Math.min(90, Math.round(ouConf)),
-        contract: overPct > 50 ? 'DIGITOVER' : 'DIGITUNDER',
-        barrier: overPct > 50 ? '5' : '4'
-      });
-
-      // Digit Match signal
-      signals_list.push({
-        market: symbol, name, type: 'digit_match',
-        direction: `Match ${mostCommon}`, confidence: Math.min(90, Math.round(bestPct * 3)),
-        digit: mostCommon, contract: 'DIGITMATCH',
-        barrier: mostCommon.toString()
-      });
-
-      // Return the strongest signal
-      return signals_list.reduce((best, current) => 
-        current.confidence > best.confidence ? current : best, signals_list[0]);
-    };
-
-    const allSignals: SignalData[] = [];
-    for (const market of selectedMarkets) {
-      const marketInfo = ALL_MARKETS.find(m => m.symbol === market);
-      if (marketInfo) {
-        const signal = analyzeMarket(market, marketInfo.name);
-        if (signal) allSignals.push(signal);
-      }
-    }
-    
-    allSignals.sort((a, b) => b.confidence - a.confidence);
-    setSignals(allSignals);
-    setStrongSignals(allSignals.slice(0, 5));
-  }, [pricesMap, selectedMarkets]);
-
-  /* ── Auto-configure M1 and M2 based on strongest signals ── */
-  useEffect(() => {
-    if (strongSignals.length >= 2 && !isRunning) {
-      // M1 gets the strongest signal
-      const m1Signal = strongSignals[0];
-      setM1Symbol(m1Signal.market);
-      setM1Contract(m1Signal.contract);
-      if (m1Signal.barrier) setM1Barrier(m1Signal.barrier);
-      
-      // M2 gets the second strongest signal (different type for recovery)
-      const m2Signal = strongSignals[1];
-      let m2ContractType = m2Signal.contract;
-      
-      // For recovery, use opposite of M1 if same type
-      if (m1Signal.type === m2Signal.type && m1Signal.type === 'rise_fall') {
-        m2ContractType = m1Signal.contract === 'CALL' ? 'PUT' : 'CALL';
-      } else if (m1Signal.type === m2Signal.type && m1Signal.type === 'even_odd') {
-        m2ContractType = m1Signal.contract === 'DIGITEVEN' ? 'DIGITODD' : 'DIGITEVEN';
-      } else if (m1Signal.type === m2Signal.type && m1Signal.type === 'over_under') {
-        m2ContractType = m1Signal.contract === 'DIGITOVER' ? 'DIGITUNDER' : 'DIGITOVER';
-      }
-      
-      setM2Symbol(m2Signal.market);
-      setM2Contract(m2ContractType);
-      if (m2Signal.barrier) setM2Barrier(m2Signal.barrier);
-    }
-  }, [strongSignals, isRunning]);
-
-  /* ── Check if signal meets threshold ── */
-  const checkSignalCondition = useCallback((market: 1 | 2, signalType?: string): boolean => {
+  /* ── Check signal condition ── */
+  const checkSignalCondition = useCallback((market: 1 | 2): boolean => {
     const threshold = parseInt(signalThreshold) || 70;
-    const targetSignal = market === 1 ? strongSignals[0] : strongSignals[1];
-    
-    if (targetSignal && targetSignal.confidence >= threshold) {
-      if (signalType && targetSignal.type !== signalType) return false;
+    if (currentSignal.confidence >= threshold) {
+      // For digit match, also check if barrier matches
+      if (signalSource === 'digit_match') {
+        const barrier = market === 1 ? m1Barrier : m2Barrier;
+        if (currentSignal.digit?.toString() !== barrier) return false;
+      }
       return true;
     }
     return false;
-  }, [signalThreshold, strongSignals]);
+  }, [currentSignal, signalThreshold, signalSource, m1Barrier, m2Barrier]);
+
+  /* ── Check pattern match for a symbol (fallback) ── */
+  const checkPatternMatchWith = useCallback((symbol: string, cleanPat: string): boolean => {
+    const digitsArr = tickMapRef.current.get(symbol) || [];
+    if (digitsArr.length < cleanPat.length) return false;
+    const recent = digitsArr.slice(-cleanPat.length);
+    for (let i = 0; i < cleanPat.length; i++) {
+      const expected = cleanPat[i];
+      const actual = recent[i] % 2 === 0 ? 'E' : 'O';
+      if (expected !== actual) return false;
+    }
+    return true;
+  }, []);
+
+  /* ── Check digit condition for a symbol (fallback) ── */
+  const checkDigitConditionWith = useCallback((symbol: string, condition: string, compare: string, windowStr: string): boolean => {
+    const digitsArr = tickMapRef.current.get(symbol) || [];
+    const win = parseInt(windowStr) || 3;
+    const comp = parseInt(compare);
+    if (digitsArr.length < win) return false;
+    const recent = digitsArr.slice(-win);
+    return recent.every(d => {
+      switch (condition) {
+        case '>': return d > comp;
+        case '<': return d < comp;
+        case '>=': return d >= comp;
+        case '<=': return d <= comp;
+        case '==': return d === comp;
+        default: return false;
+      }
+    });
+  }, []);
+
+  /* ── Check strategy condition for a specific market (hybrid: signals first, then fallback) ── */
+  const checkStrategyForMarket = useCallback((symbol: string, market: 1 | 2): boolean => {
+    // First try signal-based strategy if enabled
+    if ((market === 1 && strategyM1Enabled) || (market === 2 && strategyEnabled)) {
+      if (checkSignalCondition(market)) return true;
+    }
+
+    // Fallback to pattern/digit strategy
+    const mode = market === 1 ? m1StrategyMode : m2StrategyMode;
+    const isEnabled = market === 1 ? strategyM1Enabled : strategyEnabled;
+    if (!isEnabled) return false;
+
+    if (mode === 'pattern') {
+      const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern;
+      if (pat.length >= 2) return checkPatternMatchWith(symbol, pat);
+    } else {
+      const cond = market === 1 ? m1DigitCondition : m2DigitCondition;
+      const comp = market === 1 ? m1DigitCompare : m2DigitCompare;
+      const win = market === 1 ? m1DigitWindow : m2DigitWindow;
+      return checkDigitConditionWith(symbol, cond, comp, win);
+    }
+    return false;
+  }, [strategyM1Enabled, strategyEnabled, checkSignalCondition, cleanM1Pattern, cleanM2Pattern, 
+      checkPatternMatchWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, 
+      m2DigitCondition, m2DigitCompare, m2DigitWindow, m1StrategyMode, m2StrategyMode]);
+
+  /* ── Find scanner match for a specific market ── */
+  const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => {
+    for (const m of SCANNER_MARKETS) {
+      if (checkStrategyForMarket(m.symbol, market)) return m.symbol;
+    }
+    return null;
+  }, [checkStrategyForMarket]);
+
+  /* ── Get contract type from signal ── */
+  const getContractFromSignal = useCallback((market: 1 | 2): string => {
+    // If using signal-based strategy, use the signal's contract
+    if ((market === 1 && strategyM1Enabled) || (market === 2 && strategyEnabled)) {
+      if (checkSignalCondition(market)) {
+        return currentSignal.contract;
+      }
+    }
+    // Fallback to manual config
+    return market === 1 ? m1Contract : m2Contract;
+  }, [strategyM1Enabled, strategyEnabled, checkSignalCondition, currentSignal, m1Contract, m2Contract]);
+
+  /* ── Get barrier from signal (for digit match) ── */
+  const getBarrierFromSignal = useCallback((market: 1 | 2): string => {
+    if (signalSource === 'digit_match' && ((market === 1 && strategyM1Enabled) || (market === 2 && strategyEnabled))) {
+      if (checkSignalCondition(market) && currentSignal.digit !== undefined) {
+        return currentSignal.digit.toString();
+      }
+    }
+    return market === 1 ? m1Barrier : m2Barrier;
+  }, [signalSource, strategyM1Enabled, strategyEnabled, checkSignalCondition, currentSignal, m1Barrier, m2Barrier]);
 
   /* ── Add log entry ── */
   const addLog = useCallback((id: number, entry: Omit<LogEntry, 'id'>) => {
@@ -326,6 +441,7 @@ export default function ProScannerBot() {
     setWins(0); setLosses(0); setTotalStaked(0); setNetProfit(0);
     setMartingaleStepState(0);
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
+    setTicksCaptured(0); setTicksMissed(0);
   }, []);
 
   /* ── Execute a single real trade ── */
@@ -354,7 +470,9 @@ export default function ProScannerBot() {
     let inRecovery = mkt === 2;
 
     try {
-      await waitForNextTick(tradeSymbol as MarketSymbol);
+      if (!turboMode) {
+        await waitForNextTick(tradeSymbol as MarketSymbol);
+      }
 
       const buyParams: any = {
         contract_type: cfg.contract, symbol: tradeSymbol,
@@ -363,6 +481,13 @@ export default function ProScannerBot() {
       if (needsBarrier(cfg.contract)) buyParams.barrier = cfg.barrier;
 
       const { contractId } = await derivApi.buyContract(buyParams);
+      
+      if (copyTradingService.enabled) {
+        copyTradingService.copyTrade({
+          ...buyParams,
+          masterTradeId: contractId,
+        }).catch(err => console.error('Copy trading error:', err));
+      }
       
       const result = await derivApi.waitForContractResult(contractId);
       const won = result.status === 'won';
@@ -429,10 +554,10 @@ export default function ProScannerBot() {
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
     } catch (err: any) {
       updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: `Error: ${err.message}` });
-      await new Promise(r => setTimeout(r, 2000));
+      if (!turboMode) await new Promise(r => setTimeout(r, 2000));
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
     }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, activeAccount, recordLoss]);
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
 
   /* ═══════════════ MAIN BOT LOOP ═══════════════ */
   const startBot = useCallback(async () => {
@@ -440,7 +565,6 @@ export default function ProScannerBot() {
     const baseStake = parseFloat(stake);
     if (baseStake < 0.35) { toast.error('Min stake $0.35'); return; }
     if (!m1Enabled && !m2Enabled) { toast.error('Enable at least one market'); return; }
-    if (strongSignals.length < 2) { toast.error('Waiting for strong signals...'); return; }
 
     setIsRunning(true);
     runningRef.current = true;
@@ -448,6 +572,7 @@ export default function ProScannerBot() {
     setBotStatus('trading_m1');
     setCurrentStakeState(baseStake);
     setMartingaleStepState(0);
+    setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
 
     let cStake = baseStake;
     let mStep = 0;
@@ -462,34 +587,53 @@ export default function ProScannerBot() {
       if (mkt === 1 && !m1Enabled) { if (m2Enabled) { inRecovery = true; continue; } else break; }
       if (mkt === 2 && !m2Enabled) { inRecovery = false; continue; }
 
-      // Get current signal for this market
-      const currentSignal = mkt === 1 ? strongSignals[0] : strongSignals[1];
-      if (!currentSignal) break;
+      let tradeSymbol: string;
+      const contract = getContractFromSignal(mkt);
+      const barrier = getBarrierFromSignal(mkt);
+      const hookEnabled = mkt === 1 ? m1HookEnabled : m2HookEnabled;
+      const requiredLosses = parseInt(mkt === 1 ? m1VirtualLossCount : m2VirtualLossCount) || 3;
+      const realCount = parseInt(mkt === 1 ? m1RealCount : m2RealCount) || 2;
 
-      const threshold = parseInt(signalThreshold);
-      if (currentSignal.confidence < threshold) {
-        setBotStatus('waiting_signal');
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
+      /* ── Strategy gating ── */
+      const isStrategyEnabled = mkt === 1 ? strategyM1Enabled : strategyEnabled;
+      if (isStrategyEnabled) {
+        setBotStatus('waiting_pattern');
+
+        let matched = false;
+        let matchedSymbol = '';
+        while (runningRef.current && !matched) {
+          if (scannerActive) {
+            const found = findScannerMatchForMarket(mkt);
+            if (found) { matched = true; matchedSymbol = found; }
+          } else {
+            const defaultSymbol = mkt === 1 ? m1Symbol : m2Symbol;
+            if (checkStrategyForMarket(defaultSymbol, mkt)) { matched = true; matchedSymbol = defaultSymbol; }
+          }
+          if (!matched) {
+            await new Promise<void>(r => {
+              if (turboMode) requestAnimationFrame(() => r());
+              else setTimeout(r, 500);
+            });
+          }
+        }
+        if (!runningRef.current) break;
+
+        setBotStatus('pattern_matched');
+        tradeSymbol = matchedSymbol;
+        if (!turboMode) await new Promise(r => setTimeout(r, 300));
+      } else {
+        setBotStatus(mkt === 1 ? 'trading_m1' : 'recovery');
+        tradeSymbol = mkt === 1 ? m1Symbol : m2Symbol;
       }
 
-      setBotStatus('signal_matched');
-
-      const contract = currentSignal.contract;
-      const barrier = currentSignal.barrier || (mkt === 1 ? m1Barrier : m2Barrier);
-      const tradeSymbol = currentSignal.market;
-      const hookActive = hookEnabled;
-
       /* ═══ VIRTUAL HOOK SEQUENCE ═══ */
-      if (hookActive) {
+      if (hookEnabled) {
         setBotStatus('virtual_hook');
         setVhStatus('waiting');
         setVhFakeWins(0);
         setVhFakeLosses(0);
         setVhConsecLosses(0);
         let consecLosses = 0;
-        const requiredLosses = parseInt(virtualLossCount) || 3;
-        const realTradesCount = parseInt(realCount) || 2;
         let virtualTradeNum = 0;
 
         while (consecLosses < requiredLosses && runningRef.current) {
@@ -522,9 +666,9 @@ export default function ProScannerBot() {
         if (!runningRef.current) break;
 
         setVhStatus('confirmed');
-        toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realTradesCount} real trade(s)`);
+        toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
 
-        for (let ri = 0; ri < realTradesCount && runningRef.current; ri++) {
+        for (let ri = 0; ri < realCount && runningRef.current; ri++) {
           const result = await executeRealTrade(
             { contract, barrier, symbol: tradeSymbol },
             tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
@@ -559,16 +703,17 @@ export default function ProScannerBot() {
 
       if (result.shouldBreak) break;
 
-      await new Promise(r => setTimeout(r, 400));
+      if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
 
     setIsRunning(false);
     runningRef.current = false;
     setBotStatus('idle');
-  }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Barrier, m2Barrier,
+  }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Symbol, m2Symbol,
     martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss,
-    hookEnabled, virtualLossCount, realCount, signalThreshold, strongSignals,
-    addLog, updateLog, executeRealTrade]);
+    strategyEnabled, strategyM1Enabled, scannerActive, findScannerMatchForMarket, checkStrategyForMarket,
+    addLog, updateLog, turboMode, m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount,
+    m1RealCount, m2RealCount, executeRealTrade, getContractFromSignal, getBarrierFromSignal]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
@@ -576,468 +721,819 @@ export default function ProScannerBot() {
     setBotStatus('idle');
   }, []);
 
+  /* ── Status helpers ── */
+  const statusConfig: Record<BotStatus, { icon: string; label: string; color: string }> = {
+    idle: { icon: '⚪', label: 'IDLE', color: 'text-muted-foreground' },
+    trading_m1: { icon: '🟢', label: 'TRADING M1', color: 'text-profit' },
+    recovery: { icon: '🟣', label: 'RECOVERY MODE', color: 'text-purple-400' },
+    waiting_pattern: { icon: '🟡', label: 'WAITING SIGNAL', color: 'text-warning' },
+    pattern_matched: { icon: '✅', label: 'SIGNAL MATCHED', color: 'text-profit' },
+    virtual_hook: { icon: '🎣', label: 'VIRTUAL HOOK', color: 'text-primary' },
+  };
+
+  const status = statusConfig[botStatus];
   const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : '0.0';
 
-  // Get signal type color
-  const getSignalColor = (type: string) => {
-    switch(type) {
-      case 'rise_fall': return 'from-emerald-500/20 to-emerald-600/10 border-emerald-500/50';
-      case 'even_odd': return 'from-amber-500/20 to-amber-600/10 border-amber-500/50';
-      case 'over_under': return 'from-blue-500/20 to-blue-600/10 border-blue-500/50';
-      case 'digit_match': return 'from-purple-500/20 to-purple-600/10 border-purple-500/50';
-      default: return 'from-gray-500/20 to-gray-600/10 border-gray-500/50';
-    }
-  };
+  /* ── Build config object for preview ── */
+  const currentConfig = useMemo<BotConfig>(() => ({
+    version: 1,
+    m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
+    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
+    risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
+    strategy: { 
+      m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled, 
+      signalSource, signalThreshold,
+      m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow, 
+      m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow 
+    },
+    scanner: { active: scannerActive },
+    turbo: { enabled: turboMode },
+  }), [m1Enabled, m1Symbol, m1Contract, m1Barrier, m1HookEnabled, m1VirtualLossCount, m1RealCount, 
+      m2Enabled, m2Symbol, m2Contract, m2Barrier, m2HookEnabled, m2VirtualLossCount, m2RealCount, 
+      stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, 
+      strategyM1Enabled, strategyEnabled, signalSource, signalThreshold,
+      m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow, 
+      m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow, scannerActive, turboMode]);
 
-  const getSignalIcon = (type: string) => {
-    switch(type) {
-      case 'rise_fall': return <TrendingUp className="w-4 h-4" />;
-      case 'even_odd': return <Activity className="w-4 h-4" />;
-      case 'over_under': return <ArrowUp className="w-4 h-4" />;
-      case 'digit_match': return <Target className="w-4 h-4" />;
-      default: return <Zap className="w-4 h-4" />;
+  const handleLoadConfig = useCallback((cfg: BotConfig) => {
+    if (cfg.m1) {
+      if (cfg.m1.enabled !== undefined) setM1Enabled(cfg.m1.enabled);
+      if (cfg.m1.symbol) setM1Symbol(cfg.m1.symbol);
+      if (cfg.m1.contract) setM1Contract(cfg.m1.contract);
+      if (cfg.m1.barrier) setM1Barrier(cfg.m1.barrier);
+      if (cfg.m1.hookEnabled !== undefined) setM1HookEnabled(cfg.m1.hookEnabled);
+      if (cfg.m1.virtualLossCount) setM1VirtualLossCount(cfg.m1.virtualLossCount);
+      if (cfg.m1.realCount) setM1RealCount(cfg.m1.realCount);
     }
-  };
+    if (cfg.m2) {
+      if (cfg.m2.enabled !== undefined) setM2Enabled(cfg.m2.enabled);
+      if (cfg.m2.symbol) setM2Symbol(cfg.m2.symbol);
+      if (cfg.m2.contract) setM2Contract(cfg.m2.contract);
+      if (cfg.m2.barrier) setM2Barrier(cfg.m2.barrier);
+      if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
+      if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
+      if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
+    }
+    if (cfg.risk) {
+      if (cfg.risk.stake) setStake(cfg.risk.stake);
+      if (cfg.risk.martingaleOn !== undefined) setMartingaleOn(cfg.risk.martingaleOn);
+      if (cfg.risk.martingaleMultiplier) setMartingaleMultiplier(cfg.risk.martingaleMultiplier);
+      if (cfg.risk.martingaleMaxSteps) setMartingaleMaxSteps(cfg.risk.martingaleMaxSteps);
+      if (cfg.risk.takeProfit) setTakeProfit(cfg.risk.takeProfit);
+      if (cfg.risk.stopLoss) setStopLoss(cfg.risk.stopLoss);
+    }
+    if (cfg.strategy) {
+      if (cfg.strategy.m1Enabled !== undefined) setStrategyM1Enabled(cfg.strategy.m1Enabled);
+      if (cfg.strategy.m2Enabled !== undefined) setStrategyEnabled(cfg.strategy.m2Enabled);
+      if (cfg.strategy.signalSource) setSignalSource(cfg.strategy.signalSource as any);
+      if (cfg.strategy.signalThreshold) setSignalThreshold(cfg.strategy.signalThreshold);
+      if (cfg.strategy.m1Pattern !== undefined) setM1Pattern(cfg.strategy.m1Pattern);
+      if (cfg.strategy.m1DigitCondition) setM1DigitCondition(cfg.strategy.m1DigitCondition);
+      if (cfg.strategy.m1DigitCompare) setM1DigitCompare(cfg.strategy.m1DigitCompare);
+      if (cfg.strategy.m1DigitWindow) setM1DigitWindow(cfg.strategy.m1DigitWindow);
+      if (cfg.strategy.m2Pattern !== undefined) setM2Pattern(cfg.strategy.m2Pattern);
+      if (cfg.strategy.m2DigitCondition) setM2DigitCondition(cfg.strategy.m2DigitCondition);
+      if (cfg.strategy.m2DigitCompare) setM2DigitCompare(cfg.strategy.m2DigitCompare);
+      if (cfg.strategy.m2DigitWindow) setM2DigitWindow(cfg.strategy.m2DigitWindow);
+    }
+    if (cfg.scanner?.active !== undefined) setScannerActive(cfg.scanner.active);
+    if (cfg.turbo?.enabled !== undefined) setTurboMode(cfg.turbo.enabled);
+    if ((cfg as any).botName) setBotName((cfg as any).botName);
+  }, []);
+
+  // Auto-load config from navigation state
+  useEffect(() => {
+    const state = location.state as { loadConfig?: BotConfig } | null;
+    if (state?.loadConfig) {
+      handleLoadConfig(state.loadConfig);
+      window.history.replaceState({}, '');
+    }
+  }, [location.state, handleLoadConfig]);
+
+  const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
+  const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
+
+  // Get signal display info
+  const signalDisplay = {
+    rise_fall: { name: 'Rise/Fall', value: `${riseSignal.direction} ${riseSignal.confidence}%`, color: riseSignal.direction === 'Rise' ? 'text-profit' : 'text-loss' },
+    even_odd: { name: 'Even/Odd', value: `${eoSignal.direction} ${eoSignal.confidence}%`, color: eoSignal.direction === 'Even' ? 'text-[#3FB950]' : 'text-[#D29922]' },
+    over_under: { name: 'Over/Under', value: `${ouSignal.direction} ${ouSignal.confidence}%`, color: ouSignal.direction === 'Over' ? 'text-primary' : 'text-[#D29922]' },
+    digit_match: { name: 'Digit Match', value: `${matchSignal.digit} ${matchSignal.confidence}%`, color: 'text-profit' },
+  }[signalSource];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-4">
-      <div className="space-y-4 max-w-7xl mx-auto">
-        {/* ── Header with Gradient ── */}
-        <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 rounded-2xl p-4 shadow-2xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="bg-white/20 p-2 rounded-xl backdrop-blur">
-                <Crown className="w-6 h-6 text-white" />
+    <div className="space-y-2 max-w-7xl mx-auto">
+      {/* ── Compact Header ── */}
+      <div className="flex items-center justify-between gap-2 bg-card border border-border rounded-xl px-3 py-2">
+        <h1 className="text-base font-bold text-foreground flex items-center gap-2">
+          <Scan className="w-4 h-4 text-primary" /> Pro Scanner Bot
+        </h1>
+        <div className="flex items-center gap-2">
+          <Badge className={`${status.color} text-[10px]`}>{status.icon} {status.label}</Badge>
+          {isRunning && (
+            <Badge variant="outline" className="text-[10px] text-warning animate-pulse font-mono">
+              P/L: ${netProfit.toFixed(2)}
+            </Badge>
+          )}
+          {isRunning && (
+            <Badge variant="outline" className={`text-[10px] ${currentMarket === 1 ? 'text-profit border-profit/50' : 'text-purple-400 border-purple-500/50'}`}>
+              {currentMarket === 1 ? '🏠 M1' : '🔄 M2'}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* ── Scanner + Turbo + Stats Compact Row ── */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        {/* Scanner */}
+        <div className="bg-card border border-border rounded-xl p-2.5">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Eye className="w-3.5 h-3.5 text-primary" />
+              <span className="text-xs font-semibold text-foreground">Scanner</span>
+              <Badge variant={scannerActive ? 'default' : 'secondary'} className="text-[9px] h-4 px-1.5">
+                {scannerActive ? '🟢 ON' : '⚫ OFF'}
+              </Badge>
+            </div>
+            <Switch checked={scannerActive} onCheckedChange={setScannerActive} disabled={isRunning} />
+          </div>
+          <div className="flex flex-wrap gap-0.5">
+            {SCANNER_MARKETS.map(m => {
+              const count = tickCounts[m.symbol] || 0;
+              return (
+                <Badge key={m.symbol} variant="outline"
+                  className={`text-[8px] h-4 px-1 font-mono ${count > 0 ? 'border-primary/50 text-primary' : 'text-muted-foreground'}`}>
+                  {m.name}
+                </Badge>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Turbo */}
+        <div className="bg-card border border-border rounded-xl p-2.5">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Zap className={`w-3.5 h-3.5 ${turboMode ? 'text-profit animate-pulse' : 'text-muted-foreground'}`} />
+              <span className="text-xs font-semibold text-foreground">Turbo</span>
+            </div>
+            <Button
+              size="sm"
+              variant={turboMode ? 'default' : 'outline'}
+              className={`h-6 text-[9px] px-2 ${turboMode ? 'bg-profit hover:bg-profit/90 text-profit-foreground animate-pulse' : ''}`}
+              onClick={() => setTurboMode(!turboMode)}
+              disabled={isRunning}
+            >
+              {turboMode ? '⚡ ON' : 'OFF'}
+            </Button>
+          </div>
+          <div className="grid grid-cols-3 gap-1 text-center">
+            <div className="bg-muted/50 rounded p-1">
+              <div className="text-[8px] text-muted-foreground">Latency</div>
+              <div className="font-mono text-[10px] text-primary font-bold">{turboLatency}ms</div>
+            </div>
+            <div className="bg-muted/50 rounded p-1">
+              <div className="text-[8px] text-muted-foreground">Captured</div>
+              <div className="font-mono text-[10px] text-profit font-bold">{ticksCaptured}</div>
+            </div>
+            <div className="bg-muted/50 rounded p-1">
+              <div className="text-[8px] text-muted-foreground">Missed</div>
+              <div className="font-mono text-[10px] text-loss font-bold">{ticksMissed}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Stats */}
+        <div className="bg-card border border-border rounded-xl p-2.5">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-semibold text-foreground">Stats</span>
+            <span className="font-mono text-sm font-bold text-foreground">${balance.toFixed(2)}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1 text-center">
+            <div className="bg-muted/50 rounded p-1">
+              <div className="text-[8px] text-muted-foreground">W/L</div>
+              <div className="font-mono text-[10px] font-bold"><span className="text-profit">{wins}</span>/<span className="text-loss">{losses}</span></div>
+            </div>
+            <div className="bg-muted/50 rounded p-1">
+              <div className="text-[8px] text-muted-foreground">Net P/L</div>
+              <div className={`font-mono text-[10px] font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>${netProfit.toFixed(2)}</div>
+            </div>
+            <div className="bg-muted/50 rounded p-1">
+              <div className="text-[8px] text-muted-foreground">Stake</div>
+              <div className="font-mono text-[10px] font-bold text-foreground">${currentStake.toFixed(2)}{martingaleStep > 0 && <span className="text-warning"> M{martingaleStep}</span>}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Signal Display Card ── */}
+      <div className="bg-gradient-to-r from-primary/20 via-primary/10 to-transparent border border-primary/30 rounded-xl p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-primary/20 p-2 rounded-full">
+              <Activity className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <p className="text-[10px] text-muted-foreground">Current Signal</p>
+              <div className="flex items-center gap-2">
+                <span className={`text-lg font-bold ${signalDisplay.color}`}>{signalDisplay.value}</span>
+                <Badge className="text-[9px]" variant="outline">{signalDisplay.name}</Badge>
+              </div>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-[9px] text-muted-foreground">Threshold</p>
+            <p className="font-mono font-bold text-foreground">{signalThreshold}%</p>
+          </div>
+        </div>
+        <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
+          <motion.div 
+            initial={{ width: 0 }}
+            animate={{ width: `${currentSignal.confidence}%` }}
+            className={`h-full rounded-full ${currentSignal.confidence >= parseInt(signalThreshold) ? 'bg-profit' : 'bg-warning'}`}
+          />
+        </div>
+        <p className="text-[8px] text-muted-foreground mt-1 text-center">
+          {currentSignal.confidence >= parseInt(signalThreshold) ? '✅ Signal strength meets threshold' : '⏳ Waiting for signal strength to reach threshold'}
+        </p>
+      </div>
+
+      {/* ── Main 2-Column Layout ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
+        {/* ═══ LEFT: Config Column ═══ */}
+        <div className="lg:col-span-4 space-y-2">
+          {/* Signal Source Selection */}
+          <div className="bg-card border border-primary/30 rounded-xl p-2.5">
+            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1 mb-2">
+              <Target className="w-3.5 h-3.5 text-primary" /> Signal Source
+            </h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button
+                size="sm"
+                variant={signalSource === 'rise_fall' ? 'default' : 'outline'}
+                className={`h-7 text-[10px] ${signalSource === 'rise_fall' ? 'bg-primary' : ''}`}
+                onClick={() => setSignalSource('rise_fall')}
+                disabled={isRunning}
+              >
+                <TrendingUp className="w-3 h-3 mr-1" /> Rise/Fall
+              </Button>
+              <Button
+                size="sm"
+                variant={signalSource === 'even_odd' ? 'default' : 'outline'}
+                className={`h-7 text-[10px] ${signalSource === 'even_odd' ? 'bg-primary' : ''}`}
+                onClick={() => setSignalSource('even_odd')}
+                disabled={isRunning}
+              >
+                <Activity className="w-3 h-3 mr-1" /> Even/Odd
+              </Button>
+              <Button
+                size="sm"
+                variant={signalSource === 'over_under' ? 'default' : 'outline'}
+                className={`h-7 text-[10px] ${signalSource === 'over_under' ? 'bg-primary' : ''}`}
+                onClick={() => setSignalSource('over_under')}
+                disabled={isRunning}
+              >
+                <ArrowUp className="w-3 h-3 mr-1" /> Over/Under
+              </Button>
+              <Button
+                size="sm"
+                variant={signalSource === 'digit_match' ? 'default' : 'outline'}
+                className={`h-7 text-[10px] ${signalSource === 'digit_match' ? 'bg-primary' : ''}`}
+                onClick={() => setSignalSource('digit_match')}
+                disabled={isRunning}
+              >
+                <Target className="w-3 h-3 mr-1" /> Match
+              </Button>
+            </div>
+            <div className="mt-2">
+              <label className="text-[9px] text-muted-foreground">Signal Threshold (%)</label>
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                value={signalThreshold}
+                onChange={e => setSignalThreshold(e.target.value)}
+                disabled={isRunning}
+                className="h-7 text-xs mt-0.5"
+              />
+            </div>
+            {signalSource === 'digit_match' && (
+              <p className="text-[8px] text-muted-foreground mt-1">
+                💡 The bot will use the most frequent digit as the match target. Ensure barrier matches this digit.
+              </p>
+            )}
+          </div>
+
+          {/* Market 1 + Market 2 side by side on md */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-2">
+            {/* Market 1 */}
+            <div className="bg-card border-2 border-profit/30 rounded-xl p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-profit flex items-center gap-1"><Home className="w-3.5 h-3.5" /> M1 — Home</h3>
+                <div className="flex items-center gap-1.5">
+                  {currentMarket === 1 && isRunning && <span className="w-2 h-2 rounded-full bg-profit animate-pulse" />}
+                  <Switch checked={m1Enabled} onCheckedChange={setM1Enabled} disabled={isRunning} />
+                </div>
+              </div>
+              <Select value={m1Symbol} onValueChange={v => setM1Symbol(v)} disabled={isRunning}>
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={m1Contract} onValueChange={v => setM1Contract(v)} disabled={isRunning}>
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+              {needsBarrier(m1Contract) && (
+                <Input type="number" min="0" max="9" value={m1Barrier} onChange={e => setM1Barrier(e.target.value)}
+                  className="h-7 text-xs" placeholder="Barrier (0-9)" disabled={isRunning} />
+              )}
+              {/* Virtual Hook M1 */}
+              <div className="border-t border-border/30 pt-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-semibold text-primary flex items-center gap-1">
+                    <Anchor className="w-3 h-3" /> Virtual Hook
+                  </span>
+                  <Switch checked={m1HookEnabled} onCheckedChange={setM1HookEnabled} disabled={isRunning} />
+                </div>
+                {m1HookEnabled && (
+                  <div className="grid grid-cols-2 gap-1.5 mt-1">
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">V-Losses</label>
+                      <Input type="number" min="1" max="20" value={m1VirtualLossCount} onChange={e => setM1VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                    </div>
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">Real Trades</label>
+                      <Input type="number" min="1" max="10" value={m1RealCount} onChange={e => setM1RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Market 2 */}
+            <div className="bg-card border-2 border-purple-500/30 rounded-xl p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-purple-400 flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> M2 — Recovery</h3>
+                <div className="flex items-center gap-1.5">
+                  {currentMarket === 2 && isRunning && <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />}
+                  <Switch checked={m2Enabled} onCheckedChange={setM2Enabled} disabled={isRunning} />
+                </div>
+              </div>
+              <Select value={m2Symbol} onValueChange={v => setM2Symbol(v)} disabled={isRunning}>
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name} ({m.symbol})</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={m2Contract} onValueChange={v => setM2Contract(v)} disabled={isRunning}>
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+              {needsBarrier(m2Contract) && (
+                <Input type="number" min="0" max="9" value={m2Barrier} onChange={e => setM2Barrier(e.target.value)}
+                  className="h-7 text-xs" placeholder="Barrier (0-9)" disabled={isRunning} />
+              )}
+              {/* Virtual Hook M2 */}
+              <div className="border-t border-border/30 pt-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-semibold text-primary flex items-center gap-1">
+                    <Anchor className="w-3 h-3" /> Virtual Hook
+                  </span>
+                  <Switch checked={m2HookEnabled} onCheckedChange={setM2HookEnabled} disabled={isRunning} />
+                </div>
+                {m2HookEnabled && (
+                  <div className="grid grid-cols-2 gap-1.5 mt-1">
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">V-Losses</label>
+                      <Input type="number" min="1" max="20" value={m2VirtualLossCount} onChange={e => setM2VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                    </div>
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">Real Trades</label>
+                      <Input type="number" min="1" max="10" value={m2RealCount} onChange={e => setM2RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Virtual Hook Stats */}
+          {(m1HookEnabled || m2HookEnabled) && (
+            <div className="bg-card border border-primary/30 rounded-xl p-2.5">
+              <h3 className="text-[10px] font-semibold text-primary flex items-center gap-1 mb-1">
+                <Anchor className="w-3 h-3" /> Hook Status
+              </h3>
+              <div className="grid grid-cols-4 gap-1 text-center">
+                <div className="bg-muted/50 rounded p-1">
+                  <div className="text-[8px] text-muted-foreground">V-Win</div>
+                  <div className="font-mono text-[10px] font-bold text-profit">{vhFakeWins}</div>
+                </div>
+                <div className="bg-muted/50 rounded p-1">
+                  <div className="text-[8px] text-muted-foreground">V-Loss</div>
+                  <div className="font-mono text-[10px] font-bold text-loss">{vhFakeLosses}</div>
+                </div>
+                <div className="bg-muted/50 rounded p-1">
+                  <div className="text-[8px] text-muted-foreground">Streak</div>
+                  <div className="font-mono text-[10px] font-bold text-warning">{vhConsecLosses}</div>
+                </div>
+                <div className="bg-muted/50 rounded p-1">
+                  <div className="text-[8px] text-muted-foreground">State</div>
+                  <div className={`text-[9px] font-bold ${
+                    vhStatus === 'confirmed' ? 'text-profit' :
+                    vhStatus === 'waiting' ? 'text-warning animate-pulse' :
+                    vhStatus === 'failed' ? 'text-loss' : 'text-muted-foreground'
+                  }`}>
+                    {vhStatus === 'confirmed' ? '✓' : vhStatus === 'waiting' ? '⏳' : vhStatus === 'failed' ? '✗' : '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Risk */}
+          <div className="bg-card border border-border rounded-xl p-2.5 space-y-1.5">
+            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1"><Shield className="w-3.5 h-3.5" /> Risk</h3>
+            <div className="grid grid-cols-3 gap-1.5">
+              <div>
+                <label className="text-[8px] text-muted-foreground">Stake ($)</label>
+                <Input type="number" min="0.35" step="0.01" value={stake} onChange={e => setStake(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Signal Hunter Bot</h1>
-                <p className="text-xs text-white/80">Auto-configures based on strongest signals</p>
+                <label className="text-[8px] text-muted-foreground">Take Profit</label>
+                <Input type="number" value={takeProfit} onChange={e => setTakeProfit(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
+              </div>
+              <div>
+                <label className="text-[8px] text-muted-foreground">Stop Loss</label>
+                <Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <Badge className={`px-3 py-1 text-xs font-bold ${
-                botStatus === 'idle' ? 'bg-gray-600' :
-                botStatus === 'trading_m1' ? 'bg-emerald-600 animate-pulse' :
-                botStatus === 'recovery' ? 'bg-purple-600' :
-                botStatus === 'waiting_signal' ? 'bg-amber-600' :
-                botStatus === 'signal_matched' ? 'bg-emerald-600' :
-                'bg-indigo-600'
-              }`}>
-                {botStatus === 'idle' ? '⚪ IDLE' :
-                 botStatus === 'trading_m1' ? '🟢 TRADING M1' :
-                 botStatus === 'recovery' ? '🟣 RECOVERY' :
-                 botStatus === 'waiting_signal' ? '🟡 WAITING SIGNAL' :
-                 botStatus === 'signal_matched' ? '✅ SIGNAL MATCHED' :
-                 '🎣 VIRTUAL HOOK'}
-              </Badge>
-              {isRunning && (
-                <Badge className="bg-white/20 text-white">
-                  P/L: ${netProfit.toFixed(2)}
-                </Badge>
-              )}
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] text-foreground">Martingale</label>
+              <Switch checked={martingaleOn} onCheckedChange={setMartingaleOn} disabled={isRunning} />
             </div>
-          </div>
-        </div>
-
-        {/* ── Top 5 Strong Signals Display ── */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-          {strongSignals.map((signal, idx) => (
-            <motion.div
-              key={signal.market}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: idx * 0.1 }}
-              className={`bg-gradient-to-br ${getSignalColor(signal.type)} rounded-xl p-3 border backdrop-blur-sm relative overflow-hidden group`}
-            >
-              {idx === 0 && (
-                <div className="absolute top-0 right-0">
-                  <Crown className="w-8 h-8 text-yellow-500/30" />
-                </div>
-              )}
-              <div className="flex items-start justify-between mb-2">
+            {martingaleOn && (
+              <div className="grid grid-cols-2 gap-1.5">
                 <div>
-                  <p className="text-[10px] text-white/60">{signal.name}</p>
-                  <p className="text-xs font-bold text-white">{signal.market}</p>
-                </div>
-                <div className={`p-1.5 rounded-lg bg-white/10`}>
-                  {getSignalIcon(signal.type)}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-white/60">Signal</span>
-                  <span className={`text-xs font-bold ${
-                    signal.type === 'rise_fall' ? 'text-emerald-400' :
-                    signal.type === 'even_odd' ? 'text-amber-400' :
-                    signal.type === 'over_under' ? 'text-blue-400' :
-                    'text-purple-400'
-                  }`}>
-                    {signal.direction}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-white/60">Confidence</span>
-                  <span className="text-xs font-bold text-white">{signal.confidence}%</span>
-                </div>
-                <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                  <motion.div
-                    initial={{ width: 0 }}
-                    animate={{ width: `${signal.confidence}%` }}
-                    className={`h-full rounded-full ${
-                      signal.confidence >= 70 ? 'bg-emerald-500' :
-                      signal.confidence >= 50 ? 'bg-amber-500' : 'bg-red-500'
-                    }`}
-                  />
-                </div>
-                {signal.digit !== undefined && (
-                  <div className="text-center mt-1">
-                    <Badge className="bg-white/20 text-white text-[8px]">Digit: {signal.digit}</Badge>
-                  </div>
-                )}
-              </div>
-              {idx === 0 && (
-                <div className="absolute bottom-1 right-1">
-                  <Sparkles className="w-3 h-3 text-yellow-500" />
-                </div>
-              )}
-            </motion.div>
-          ))}
-        </div>
-
-        {/* ── Main 2-Column Layout ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* ═══ LEFT: Trading Config ═══ */}
-          <div className="lg:col-span-5 space-y-4">
-            {/* Market 1 - Primary (Auto-configured) */}
-            <div className="bg-gradient-to-br from-emerald-900/30 to-emerald-950/30 rounded-xl p-4 border border-emerald-500/30 backdrop-blur-sm">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="bg-emerald-500/20 p-1.5 rounded-lg">
-                    <Home className="w-4 h-4 text-emerald-400" />
-                  </div>
-                  <h3 className="text-sm font-bold text-emerald-400">M1 - Primary Market</h3>
-                </div>
-                <Switch checked={m1Enabled} onCheckedChange={setM1Enabled} disabled={isRunning} />
-              </div>
-              
-              {strongSignals[0] && (
-                <div className="bg-emerald-950/30 rounded-lg p-2 mb-3">
-                  <p className="text-[10px] text-emerald-400/80">Based on strongest signal:</p>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="text-xs font-mono text-white">{strongSignals[0].market}</span>
-                    <Badge className="bg-emerald-600 text-white text-[9px]">
-                      {strongSignals[0].direction} {strongSignals[0].confidence}%
-                    </Badge>
-                  </div>
-                </div>
-              )}
-              
-              <div className="space-y-2">
-                <div>
-                  <label className="text-[10px] text-white/60">Contract Type</label>
-                  <div className="mt-1 p-2 bg-emerald-950/50 rounded-lg">
-                    <span className="text-sm font-mono text-emerald-400">{m1Contract}</span>
-                  </div>
-                </div>
-                {needsBarrier(m1Contract) && (
-                  <div>
-                    <label className="text-[10px] text-white/60">Barrier</label>
-                    <div className="mt-1 p-2 bg-emerald-950/50 rounded-lg">
-                      <span className="text-sm font-mono text-emerald-400">{m1Barrier}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Market 2 - Recovery (Auto-configured) */}
-            <div className="bg-gradient-to-br from-purple-900/30 to-purple-950/30 rounded-xl p-4 border border-purple-500/30 backdrop-blur-sm">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="bg-purple-500/20 p-1.5 rounded-lg">
-                    <RefreshCw className="w-4 h-4 text-purple-400" />
-                  </div>
-                  <h3 className="text-sm font-bold text-purple-400">M2 - Recovery Market</h3>
-                </div>
-                <Switch checked={m2Enabled} onCheckedChange={setM2Enabled} disabled={isRunning} />
-              </div>
-              
-              {strongSignals[1] && (
-                <div className="bg-purple-950/30 rounded-lg p-2 mb-3">
-                  <p className="text-[10px] text-purple-400/80">Based on second strongest:</p>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="text-xs font-mono text-white">{strongSignals[1].market}</span>
-                    <Badge className="bg-purple-600 text-white text-[9px]">
-                      {strongSignals[1].direction} {strongSignals[1].confidence}%
-                    </Badge>
-                  </div>
-                </div>
-              )}
-              
-              <div className="space-y-2">
-                <div>
-                  <label className="text-[10px] text-white/60">Contract Type</label>
-                  <div className="mt-1 p-2 bg-purple-950/50 rounded-lg">
-                    <span className="text-sm font-mono text-purple-400">{m2Contract}</span>
-                  </div>
-                </div>
-                {needsBarrier(m2Contract) && (
-                  <div>
-                    <label className="text-[10px] text-white/60">Barrier</label>
-                    <div className="mt-1 p-2 bg-purple-950/50 rounded-lg">
-                      <span className="text-sm font-mono text-purple-400">{m2Barrier}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Risk Management */}
-            <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 rounded-xl p-4 border border-slate-700/50 backdrop-blur-sm">
-              <div className="flex items-center gap-2 mb-3">
-                <Shield className="w-4 h-4 text-slate-400" />
-                <h3 className="text-sm font-bold text-white">Risk Management</h3>
-              </div>
-              
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                <div>
-                  <label className="text-[9px] text-white/60">Stake ($)</label>
-                  <Input type="number" min="0.35" step="0.01" value={stake} 
-                    onChange={e => setStake(e.target.value)} disabled={isRunning}
-                    className="h-8 text-xs bg-slate-900/50 border-slate-700 text-white" />
+                  <label className="text-[8px] text-muted-foreground">Multiplier</label>
+                  <Input type="number" min="1.1" step="0.1" value={martingaleMultiplier} onChange={e => setMartingaleMultiplier(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
                 </div>
                 <div>
-                  <label className="text-[9px] text-white/60">Take Profit</label>
-                  <Input type="number" value={takeProfit} onChange={e => setTakeProfit(e.target.value)} 
-                    disabled={isRunning} className="h-8 text-xs bg-slate-900/50 border-slate-700 text-white" />
-                </div>
-                <div>
-                  <label className="text-[9px] text-white/60">Stop Loss</label>
-                  <Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} 
-                    disabled={isRunning} className="h-8 text-xs bg-slate-900/50 border-slate-700 text-white" />
-                </div>
-              </div>
-              
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-[10px] text-white">Martingale</label>
-                <Switch checked={martingaleOn} onCheckedChange={setMartingaleOn} disabled={isRunning} />
-              </div>
-              
-              {martingaleOn && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[8px] text-white/60">Multiplier</label>
-                    <Input type="number" min="1.1" step="0.1" value={martingaleMultiplier} 
-                      onChange={e => setMartingaleMultiplier(e.target.value)} disabled={isRunning}
-                      className="h-7 text-xs bg-slate-900/50 border-slate-700 text-white" />
-                  </div>
-                  <div>
-                    <label className="text-[8px] text-white/60">Max Steps</label>
-                    <Input type="number" min="1" max="10" value={martingaleMaxSteps} 
-                      onChange={e => setMartingaleMaxSteps(e.target.value)} disabled={isRunning}
-                      className="h-7 text-xs bg-slate-900/50 border-slate-700 text-white" />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Virtual Hook */}
-            <div className="bg-gradient-to-br from-indigo-900/30 to-indigo-950/30 rounded-xl p-4 border border-indigo-500/30 backdrop-blur-sm">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-indigo-400" />
-                  <h3 className="text-sm font-bold text-indigo-400">Virtual Hook Protection</h3>
-                </div>
-                <Switch checked={hookEnabled} onCheckedChange={setHookEnabled} disabled={isRunning} />
-              </div>
-              
-              {hookEnabled && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[8px] text-white/60">Virtual Losses</label>
-                    <Input type="number" min="1" max="20" value={virtualLossCount} 
-                      onChange={e => setVirtualLossCount(e.target.value)} disabled={isRunning}
-                      className="h-7 text-xs bg-indigo-950/50 border-indigo-700 text-white" />
-                  </div>
-                  <div>
-                    <label className="text-[8px] text-white/60">Real Trades</label>
-                    <Input type="number" min="1" max="10" value={realCount} 
-                      onChange={e => setRealCount(e.target.value)} disabled={isRunning}
-                      className="h-7 text-xs bg-indigo-950/50 border-indigo-700 text-white" />
-                  </div>
-                </div>
-              )}
-              
-              {(vhFakeWins > 0 || vhFakeLosses > 0) && (
-                <div className="grid grid-cols-3 gap-1 mt-2 text-center">
-                  <div className="bg-indigo-950/30 rounded p-1">
-                    <div className="text-[7px] text-white/60">V-Win</div>
-                    <div className="text-xs font-bold text-emerald-400">{vhFakeWins}</div>
-                  </div>
-                  <div className="bg-indigo-950/30 rounded p-1">
-                    <div className="text-[7px] text-white/60">V-Loss</div>
-                    <div className="text-xs font-bold text-red-400">{vhFakeLosses}</div>
-                  </div>
-                  <div className="bg-indigo-950/30 rounded p-1">
-                    <div className="text-[7px] text-white/60">Streak</div>
-                    <div className="text-xs font-bold text-amber-400">{vhConsecLosses}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Signal Threshold */}
-            <div className="bg-gradient-to-br from-amber-900/30 to-amber-950/30 rounded-xl p-4 border border-amber-500/30 backdrop-blur-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <AlertCircle className="w-4 h-4 text-amber-400" />
-                <h3 className="text-sm font-bold text-amber-400">Signal Threshold</h3>
-              </div>
-              <Input type="number" min="0" max="100" value={signalThreshold} 
-                onChange={e => setSignalThreshold(e.target.value)} disabled={isRunning}
-                className="h-8 text-xs bg-amber-950/50 border-amber-700 text-white" />
-              <p className="text-[8px] text-white/50 mt-1">Minimum confidence % to execute trades</p>
-            </div>
-          </div>
-
-          {/* ═══ RIGHT: Live Stats + Activity ═══ */}
-          <div className="lg:col-span-7 space-y-4">
-            {/* Live Stats Cards */}
-            <div className="grid grid-cols-5 gap-2">
-              {[
-                { label: 'Trades', value: wins + losses, icon: BarChart3, color: 'from-blue-600/20 to-blue-700/20' },
-                { label: 'Wins', value: wins, icon: CheckCircle2, color: 'from-emerald-600/20 to-emerald-700/20' },
-                { label: 'Losses', value: losses, icon: XCircle, color: 'from-red-600/20 to-red-700/20' },
-                { label: 'P/L', value: `$${netProfit.toFixed(2)}`, icon: TrendingUp, color: netProfit >= 0 ? 'from-emerald-600/20 to-emerald-700/20' : 'from-red-600/20 to-red-700/20' },
-                { label: 'Win Rate', value: `${winRate}%`, icon: Target, color: 'from-purple-600/20 to-purple-700/20' },
-              ].map((stat, idx) => (
-                <div key={idx} className={`bg-gradient-to-br ${stat.color} rounded-xl p-2 text-center border border-white/10 backdrop-blur-sm`}>
-                  <stat.icon className="w-3 h-3 text-white/60 mx-auto mb-1" />
-                  <div className="text-[10px] text-white/60">{stat.label}</div>
-                  <div className={`text-sm font-bold text-white ${stat.label === 'P/L' && netProfit >= 0 ? 'text-emerald-400' : stat.label === 'P/L' && netProfit < 0 ? 'text-red-400' : ''}`}>
-                    {stat.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Current Signal Display */}
-            {strongSignals[0] && (
-              <div className="bg-gradient-to-r from-emerald-600/20 via-purple-600/20 to-pink-600/20 rounded-xl p-4 border border-white/20 backdrop-blur-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-[10px] text-white/60">Current Active Signal</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-xl font-bold text-white">{strongSignals[0].direction}</span>
-                      <Badge className="bg-white/20 text-white text-[10px]">{strongSignals[0].type}</Badge>
-                    </div>
-                    <p className="text-[10px] text-white/50 mt-1">{strongSignals[0].name} ({strongSignals[0].market})</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[10px] text-white/60">Confidence</p>
-                    <p className="text-2xl font-bold text-emerald-400">{strongSignals[0].confidence}%</p>
-                  </div>
-                </div>
-                <div className="mt-2 h-2 bg-white/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-emerald-500 to-purple-500 rounded-full" style={{ width: `${strongSignals[0].confidence}%` }} />
+                  <label className="text-[8px] text-muted-foreground">Max Steps</label>
+                  <Input type="number" min="1" max="10" value={martingaleMaxSteps} onChange={e => setMartingaleMaxSteps(e.target.value)} disabled={isRunning} className="h-7 text-xs" />
                 </div>
               </div>
             )}
+            <div className="flex items-center gap-3 pt-0.5">
+              <label className="flex items-center gap-1 text-[10px] text-foreground">
+                <input type="checkbox" checked={strategyM1Enabled} onChange={e => setStrategyM1Enabled(e.target.checked)} disabled={isRunning} className="rounded w-3 h-3" />
+                Signal M1
+              </label>
+              <label className="flex items-center gap-1 text-[10px] text-foreground">
+                <input type="checkbox" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} className="rounded w-3 h-3" />
+                Signal M2
+              </label>
+            </div>
+          </div>
 
-            {/* Current Stake Status */}
-            <div className="bg-gradient-to-r from-slate-800/50 to-slate-900/50 rounded-xl p-3 border border-slate-700/50 backdrop-blur-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[10px] text-white/60">Current Stake</p>
-                  <p className="text-lg font-bold text-white">${currentStake.toFixed(2)}</p>
+          {/* Fallback Strategy Card (Pattern/Digit) - only shown if needed */}
+          {(strategyEnabled || strategyM1Enabled) && (
+            <div className="bg-card border border-warning/30 rounded-xl p-2.5 space-y-1.5">
+              <h3 className="text-xs font-semibold text-warning flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5" /> Fallback Strategy
+              </h3>
+              <p className="text-[8px] text-muted-foreground">
+                If signal strength is below threshold, use pattern/digit strategy
+              </p>
+
+              {/* M1 Strategy Fallback */}
+              {strategyM1Enabled && (
+                <div className="border border-profit/20 rounded-lg p-1.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[9px] font-semibold text-profit">M1 Fallback</label>
+                    <div className="flex gap-0.5">
+                      <Button size="sm" variant={m1StrategyMode === 'pattern' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('pattern')} disabled={isRunning}>
+                        Pattern
+                      </Button>
+                      <Button size="sm" variant={m1StrategyMode === 'digit' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('digit')} disabled={isRunning}>
+                        Digit
+                      </Button>
+                    </div>
+                  </div>
+                  {m1StrategyMode === 'pattern' ? (
+                    <>
+                      <Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={m1Pattern}
+                        onChange={e => setM1Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
+                      <div className={`text-[9px] font-mono ${m1PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM1Pattern.length === 0 ? 'Enter pattern...' :
+                          m1PatternValid ? `✓ ${cleanM1Pattern}` : `✗ Need 2+`}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-1 mt-0.5">
+                        <label className="text-[8px] text-muted-foreground text-center">Condition</label>
+                        <label className="text-[8px] text-muted-foreground text-center">Digit</label>
+                        <label className="text-[8px] text-muted-foreground text-center">Ticks</label>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        <Select value={m1DigitCondition} onValueChange={setM1DigitCondition} disabled={isRunning}>
+                          <SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                        <Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                      </div>
+                    </>
+                  )}
                 </div>
-                {martingaleStep > 0 && (
-                  <Badge className="bg-amber-600 text-white">
-                    Martingale Step {martingaleStep}/{martingaleMaxSteps}
-                  </Badge>
-                )}
-                <div className="text-right">
-                  <p className="text-[10px] text-white/60">Balance</p>
-                  <p className="text-lg font-bold text-white">${balance.toFixed(2)}</p>
+              )}
+
+              {/* M2 Strategy Fallback */}
+              {strategyEnabled && (
+                <div className="border border-destructive/20 rounded-lg p-1.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[9px] font-semibold text-destructive">M2 Fallback</label>
+                    <div className="flex gap-0.5">
+                      <Button size="sm" variant={m2StrategyMode === 'pattern' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('pattern')} disabled={isRunning}>
+                        Pattern
+                      </Button>
+                      <Button size="sm" variant={m2StrategyMode === 'digit' ? 'default' : 'outline'}
+                        className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('digit')} disabled={isRunning}>
+                        Digit
+                      </Button>
+                    </div>
+                  </div>
+                  {m2StrategyMode === 'pattern' ? (
+                    <>
+                      <Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern}
+                        onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
+                        disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" />
+                      <div className={`text-[9px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>
+                        {cleanM2Pattern.length === 0 ? 'Enter pattern...' :
+                          m2PatternValid ? `✓ ${cleanM2Pattern}` : `✗ Need 2+`}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-1 mt-0.5">
+                        <label className="text-[8px] text-muted-foreground text-center">Condition</label>
+                        <label className="text-[8px] text-muted-foreground text-center">Digit</label>
+                        <label className="text-[8px] text-muted-foreground text-center">Ticks</label>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        <Select value={m2DigitCondition} onValueChange={setM2DigitCondition} disabled={isRunning}>
+                          <SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                        <Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" />
+                      </div>
+                    </>
+                  )}
                 </div>
+              )}
+
+              {(botStatus === 'waiting_pattern' || botStatus === 'pattern_matched') && (
+                <div className={`${botStatus === 'waiting_pattern' ? 'bg-warning/10 border border-warning/30 text-warning' : 'bg-profit/10 border border-profit/30 text-profit'} rounded p-1.5 text-[9px] text-center font-semibold animate-pulse`}>
+                  {botStatus === 'waiting_pattern' ? '⏳ WAITING FOR SIGNAL...' : '✅ SIGNAL MATCHED!'}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Save / Load Config */}
+          <div className="bg-card border border-border rounded-xl p-2.5 space-y-1.5">
+            <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">💾 Bot Config</h3>
+            <Input
+              placeholder="Enter bot name before saving..."
+              value={botName}
+              onChange={e => setBotName(e.target.value)}
+              disabled={isRunning}
+              className="h-7 text-xs"
+            />
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-[10px] gap-1"
+                disabled={isRunning || !botName.trim()}
+                onClick={() => {
+                  const safeName = botName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+                  const config = {
+                    version: 1,
+                    botName: botName.trim(),
+                    m1: { enabled: m1Enabled, symbol: m1Symbol, contract: m1Contract, barrier: m1Barrier, hookEnabled: m1HookEnabled, virtualLossCount: m1VirtualLossCount, realCount: m1RealCount },
+                    m2: { enabled: m2Enabled, symbol: m2Symbol, contract: m2Contract, barrier: m2Barrier, hookEnabled: m2HookEnabled, virtualLossCount: m2VirtualLossCount, realCount: m2RealCount },
+                    risk: { stake, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss },
+                    strategy: {
+                      m1Enabled: strategyM1Enabled, m2Enabled: strategyEnabled,
+                      signalSource, signalThreshold,
+                      m1Pattern, m1DigitCondition, m1DigitCompare, m1DigitWindow,
+                      m2Pattern, m2DigitCondition, m2DigitCompare, m2DigitWindow,
+                    },
+                    scanner: { active: scannerActive },
+                    turbo: { enabled: turboMode },
+                  };
+                  const now = new Date();
+                  const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}`;
+                  const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = `${safeName}_${ts}.json`; a.click();
+                  URL.revokeObjectURL(url);
+                  toast.success(`Config "${botName.trim()}" saved!`);
+                }}
+              >
+                <Download className="w-3 h-3" /> Save Config
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-[10px] gap-1"
+                disabled={isRunning}
+                onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file'; input.accept = '.json';
+                  input.onchange = (ev: any) => {
+                    const file = ev.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                      try {
+                        const cfg = JSON.parse(e.target?.result as string);
+                        if (!cfg.version || !cfg.m1 || !cfg.m2 || !cfg.risk) {
+                          toast.error('Invalid config file format'); return;
+                        }
+                        handleLoadConfig(cfg);
+                        toast.success('Config loaded successfully!');
+                      } catch {
+                        toast.error('Failed to parse config file');
+                      }
+                    };
+                    reader.readAsText(file);
+                  };
+                  input.click();
+                }}
+              >
+                <Upload className="w-3 h-3" /> Load Config
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* ═══ RIGHT: Digit Stream + Activity Log ═══ */}
+        <div className="lg:col-span-8 space-y-2">
+          {/* Digit Stream */}
+          <div className="bg-card border border-border rounded-xl p-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <h3 className="text-[10px] font-semibold text-foreground">Live Digits — {activeSymbol}</h3>
+              <span className="text-[9px] text-muted-foreground font-mono">Win Rate: {winRate}% | Staked: ${totalStaked.toFixed(2)}</span>
+            </div>
+            <div className="flex gap-1 justify-center">
+              {activeDigits.length === 0 ? (
+                <span className="text-[10px] text-muted-foreground">Waiting for ticks...</span>
+              ) : activeDigits.map((d, i) => {
+                const isOver = d >= 5;
+                const isEven = d % 2 === 0;
+                const isLast = i === activeDigits.length - 1;
+                return (
+                  <div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
+                    isLast ? 'ring-2 ring-primary' : ''
+                  } ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}>
+                    <span className="text-sm">{d}</span>
+                    <span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Trade Summary Panel */}
+          <div className="grid grid-cols-5 gap-1.5">
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Trades</div>
+              <div className="font-mono text-xs font-bold text-foreground">{wins + losses}</div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Wins</div>
+              <div className="font-mono text-xs font-bold text-profit">{wins}</div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Losses</div>
+              <div className="font-mono text-xs font-bold text-loss">{losses}</div>
+            </div>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Profit/Loss</div>
+              <div className={`font-mono text-xs font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {netProfit >= 0 ? '+' : ''}{netProfit.toFixed(2)}
               </div>
             </div>
-
-            {/* Start / Stop Buttons */}
-            <div className="grid grid-cols-2 gap-3">
-              <Button
-                onClick={startBot}
-                disabled={isRunning || !isAuthorized || balance < parseFloat(stake) || strongSignals.length < 2}
-                className="h-14 text-base font-bold bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 rounded-xl shadow-lg"
-              >
-                <Play className="w-5 h-5 mr-2" /> START BOT
-              </Button>
-              <Button
-                onClick={stopBot}
-                disabled={!isRunning}
-                variant="destructive"
-                className="h-14 text-base font-bold bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 rounded-xl shadow-lg"
-              >
-                <StopCircle className="w-5 h-5 mr-2" /> STOP
-              </Button>
+            <div className="bg-card border border-border rounded-lg p-2 text-center">
+              <div className="text-[8px] text-muted-foreground">Total Staked</div>
+              <div className="font-mono text-xs font-bold text-primary">${totalStaked.toFixed(2)}</div>
             </div>
+          </div>
 
-            {/* Activity Log */}
-            <div className="bg-slate-900/50 rounded-xl overflow-hidden border border-slate-700/50 backdrop-blur-sm">
-              <div className="px-3 py-2 border-b border-slate-700/50 flex items-center justify-between">
-                <h3 className="text-xs font-semibold text-white">Activity Log</h3>
-                <Button variant="ghost" size="sm" onClick={clearLog} className="h-6 w-6 p-0 text-white/50 hover:text-red-400">
+          {/* Start / Stop Buttons */}
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              onClick={startBot}
+              disabled={isRunning || !isAuthorized || balance < parseFloat(stake)}
+              className="h-14 text-base font-bold bg-profit hover:bg-profit/90 text-profit-foreground rounded-xl"
+            >
+              <Play className="w-5 h-5 mr-2" /> START BOT
+            </Button>
+            <Button
+              onClick={stopBot}
+              disabled={!isRunning}
+              variant="destructive"
+              className="h-14 text-base font-bold rounded-xl"
+            >
+              <StopCircle className="w-5 h-5 mr-2" /> STOP
+            </Button>
+          </div>
+
+          {/* Activity Log */}
+          <div className="bg-card border border-border rounded-xl overflow-hidden">
+            <div className="px-2.5 py-2 border-b border-border flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold text-foreground">Activity Log</h3>
+              <div className="flex items-center gap-1.5">
+                {logEntries.length > 0 && logEntries[0].switchInfo && (
+                  <span className="text-[9px] text-muted-foreground font-mono hidden md:inline truncate max-w-[200px]">
+                    {logEntries[0].switchInfo}
+                  </span>
+                )}
+                <Button variant="ghost" size="sm" onClick={clearLog} className="h-7 w-7 p-0 text-muted-foreground hover:text-loss">
                   <Trash2 className="w-3 h-3" />
                 </Button>
               </div>
-              <div className="max-h-[400px] overflow-auto">
-                <table className="w-full text-[10px]">
-                  <thead className="text-white/60 bg-slate-800/50 sticky top-0">
-                    <tr>
-                      <th className="text-left p-2">Time</th>
-                      <th className="text-left p-2">Mkt</th>
-                      <th className="text-left p-2">Type</th>
-                      <th className="text-right p-2">Stake</th>
-                      <th className="text-center p-2">Digit</th>
-                      <th className="text-center p-2">Result</th>
-                      <th className="text-right p-2">P/L</th>
+            </div>
+            <div className="max-h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
+              <table className="w-full text-[10px]">
+                <thead className="text-[9px] text-muted-foreground bg-muted/30 sticky top-0">
+                  <tr>
+                    <th className="text-left p-1.5">Time</th>
+                    <th className="text-left p-1">Mkt</th>
+                    <th className="text-left p-1">Symbol</th>
+                    <th className="text-left p-1">Type</th>
+                    <th className="text-right p-1">Stake</th>
+                    <th className="text-center p-1">Digit</th>
+                    <th className="text-center p-1">Result</th>
+                    <th className="text-right p-1">P/L</th>
+                    <th className="text-right p-1">Bal</th>
+                    <th className="text-center p-1">⏹</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logEntries.length === 0 ? (
+                    <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No trades yet — configure and start the bot</td></tr>
+                  ) : logEntries.map(e => (
+                    <tr key={e.id} className={`border-t border-border/30 hover:bg-muted/20 ${
+                      e.market === 'M1' ? 'border-l-2 border-l-profit' :
+                      e.market === 'VH' ? 'border-l-2 border-l-primary' :
+                      'border-l-2 border-l-purple-500'
+                    }`}>
+                      <td className="p-1 font-mono text-[9px]">{e.time}</td>
+                      <td className={`p-1 font-bold ${
+                        e.market === 'M1' ? 'text-profit' :
+                        e.market === 'VH' ? 'text-primary' :
+                        'text-purple-400'
+                      }`}>{e.market}</td>
+                      <td className="p-1 font-mono text-[9px]">{e.symbol}</td>
+                      <td className="p-1 text-[9px]">{e.contract.replace('DIGIT', '').replace('CALL', 'Rise').replace('PUT', 'Fall')}</td>
+                      <td className="p-1 font-mono text-right text-[9px]">
+                        {e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}
+                        {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-warning ml-0.5">M{e.martingaleStep}</span>}
+                      </td>
+                      <td className="p-1 text-center font-mono">{e.exitDigit}</td>
+                      <td className="p-1 text-center">
+                        <span className={`px-1 py-0.5 rounded-full text-[8px] font-bold ${
+                          e.result === 'Win' || e.result === 'V-Win' ? 'bg-profit/20 text-profit' :
+                          e.result === 'Loss' || e.result === 'V-Loss' ? 'bg-loss/20 text-loss' :
+                          'bg-warning/20 text-warning animate-pulse'
+                        }`}>{e.result === 'Pending' ? '...' : e.result}</span>
+                      </td>
+                      <td className={`p-1 font-mono text-right text-[9px] ${e.pnl > 0 ? 'text-profit' : e.pnl < 0 ? 'text-loss' : ''}`}>
+                        {e.result === 'Pending' ? '...' : e.market === 'VH' ? '-' : `${e.pnl > 0 ? '+' : ''}${e.pnl.toFixed(2)}`}
+                      </td>
+                      <td className="p-1 font-mono text-right text-[9px]">{e.market === 'VH' ? '-' : `$${e.balance.toFixed(2)}`}</td>
+                      <td className="p-1 text-center">
+                        {isRunning && (
+                          <button onClick={stopBot} className="px-1 py-0.5 rounded bg-destructive/80 hover:bg-destructive text-destructive-foreground text-[8px] font-bold transition-colors" title="Stop Bot">
+                            ■
+                          </button>
+                        )}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {logEntries.length === 0 ? (
-                      <tr><td colSpan={7} className="text-center text-white/40 py-8">No trades yet</td></tr>
-                    ) : logEntries.map(e => (
-                      <tr key={e.id} className={`border-t border-slate-700/30 ${
-                        e.result === 'Win' ? 'bg-emerald-500/5' : e.result === 'Loss' ? 'bg-red-500/5' : ''
-                      }`}>
-                        <td className="p-2 font-mono text-white/60">{e.time}</td>
-                        <td className={`p-2 font-bold ${
-                          e.market === 'M1' ? 'text-emerald-400' : e.market === 'VH' ? 'text-indigo-400' : 'text-purple-400'
-                        }`}>{e.market}</td>
-                        <td className="p-2 text-white/80">{e.contract.replace('DIGIT', '').replace('CALL', 'Rise').replace('PUT', 'Fall')}</td>
-                        <td className="p-2 text-right font-mono text-white/80">
-                          {e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}
-                          {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-amber-400 ml-1">M{e.martingaleStep}</span>}
-                        </td>
-                        <td className="p-2 text-center font-mono text-white/80">{e.exitDigit}</td>
-                        <td className="p-2 text-center">
-                          <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
-                            e.result === 'Win' ? 'bg-emerald-500/20 text-emerald-400' :
-                            e.result === 'Loss' ? 'bg-red-500/20 text-red-400' :
-                            e.result === 'V-Win' ? 'bg-emerald-500/20 text-emerald-400' :
-                            e.result === 'V-Loss' ? 'bg-red-500/20 text-red-400' :
-                            'bg-amber-500/20 text-amber-400'
-                          }`}>{e.result === 'Pending' ? '...' : e.result}</span>
-                        </td>
-                        <td className={`p-2 text-right font-mono font-bold ${
-                          e.pnl > 0 ? 'text-emerald-400' : e.pnl < 0 ? 'text-red-400' : 'text-white/60'
-                        }`}>
-                          {e.result === 'Pending' ? '...' : e.market === 'VH' ? '-' : `${e.pnl > 0 ? '+' : ''}${e.pnl.toFixed(2)}`}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
