@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Play, StopCircle, Trash2, Scan, Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
-  TrendingUp, TrendingDown, Activity, ArrowUp, Target, BarChart3, Volume2, Mic2, Circle,
+  TrendingUp, TrendingDown, Activity, ArrowUp, Target, BarChart3, Volume2, Mic2, Radio,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -138,19 +138,30 @@ function simulateVirtualContract(
   });
 }
 
-// Voice simulation function
-const speakScan = (message: string) => {
+// Enhanced voice simulation with scanning announcements
+const speakScan = (message: string, isUrgent: boolean = false) => {
   if ('speechSynthesis' in window) {
-    const utterance = new SpeechSynthesisUtterance(message);
-    utterance.rate = 1.2;
-    utterance.pitch = 1.1;
-    utterance.volume = 0.8;
+    // Cancel any ongoing speech to avoid overlap
     window.speechSynthesis.cancel();
+    
+    const utterance = new SpeechSynthesisUtterance(message);
+    utterance.rate = isUrgent ? 1.0 : 0.9;
+    utterance.pitch = isUrgent ? 1.2 : 1.0;
+    utterance.volume = 0.9;
+    
+    // Try to use a natural voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const preferredVoice = voices.find(v => v.lang === 'en-US' && v.name.includes('Google')) || 
+                          voices.find(v => v.lang === 'en-US');
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+    
     window.speechSynthesis.speak(utterance);
   }
 };
 
-// Animated digit cycle component
+// Animated digit cycle component with smooth transitions
 function AnimatedDigitCycle({ digits, isActive }: { digits: number[]; isActive: boolean }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   
@@ -159,7 +170,7 @@ function AnimatedDigitCycle({ digits, isActive }: { digits: number[]; isActive: 
     
     const interval = setInterval(() => {
       setCurrentIndex(prev => (prev + 1) % digits.length);
-    }, 300);
+    }, 400);
     
     return () => clearInterval(interval);
   }, [digits, isActive]);
@@ -173,14 +184,21 @@ function AnimatedDigitCycle({ digits, isActive }: { digits: number[]; isActive: 
   return (
     <motion.div
       key={currentIndex}
-      initial={{ scale: 0.8, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.8, opacity: 0 }}
+      initial={{ scale: 0.9, opacity: 0, y: 10 }}
+      animate={{ scale: 1, opacity: 1, y: 0 }}
+      exit={{ scale: 0.9, opacity: 0, y: -10 }}
+      transition={{ duration: 0.2, type: "spring", stiffness: 300 }}
       className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center text-xl font-mono font-bold border-2 ${
         isOver ? 'bg-loss/20 border-loss/50 text-loss' : 'bg-profit/20 border-profit/50 text-profit'
       }`}
     >
-      <span>{currentDigit}</span>
+      <motion.span
+        initial={{ scale: 0.8 }}
+        animate={{ scale: 1 }}
+        transition={{ duration: 0.15 }}
+      >
+        {currentDigit}
+      </motion.span>
       <div className="flex gap-1 text-[8px] mt-0.5">
         <span className={isEven ? 'text-profit' : 'text-loss'}>{isEven ? 'E' : 'O'}</span>
         <span className={isOver ? 'text-loss' : 'text-profit'}>{isOver ? 'O' : 'U'}</span>
@@ -234,17 +252,21 @@ function MarketSignalCard({ market, onSelect, isScanning, cycleDigits }: {
 
   return (
     <motion.div
-      whileHover={{ scale: 1.02 }}
-      className={`bg-card border border-border rounded-xl p-3 cursor-pointer hover:border-primary/50 transition-all ${
+      whileHover={{ scale: 1.02, transition: { duration: 0.2 } }}
+      className={`bg-card border border-border rounded-xl p-3 cursor-pointer hover:border-primary/50 transition-all duration-200 ${
         isScanning ? 'animate-pulse' : ''
       }`}
       onClick={() => onSelect(market.symbol, market.signalType, market.barrier)}
     >
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-primary/10">
+          <motion.div 
+            className="p-1.5 rounded-lg bg-primary/10"
+            whileHover={{ rotate: 5 }}
+            transition={{ duration: 0.2 }}
+          >
             {getSignalIcon()}
-          </div>
+          </motion.div>
           <div>
             <h4 className="text-sm font-bold text-foreground">{market.name}</h4>
             <p className="text-[9px] text-muted-foreground font-mono">{market.symbol}</p>
@@ -257,33 +279,70 @@ function MarketSignalCard({ market, onSelect, isScanning, cycleDigits }: {
       
       <div className="space-y-2">
         {/* Signal Type with Enhanced Display */}
-        <div className="flex items-center justify-between bg-muted/30 rounded-lg p-1.5">
+        <motion.div 
+          className="flex items-center justify-between bg-muted/30 rounded-lg p-1.5"
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2 }}
+        >
           <span className="text-[10px] text-muted-foreground">Signal</span>
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono font-bold text-foreground">
               {getSignalTypeLabel()}
             </span>
-            <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+            <motion.div 
+              className="w-2 h-2 rounded-full bg-primary"
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 1, repeat: Infinity }}
+            />
           </div>
-        </div>
+        </motion.div>
         
         {/* Even/Odd/Over/Under Stats */}
         <div className="grid grid-cols-4 gap-1 text-center">
           <div className="bg-profit/10 rounded p-1">
             <div className="text-[7px] text-muted-foreground">EVEN</div>
-            <div className="text-[11px] font-bold text-profit">{market.evenPercent}%</div>
+            <motion.div 
+              className="text-[11px] font-bold text-profit"
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              transition={{ duration: 0.3 }}
+            >
+              {market.evenPercent}%
+            </motion.div>
           </div>
           <div className="bg-loss/10 rounded p-1">
             <div className="text-[7px] text-muted-foreground">ODD</div>
-            <div className="text-[11px] font-bold text-loss">{market.oddPercent}%</div>
+            <motion.div 
+              className="text-[11px] font-bold text-loss"
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              transition={{ duration: 0.3, delay: 0.05 }}
+            >
+              {market.oddPercent}%
+            </motion.div>
           </div>
           <div className="bg-primary/10 rounded p-1">
             <div className="text-[7px] text-muted-foreground">OVER</div>
-            <div className="text-[11px] font-bold text-primary">{market.overPercent}%</div>
+            <motion.div 
+              className="text-[11px] font-bold text-primary"
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              transition={{ duration: 0.3, delay: 0.1 }}
+            >
+              {market.overPercent}%
+            </motion.div>
           </div>
           <div className="bg-warning/10 rounded p-1">
             <div className="text-[7px] text-muted-foreground">UNDER</div>
-            <div className="text-[11px] font-bold text-warning">{market.underPercent}%</div>
+            <motion.div 
+              className="text-[11px] font-bold text-warning"
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              transition={{ duration: 0.3, delay: 0.15 }}
+            >
+              {market.underPercent}%
+            </motion.div>
           </div>
         </div>
         
@@ -296,12 +355,20 @@ function MarketSignalCard({ market, onSelect, isScanning, cycleDigits }: {
             <motion.div 
               initial={{ width: 0 }}
               animate={{ width: `${market.confidence}%` }}
+              transition={{ duration: 0.5, ease: "easeOut" }}
               className={`h-full rounded-full ${getConfidenceColor(market.confidence)}`}
             />
           </div>
         </div>
         
-        <p className="text-[9px] text-muted-foreground mt-1">{market.reason}</p>
+        <motion.p 
+          className="text-[9px] text-muted-foreground mt-1"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.2 }}
+        >
+          {market.reason}
+        </motion.p>
         
         {/* Digit Distribution Bars with Cycling Animation */}
         <div className="mt-2">
@@ -325,7 +392,7 @@ function MarketSignalCard({ market, onSelect, isScanning, cycleDigits }: {
                   <motion.div 
                     initial={{ height: 0 }}
                     animate={{ height: `${Math.min(pct, 100)}%` }}
-                    transition={{ duration: 0.3, delay: idx * 0.01 }}
+                    transition={{ duration: 0.4, delay: idx * 0.02, ease: "easeOut" }}
                     className={`${idx % 2 === 0 ? 'bg-profit/70' : 'bg-loss/70'} transition-all w-full`}
                     style={{ height: `${Math.min(pct, 100)}%` }}
                   />
@@ -342,10 +409,15 @@ function MarketSignalCard({ market, onSelect, isScanning, cycleDigits }: {
         </div>
 
         {market.barrier && (
-          <div className="flex items-center gap-1 mt-1">
+          <motion.div 
+            className="flex items-center gap-1 mt-1"
+            initial={{ opacity: 0, x: -5 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.3 }}
+          >
             <Target className="w-3 h-3 text-primary" />
             <span className="text-[9px] text-primary font-mono">Barrier: {market.barrier}</span>
-          </div>
+          </motion.div>
         )}
       </div>
     </motion.div>
@@ -430,6 +502,8 @@ export default function ProScannerBot() {
   const [isScanningMarkets, setIsScanningMarkets] = useState(false);
   const scanningIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [cycleDigitsMap, setCycleDigitsMap] = useState<Map<string, number[]>>(new Map());
+  const [scanProgress, setScanProgress] = useState(0);
+  const [currentScanningMarket, setCurrentScanningMarket] = useState('');
 
   /* ── Bot state ── */
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
@@ -514,30 +588,51 @@ export default function ProScannerBot() {
     }
   }, [signalSource, riseSignal, eoSignal, ouSignal, matchSignal]);
 
-  // Fast scanning function - 20 minutes max, uses streaming data
+  // Fast scanning function with voice announcements
   const fastScanMarkets = useCallback(async () => {
     setIsScanningMarkets(true);
     setBotStatus('scanning');
+    setScanProgress(0);
     
     const startTime = Date.now();
     const maxScanTime = 20 * 60 * 1000; // 20 minutes in milliseconds
     
-    speakScan("Starting fast market scan. Analyzing top signals in real-time.");
+    speakScan("Starting fast market scan. Analyzing top signals in real-time.", false);
     toast.info('⚡ Fast scanning markets in real-time...');
+    
+    let lastAnnounceTime = 0;
+    let marketsProcessed = 0;
+    const totalMarkets = SCANNER_MARKETS.length;
     
     // Use existing tick data from subscriptions (already streaming)
     const scanInterval = setInterval(() => {
       const elapsed = Date.now() - startTime;
+      const progress = Math.min(100, Math.round((elapsed / maxScanTime) * 100));
+      setScanProgress(progress);
+      
+      // Announce progress every 30 seconds
+      if (elapsed - lastAnnounceTime >= 30000) {
+        lastAnnounceTime = elapsed;
+        const minutesLeft = Math.ceil((maxScanTime - elapsed) / 60000);
+        speakScan(`Scan progress ${progress} percent. Approximately ${minutesLeft} minutes remaining.`, false);
+      }
       
       if (elapsed >= maxScanTime) {
         clearInterval(scanInterval);
         setIsScanningMarkets(false);
         setBotStatus('idle');
-        speakScan("Market scan complete. Top signals are now displayed.");
+        setScanProgress(100);
+        speakScan("Market scan complete. Top 5 signals are now displayed.", true);
         toast.success('✅ Fast scan complete! Top 5 markets ready');
       }
       
       calculateTopMarkets();
+      
+      // Update current scanning market for display
+      if (topMarkets.length > 0 && marketsProcessed < totalMarkets) {
+        marketsProcessed++;
+        setCurrentScanningMarket(topMarkets[0]?.name || 'Analyzing');
+      }
     }, 1000); // Update every second during scan
     
     // Initial calculation
@@ -553,50 +648,70 @@ export default function ProScannerBot() {
     
     setIsScanningMarkets(true);
     setBotStatus('scanning');
+    setScanProgress(0);
     
-    speakScan("Initializing fast market scan. Loading tick data for all markets.");
+    speakScan("Initializing fast market scan. Loading tick data for all markets.", false);
     toast.info('⚡ Fast scanning markets... Loading data');
     
     const startTime = Date.now();
     const maxScanTime = 20 * 60 * 1000; // 20 minutes max
+    let lastAnnounceTime = 0;
+    let lastProgress = 0;
     
     // Use existing subscription data - just ensure we have enough ticks
     const checkDataInterval = setInterval(() => {
       let allMarketsHaveData = true;
       let totalTicks = 0;
+      let marketsWithData = 0;
       
       SCANNER_MARKETS.forEach(market => {
         const buffer = fullTickBuffersRef.current.get(market.symbol);
         const tickCount = buffer?.size || 0;
         totalTicks += tickCount;
         
-        if (tickCount < 100) {
+        if (tickCount >= 100) {
+          marketsWithData++;
+        } else {
           allMarketsHaveData = false;
         }
       });
       
       const elapsed = Date.now() - startTime;
       const progress = Math.min(100, Math.round((totalTicks / (SCANNER_MARKETS.length * 100)) * 100));
+      setScanProgress(progress);
+      
+      // Announce progress every 30 seconds
+      if (elapsed - lastAnnounceTime >= 30000) {
+        lastAnnounceTime = elapsed;
+        const minutesLeft = Math.ceil((maxScanTime - elapsed) / 60000);
+        speakScan(`Loaded ${totalTicks} ticks. ${marketsWithData} markets ready. ${minutesLeft} minutes remaining.`, false);
+      }
       
       if (elapsed >= maxScanTime) {
         clearInterval(checkDataInterval);
         setIsScanningMarkets(false);
         setInitialDataLoaded(true);
         setBotStatus('idle');
+        setScanProgress(100);
         calculateTopMarkets();
-        speakScan("Market data loaded. Top 5 signals are now displayed.");
+        speakScan(`Market data loaded. ${totalTicks} ticks collected across ${SCANNER_MARKETS.length} markets. Top signals ready.`, true);
         toast.success(`✅ Fast scan complete! ${totalTicks} ticks collected across ${SCANNER_MARKETS.length} markets`);
       } else if (allMarketsHaveData && totalTicks >= SCANNER_MARKETS.length * 100) {
         clearInterval(checkDataInterval);
         setIsScanningMarkets(false);
         setInitialDataLoaded(true);
         setBotStatus('idle');
+        setScanProgress(100);
         calculateTopMarkets();
-        speakScan("Market data loaded. Top signals ready.");
-        toast.success(`✅ Fast scan complete! ${totalTicks} ticks collected in ${Math.round(elapsed / 1000)}s`);
-      } else if (elapsed % 5000 < 100) {
-        // Update progress every 5 seconds
-        toast.info(`📊 Scanning progress: ${progress}% - ${totalTicks} ticks collected`);
+        const elapsedSec = Math.round(elapsed / 1000);
+        speakScan(`Market data loaded in ${elapsedSec} seconds. ${totalTicks} ticks collected. Top signals ready.`, true);
+        toast.success(`✅ Fast scan complete! ${totalTicks} ticks collected in ${elapsedSec}s`);
+      } else if (progress > lastProgress + 10) {
+        lastProgress = progress;
+        // Voice announce significant progress milestones
+        if (progress >= 25 && progress < 30) speakScan("25 percent complete. Good progress.", false);
+        if (progress >= 50 && progress < 55) speakScan("Halfway there. Continuing scan.", false);
+        if (progress >= 75 && progress < 80) speakScan("75 percent complete. Almost done.", false);
       }
     }, 1000);
     
@@ -853,7 +968,7 @@ export default function ProScannerBot() {
     
     setSelectedMarket(symbol);
     
-    speakScan(`Selected ${symbol} with ${contract} signal for market one and ${m2ContractType} for market two`);
+    speakScan(`Selected ${symbol} with ${contract} signal for market one and ${m2ContractType} for market two`, true);
     toast.success(`Selected ${symbol} with ${contract} signal for M1 and ${m2ContractType} for M2`);
   }, [isRunning]);
 
@@ -1269,7 +1384,7 @@ export default function ProScannerBot() {
     waiting_pattern: { icon: '🟡', label: 'WAITING SIGNAL', color: 'text-warning' },
     pattern_matched: { icon: '✅', label: 'SIGNAL MATCHED', color: 'text-profit' },
     virtual_hook: { icon: '🎣', label: 'VIRTUAL HOOK', color: 'text-primary' },
-    scanning: { icon: '🔍', label: 'SCANNING', color: 'text-primary animate-pulse' },
+    scanning: { icon: '🔍', label: 'SCANNING', color: 'text-primary' },
   };
 
   const status = statusConfig[botStatus];
@@ -1376,11 +1491,11 @@ export default function ProScannerBot() {
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.8 }}
-                className="flex items-center gap-1"
+                className="flex items-center gap-1 bg-primary/10 px-2 py-1 rounded-full"
               >
+                <Radio className="w-3 h-3 text-primary animate-pulse" />
                 <Mic2 className="w-3 h-3 text-primary animate-pulse" />
-                <Volume2 className="w-3 h-3 text-primary animate-pulse" />
-                <span className="text-[8px] text-primary font-mono animate-pulse">FAST SCAN</span>
+                <span className="text-[8px] text-primary font-mono">SCANNING {scanProgress}%</span>
               </motion.div>
             )}
           </AnimatePresence>
@@ -1433,32 +1548,48 @@ export default function ProScannerBot() {
           {isScanningMarkets ? (
             <div className="col-span-full">
               <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.3 }}
                 className="bg-card border border-primary/50 rounded-xl p-8 text-center"
               >
                 <div className="flex flex-col items-center gap-3">
                   <div className="relative">
-                    <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
+                    <motion.div 
+                      className="absolute inset-0 rounded-full bg-primary/20"
+                      animate={{ scale: [1, 1.2, 1] }}
+                      transition={{ duration: 1.5, repeat: Infinity }}
+                    />
                     <div className="relative w-16 h-16 rounded-full bg-primary/30 flex items-center justify-center">
-                      <Zap className="w-8 h-8 text-primary animate-pulse" />
+                      <Radio className="w-8 h-8 text-primary animate-pulse" />
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <p className="text-sm font-bold text-primary animate-pulse">⚡ FAST SCANNING MARKETS</p>
+                    <p className="text-sm font-bold text-primary">⚡ FAST SCANNING MARKETS</p>
                     <p className="text-[10px] text-muted-foreground">
-                      Real-time analysis • Updating every second
+                      Analyzing real-time data • {scanProgress}% complete
                     </p>
+                    <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden mx-auto">
+                      <motion.div 
+                        className="h-full bg-primary rounded-full"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${scanProgress}%` }}
+                        transition={{ duration: 0.5 }}
+                      />
+                    </div>
                     <div className="flex justify-center gap-1 mt-2">
                       {[...Array(5)].map((_, i) => (
                         <motion.div
                           key={i}
                           animate={{ height: [4, 12, 4] }}
-                          transition={{ duration: 0.3, repeat: Infinity, delay: i * 0.05 }}
+                          transition={{ duration: 0.5, repeat: Infinity, delay: i * 0.1 }}
                           className="w-1 bg-primary rounded-full"
                         />
                       ))}
                     </div>
+                    {currentScanningMarket && (
+                      <p className="text-[8px] text-primary/70">Analyzing: {currentScanningMarket}</p>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -1566,12 +1697,21 @@ export default function ProScannerBot() {
       </div>
 
       {/* ── Signal Display Card ── */}
-      <div className="bg-gradient-to-r from-primary/20 via-primary/10 to-transparent border border-primary/30 rounded-xl p-3">
+      <motion.div 
+        className="bg-gradient-to-r from-primary/20 via-primary/10 to-transparent border border-primary/30 rounded-xl p-3"
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+      >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-primary/20 p-2 rounded-full">
+            <motion.div 
+              className="bg-primary/20 p-2 rounded-full"
+              whileHover={{ rotate: 5 }}
+              transition={{ duration: 0.2 }}
+            >
               <Activity className="w-5 h-5 text-primary" />
-            </div>
+            </motion.div>
             <div>
               <p className="text-[10px] text-muted-foreground">Current Signal</p>
               <div className="flex items-center gap-2">
@@ -1589,13 +1729,14 @@ export default function ProScannerBot() {
           <motion.div 
             initial={{ width: 0 }}
             animate={{ width: `${currentSignal.confidence}%` }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
             className={`h-full rounded-full ${currentSignal.confidence >= parseInt(signalThreshold) ? 'bg-profit' : 'bg-warning'}`}
           />
         </div>
         <p className="text-[8px] text-muted-foreground mt-1 text-center">
           {currentSignal.confidence >= parseInt(signalThreshold) ? '✅ Signal strength meets threshold' : '⏳ Waiting for signal strength to reach threshold'}
         </p>
-      </div>
+      </motion.div>
 
       {/* ── Main 2-Column Layout ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
@@ -2046,9 +2187,9 @@ export default function ProScannerBot() {
                     return (
                       <motion.div
                         key={i}
-                        initial={{ scale: 0.8, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ delay: i * 0.05 }}
+                        initial={{ scale: 0.8, opacity: 0, y: 10 }}
+                        animate={{ scale: 1, opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.03, duration: 0.2, type: "spring" }}
                         className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${
                           isLast ? 'ring-2 ring-primary' : ''
                         } ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}
@@ -2065,47 +2206,71 @@ export default function ProScannerBot() {
 
           {/* Trade Summary Panel */}
           <div className="grid grid-cols-5 gap-1.5">
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
+            <motion.div 
+              className="bg-card border border-border rounded-lg p-2 text-center"
+              whileHover={{ scale: 1.02 }}
+              transition={{ duration: 0.2 }}
+            >
               <div className="text-[8px] text-muted-foreground">Trades</div>
               <div className="font-mono text-xs font-bold text-foreground">{wins + losses}</div>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
+            </motion.div>
+            <motion.div 
+              className="bg-card border border-border rounded-lg p-2 text-center"
+              whileHover={{ scale: 1.02 }}
+              transition={{ duration: 0.2 }}
+            >
               <div className="text-[8px] text-muted-foreground">Wins</div>
               <div className="font-mono text-xs font-bold text-profit">{wins}</div>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
+            </motion.div>
+            <motion.div 
+              className="bg-card border border-border rounded-lg p-2 text-center"
+              whileHover={{ scale: 1.02 }}
+              transition={{ duration: 0.2 }}
+            >
               <div className="text-[8px] text-muted-foreground">Losses</div>
               <div className="font-mono text-xs font-bold text-loss">{losses}</div>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
+            </motion.div>
+            <motion.div 
+              className="bg-card border border-border rounded-lg p-2 text-center"
+              whileHover={{ scale: 1.02 }}
+              transition={{ duration: 0.2 }}
+            >
               <div className="text-[8px] text-muted-foreground">Profit/Loss</div>
               <div className={`font-mono text-xs font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
                 {netProfit >= 0 ? '+' : ''}{netProfit.toFixed(2)}
               </div>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
+            </motion.div>
+            <motion.div 
+              className="bg-card border border-border rounded-lg p-2 text-center"
+              whileHover={{ scale: 1.02 }}
+              transition={{ duration: 0.2 }}
+            >
               <div className="text-[8px] text-muted-foreground">Total Staked</div>
               <div className="font-mono text-xs font-bold text-primary">${totalStaked.toFixed(2)}</div>
-            </div>
+            </motion.div>
           </div>
 
           {/* Start / Stop Buttons */}
           <div className="grid grid-cols-2 gap-2">
-            <Button
-              onClick={startBot}
-              disabled={isRunning || !isAuthorized || balance < parseFloat(stake) || isScanningMarkets}
-              className="h-14 text-base font-bold bg-profit hover:bg-profit/90 text-profit-foreground rounded-xl"
-            >
-              <Play className="w-5 h-5 mr-2" /> START BOT
-            </Button>
-            <Button
-              onClick={stopBot}
-              disabled={!isRunning}
-              variant="destructive"
-              className="h-14 text-base font-bold rounded-xl"
-            >
-              <StopCircle className="w-5 h-5 mr-2" /> STOP
-            </Button>
+            <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+              <Button
+                onClick={startBot}
+                disabled={isRunning || !isAuthorized || balance < parseFloat(stake) || isScanningMarkets}
+                className="w-full h-14 text-base font-bold bg-profit hover:bg-profit/90 text-profit-foreground rounded-xl"
+              >
+                <Play className="w-5 h-5 mr-2" /> START BOT
+              </Button>
+            </motion.div>
+            <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+              <Button
+                onClick={stopBot}
+                disabled={!isRunning}
+                variant="destructive"
+                className="w-full h-14 text-base font-bold rounded-xl"
+              >
+                <StopCircle className="w-5 h-5 mr-2" /> STOP
+              </Button>
+            </motion.div>
           </div>
 
           {/* Activity Log */}
@@ -2143,11 +2308,17 @@ export default function ProScannerBot() {
                   {logEntries.length === 0 ? (
                     <tr><td colSpan={10} className="text-center text-muted-foreground py-8">No trades yet — configure and start the bot</td></tr>
                   ) : logEntries.map(e => (
-                    <tr key={e.id} className={`border-t border-border/30 hover:bg-muted/20 ${
-                      e.market === 'M1' ? 'border-l-2 border-l-profit' :
-                      e.market === 'VH' ? 'border-l-2 border-l-primary' :
-                      'border-l-2 border-l-purple-500'
-                    }`}>
+                    <motion.tr 
+                      key={e.id} 
+                      className={`border-t border-border/30 hover:bg-muted/20 ${
+                        e.market === 'M1' ? 'border-l-2 border-l-profit' :
+                        e.market === 'VH' ? 'border-l-2 border-l-primary' :
+                        'border-l-2 border-l-purple-500'
+                      }`}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: 0.2 }}
+                    >
                       <td className="p-1 font-mono text-[9px]">{e.time}</td>
                       <td className={`p-1 font-bold ${
                         e.market === 'M1' ? 'text-profit' :
@@ -2179,7 +2350,7 @@ export default function ProScannerBot() {
                           </button>
                         )}
                       </td>
-                    </tr>
+                    </motion.tr>
                   ))}
                 </tbody>
               </table>
