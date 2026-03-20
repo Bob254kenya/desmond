@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import {
   Play, StopCircle, Trash2, Scan, Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
-  TrendingUp, TrendingDown, Activity, ArrowUp, Target,
+  TrendingUp, TrendingDown, Activity, ArrowUp, Target, BarChart3,
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -63,6 +63,11 @@ interface MarketSignal {
   barrier?: string;
   reason: string;
   trend: 'bullish' | 'bearish' | 'neutral';
+  digitDistribution: number[];
+  evenPercent: number;
+  oddPercent: number;
+  overPercent: number;
+  underPercent: number;
 }
 
 /* ── Circular Tick Buffer ── */
@@ -83,6 +88,14 @@ class CircularTickBuffer {
     const start = (this.head - Math.min(n, this.count) + this.capacity) % this.capacity;
     for (let i = 0; i < Math.min(n, this.count); i++) {
       result.push(this.buffer[(start + i) % this.capacity].digit);
+    }
+    return result;
+  }
+  getAll(): number[] {
+    if (this.count === 0) return [];
+    const result: number[] = [];
+    for (let i = 0; i < this.count; i++) {
+      result.push(this.buffer[(this.head - this.count + i + this.capacity) % this.capacity].digit);
     }
     return result;
   }
@@ -188,6 +201,34 @@ function MarketSignalCard({ market, onSelect }: {
         
         <p className="text-[9px] text-muted-foreground mt-1">{market.reason}</p>
         
+        {/* Digit Distribution Bars */}
+        <div className="mt-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[8px] text-muted-foreground">Digit Distribution (0-9)</span>
+            <div className="flex gap-2">
+              <span className="text-[8px] text-profit">Even: {market.evenPercent}%</span>
+              <span className="text-[8px] text-loss">Odd: {market.oddPercent}%</span>
+            </div>
+          </div>
+          <div className="flex gap-0.5 h-6">
+            {market.digitDistribution.map((pct, idx) => (
+              <div key={idx} className="flex-1 flex flex-col items-center">
+                <div className="w-full bg-muted rounded-t-sm overflow-hidden" style={{ height: '20px' }}>
+                  <div 
+                    className={`${idx % 2 === 0 ? 'bg-profit/60' : 'bg-loss/60'} transition-all`}
+                    style={{ height: `${pct}%`, width: '100%' }}
+                  />
+                </div>
+                <span className="text-[6px] text-muted-foreground mt-0.5">{idx}</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-between mt-1 text-[8px]">
+            <span className="text-profit">Over 4: {market.overPercent}%</span>
+            <span className="text-loss">Under 5: {market.underPercent}%</span>
+          </div>
+        </div>
+
         {market.barrier && (
           <div className="flex items-center gap-1 mt-1">
             <Target className="w-3 h-3 text-primary" />
@@ -206,15 +247,15 @@ export default function ProScannerBot() {
 
   /* ── Market 1 config ── */
   const [m1Enabled, setM1Enabled] = useState(true);
-  const [m1Contract, setM1Contract] = useState('DIGITOVER'); // Changed to OVER
+  const [m1Contract, setM1Contract] = useState('DIGITOVER');
   const [m1Barrier, setM1Barrier] = useState('5');
   const [m1Symbol, setM1Symbol] = useState('R_100');
 
   /* ── Market 2 config ── */
   const [m2Enabled, setM2Enabled] = useState(true);
-  const [m2Contract, setM2Contract] = useState('DIGITODD'); // Changed to ODD
+  const [m2Contract, setM2Contract] = useState('DIGITODD');
   const [m2Barrier, setM2Barrier] = useState('5');
-  const [m2Symbol, setM2Symbol] = useState('R_100'); // Same as M1
+  const [m2Symbol, setM2Symbol] = useState('R_100');
 
   /* ── Virtual Hook M1 ── */
   const [m1HookEnabled, setM1HookEnabled] = useState(false);
@@ -234,7 +275,7 @@ export default function ProScannerBot() {
 
   /* ── Risk ── */
   const [stake, setStake] = useState('0.35');
-  const [martingaleOn, setMartingaleOn] = useState(true); // Changed to true (active by default)
+  const [martingaleOn, setMartingaleOn] = useState(true);
   const [martingaleMultiplier, setMartingaleMultiplier] = useState('2.0');
   const [martingaleMaxSteps, setMartingaleMaxSteps] = useState('5');
   const [takeProfit, setTakeProfit] = useState('10');
@@ -273,6 +314,7 @@ export default function ProScannerBot() {
   const [ticksMissed, setTicksMissed] = useState(0);
   const turboBuffersRef = useRef<Map<string, CircularTickBuffer>>(new Map());
   const lastTickTsRef = useRef(0);
+  const [initialDataLoaded, setInitialDataLoaded] = useState(false);
 
   /* ── Bot state ── */
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
@@ -290,6 +332,7 @@ export default function ProScannerBot() {
 
   /* ── Tick data for analysis ── */
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
+  const fullTickBuffersRef = useRef<Map<string, CircularTickBuffer>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
   const [prices, setPrices] = useState<number[]>([]);
   const [digits, setDigits] = useState<number[]>([]);
@@ -356,6 +399,74 @@ export default function ProScannerBot() {
     }
   }, [signalSource, riseSignal, eoSignal, ouSignal, matchSignal]);
 
+  // Function to fetch initial ticks for all markets
+  const fetchInitialTicks = useCallback(async () => {
+    if (initialDataLoaded) return;
+    
+    toast.info('Fetching initial market data...');
+    
+    for (const market of SCANNER_MARKETS) {
+      try {
+        // Subscribe to get ticks
+        const ticks: number[] = [];
+        const maxTicks = 1000;
+        
+        await new Promise<void>((resolve) => {
+          let tickCount = 0;
+          const unsub = derivApi.onMessage((data: any) => {
+            if (data.tick && data.tick.symbol === market.symbol) {
+              const digit = getLastDigit(data.tick.quote);
+              ticks.push(digit);
+              tickCount++;
+              
+              if (tickCount >= maxTicks) {
+                unsub();
+                resolve();
+              }
+            }
+          });
+          
+          derivApi.subscribeTicks(market.symbol as MarketSymbol, () => {}).catch(console.error);
+          
+          // Timeout after 10 seconds
+          setTimeout(() => {
+            unsub();
+            resolve();
+          }, 10000);
+        });
+        
+        // Store ticks in buffer
+        if (!fullTickBuffersRef.current.has(market.symbol)) {
+          fullTickBuffersRef.current.set(market.symbol, new CircularTickBuffer(1000));
+        }
+        const buffer = fullTickBuffersRef.current.get(market.symbol)!;
+        ticks.forEach(digit => buffer.push(digit));
+        
+        // Also store in tickMapRef for pattern matching
+        const map = tickMapRef.current;
+        const arr = map.get(market.symbol) || [];
+        ticks.forEach(digit => arr.push(digit));
+        if (arr.length > 500) arr.splice(0, arr.length - 500);
+        map.set(market.symbol, arr);
+        setTickCounts(prev => ({ ...prev, [market.symbol]: arr.length }));
+        
+      } catch (error) {
+        console.error(`Failed to fetch ticks for ${market.symbol}:`, error);
+      }
+    }
+    
+    setInitialDataLoaded(true);
+    calculateTopMarkets(); // Calculate signals after data is loaded
+    toast.success('Market data loaded successfully!');
+  }, [initialDataLoaded]);
+
+  // Load initial data on component mount
+  useEffect(() => {
+    if (derivApi.isConnected && !initialDataLoaded) {
+      fetchInitialTicks();
+    }
+  }, [fetchInitialTicks, initialDataLoaded]);
+
   /* ── Subscribe to ticks for signal analysis ── */
   useEffect(() => {
     if (!derivApi.isConnected) return;
@@ -375,6 +486,13 @@ export default function ProScannerBot() {
       if (arr.length > 500) arr.shift();
       map.set(sym, arr);
       setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
+
+      // Store full 1000 ticks buffer
+      if (!fullTickBuffersRef.current.has(sym)) {
+        fullTickBuffersRef.current.set(sym, new CircularTickBuffer(1000));
+      }
+      const fullBuf = fullTickBuffersRef.current.get(sym)!;
+      fullBuf.push(digit);
 
       // Store for signal analysis (using current active symbol)
       if (sym === m1Symbol || sym === m2Symbol) {
@@ -412,33 +530,97 @@ export default function ProScannerBot() {
     const signals: MarketSignal[] = [];
     
     SCANNER_MARKETS.forEach(market => {
-      const symbolDigits = tickMapRef.current.get(market.symbol) || [];
+      let symbolDigits: number[] = [];
+      
+      // Try to get from full buffer first (1000 ticks)
+      const fullBuf = fullTickBuffersRef.current.get(market.symbol);
+      if (fullBuf && fullBuf.size >= 20) {
+        symbolDigits = fullBuf.getAll();
+      } else {
+        // Fallback to tickMapRef
+        symbolDigits = tickMapRef.current.get(market.symbol) || [];
+      }
+      
       if (symbolDigits.length < 20) return;
       
-      // Calculate various signals for this market
-      const last20Digits = symbolDigits.slice(-20);
-      const evenCount = last20Digits.filter(d => d % 2 === 0).length;
-      const overCount = last20Digits.filter(d => d > 4).length;
-      const digitFrequency: Record<number, number> = {};
-      last20Digits.forEach(d => { digitFrequency[d] = (digitFrequency[d] || 0) + 1; });
-      const mostFrequentDigit = parseInt(Object.keys(digitFrequency).reduce((a, b) => digitFrequency[+a] > digitFrequency[+b] ? a : b, '0'));
+      // Use last 1000 ticks for analysis
+      const lastTicks = symbolDigits.slice(-1000);
+      const digitCounts: number[] = new Array(10).fill(0);
+      let evenCount = 0;
+      let oddCount = 0;
+      let overCount = 0;
+      let underCount = 0;
       
-      // Calculate trend
-      const recentDigits = symbolDigits.slice(-10);
-      const olderDigits = symbolDigits.slice(-20, -10);
+      lastTicks.forEach(d => {
+        digitCounts[d]++;
+        if (d % 2 === 0) evenCount++;
+        else oddCount++;
+        if (d > 4) overCount++;
+        else underCount++;
+      });
+      
+      const total = lastTicks.length;
+      const digitPercentages = digitCounts.map(c => (c / total) * 100);
+      const evenPercent = (evenCount / total) * 100;
+      const oddPercent = (oddCount / total) * 100;
+      const overPercent = (overCount / total) * 100;
+      const underPercent = (underCount / total) * 100;
+      
+      // Calculate trend using last 200 vs previous 200
+      const recentDigits = lastTicks.slice(-200);
+      const olderDigits = lastTicks.slice(-400, -200);
       const recentAvg = recentDigits.reduce((a, b) => a + b, 0) / recentDigits.length;
       const olderAvg = olderDigits.reduce((a, b) => a + b, 0) / olderDigits.length;
       const trend = recentAvg > olderAvg ? 'bullish' : recentAvg < olderAvg ? 'bearish' : 'neutral';
       
-      // Determine best signal type and confidence
+      // Find most frequent digit
+      let mostFrequentDigit = 0;
+      let maxCount = 0;
+      digitCounts.forEach((count, idx) => {
+        if (count > maxCount) {
+          maxCount = count;
+          mostFrequentDigit = idx;
+        }
+      });
+      
+      // Calculate signal confidences
       const signals_list = [
-        { type: 'CALL' as const, confidence: Math.min(90, 50 + (recentAvg > olderAvg ? 30 : 0)), reason: 'Upward momentum detected' },
-        { type: 'PUT' as const, confidence: Math.min(90, 50 + (recentAvg < olderAvg ? 30 : 0)), reason: 'Downward momentum detected' },
-        { type: 'DIGITEVEN' as const, confidence: Math.min(90, 50 + Math.abs(evenCount - 10) * 4), reason: `${((evenCount / 20) * 100).toFixed(0)}% even digits` },
-        { type: 'DIGITODD' as const, confidence: Math.min(90, 50 + Math.abs(20 - evenCount - 10) * 4), reason: `${(((20 - evenCount) / 20) * 100).toFixed(0)}% odd digits` },
-        { type: 'DIGITOVER' as const, confidence: Math.min(90, 50 + Math.abs(overCount - 10) * 4), reason: `${((overCount / 20) * 100).toFixed(0)}% digits > 4` },
-        { type: 'DIGITUNDER' as const, confidence: Math.min(90, 50 + Math.abs(20 - overCount - 10) * 4), reason: `${(((20 - overCount) / 20) * 100).toFixed(0)}% digits ≤ 4` },
-        { type: 'DIGITMATCH' as const, confidence: Math.min(90, 30 + digitFrequency[mostFrequentDigit] * 3), reason: `Digit ${mostFrequentDigit} appears ${digitFrequency[mostFrequentDigit]} times`, barrier: mostFrequentDigit.toString() }
+        { 
+          type: 'CALL' as const, 
+          confidence: Math.min(90, 50 + (recentAvg > olderAvg ? 30 : 0)), 
+          reason: `Upward momentum detected (Avg: ${recentAvg.toFixed(1)} → ${olderAvg.toFixed(1)})` 
+        },
+        { 
+          type: 'PUT' as const, 
+          confidence: Math.min(90, 50 + (recentAvg < olderAvg ? 30 : 0)), 
+          reason: `Downward momentum detected (Avg: ${recentAvg.toFixed(1)} → ${olderAvg.toFixed(1)})` 
+        },
+        { 
+          type: 'DIGITEVEN' as const, 
+          confidence: Math.min(90, 50 + Math.abs(evenPercent - 50)), 
+          reason: `${evenPercent.toFixed(1)}% even digits in last 1000 ticks` 
+        },
+        { 
+          type: 'DIGITODD' as const, 
+          confidence: Math.min(90, 50 + Math.abs(oddPercent - 50)), 
+          reason: `${oddPercent.toFixed(1)}% odd digits in last 1000 ticks` 
+        },
+        { 
+          type: 'DIGITOVER' as const, 
+          confidence: Math.min(90, 50 + Math.abs(overPercent - 50)), 
+          reason: `${overPercent.toFixed(1)}% digits > 4 in last 1000 ticks` 
+        },
+        { 
+          type: 'DIGITUNDER' as const, 
+          confidence: Math.min(90, 50 + Math.abs(underPercent - 50)), 
+          reason: `${underPercent.toFixed(1)}% digits ≤ 4 in last 1000 ticks` 
+        },
+        { 
+          type: 'DIGITMATCH' as const, 
+          confidence: Math.min(90, 30 + (maxCount / total) * 70), 
+          reason: `Digit ${mostFrequentDigit} appears ${maxCount} times (${((maxCount / total) * 100).toFixed(1)}%)`,
+          barrier: mostFrequentDigit.toString() 
+        }
       ];
       
       const bestSignal = signals_list.reduce((best, current) => current.confidence > best.confidence ? current : best);
@@ -450,7 +632,12 @@ export default function ProScannerBot() {
         confidence: bestSignal.confidence,
         barrier: bestSignal.type === 'DIGITMATCH' ? bestSignal.barrier : undefined,
         reason: bestSignal.reason,
-        trend
+        trend,
+        digitDistribution: digitPercentages,
+        evenPercent: Math.round(evenPercent),
+        oddPercent: Math.round(oddPercent),
+        overPercent: Math.round(overPercent),
+        underPercent: Math.round(underPercent)
       });
     });
     
@@ -463,7 +650,6 @@ export default function ProScannerBot() {
   useEffect(() => {
     if (!isRunning) {
       const interval = setInterval(calculateTopMarkets, 5000);
-      calculateTopMarkets(); // Initial calculation
       return () => clearInterval(interval);
     }
   }, [isRunning, calculateTopMarkets]);
@@ -1024,18 +1210,29 @@ export default function ProScannerBot() {
       <div className="space-y-2">
         <div className="flex items-center justify-between px-1">
           <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
-            <Zap className="w-4 h-4 text-primary" />
-            Top 5 Markets with Strongest Signals
+            <BarChart3 className="w-4 h-4 text-primary" />
+            Top 5 Markets with Strongest Signals (Based on 1000 Ticks)
           </h2>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={calculateTopMarkets}
-            disabled={isRunning}
-            className="h-7 text-[10px]"
-          >
-            <RefreshCw className="w-3 h-3 mr-1" /> Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={calculateTopMarkets}
+              disabled={isRunning}
+              className="h-7 text-[10px]"
+            >
+              <RefreshCw className="w-3 h-3 mr-1" /> Refresh
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={fetchInitialTicks}
+              disabled={isRunning || initialDataLoaded}
+              className="h-7 text-[10px]"
+            >
+              <Download className="w-3 h-3 mr-1" /> Load 1000 Ticks
+            </Button>
+          </div>
         </div>
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2">
@@ -1049,7 +1246,7 @@ export default function ProScannerBot() {
           {topMarkets.length === 0 && (
             <div className="col-span-full text-center py-8 text-muted-foreground bg-card border border-border rounded-xl">
               <Activity className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-xs">Analyzing markets... (waiting for tick data)</p>
+              <p className="text-xs">Analyzing markets... {!initialDataLoaded && 'Loading 1000 ticks per market...'}</p>
             </div>
           )}
         </div>
@@ -1700,7 +1897,7 @@ export default function ProScannerBot() {
                     <th className="text-right p-1">P/L</th>
                     <th className="text-right p-1">Bal</th>
                     <th className="text-center p-1">⏹</th>
-                  </tr>
+                   </tr>
                 </thead>
                 <tbody>
                   {logEntries.length === 0 ? (
