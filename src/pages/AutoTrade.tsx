@@ -1,13 +1,12 @@
 // ============================================================
-// FILE: pages/AutoTradingHub.tsx
+// FILE: pages/AutoTradingHub.tsx (FIXED VERSION)
 // ============================================================
-// Complete Automated Trading Hub - Signal Scanner + Pro Bot Integration
+// Complete Automated Trading Hub - High-Performance Signal Scanner + Pro Bot Integration
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { copyTradingService } from '@/services/copy-trading-service';
-import { getLastDigit, analyzeDigits, calculateRSI, calculateMACD, calculateBollingerBands } from '@/services/analysis';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLossRequirement } from '@/hooks/useLossRequirement';
 import { Input } from '@/components/ui/input';
@@ -24,7 +23,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Play, StopCircle, Trash2, Scan, Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Target, Gauge, Volume2, VolumeX,
-  Clock, Trophy, Pause, Loader2, Sparkles, Flame, Timer, Crown
+  Clock, Trophy, Pause, Loader2, Sparkles, Flame, Timer, Crown, AlertCircle
 } from 'lucide-react';
 
 /* ───── CONSTANTS ───── */
@@ -59,6 +58,38 @@ const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'D
 type SignalStrength = 'strong' | 'moderate' | 'weak';
 type BotStatus = 'idle' | 'trading' | 'waiting_signal' | 'signal_matched';
 
+// Enhanced Market Data Interface
+interface MarketData {
+  symbol: string;
+  name: string;
+  prices: number[];
+  digits: number[];
+  lastPrice: number;
+  lastDigit: number;
+  
+  // Analysis Results
+  evenPct: number;
+  oddPct: number;
+  overPct: number;
+  underPct: number;
+  risePct: number;
+  fallPct: number;
+  digitPct: Record<number, number>;
+  mostCommonDigit: number;
+  leastCommonDigit: number;
+  matchStrength: number; // 0-100, how strong the match signal is
+  diffStrength: number; // 0-100, how strong the diff signal is
+  
+  // Momentum (last 5-10 ticks)
+  momentum: number; // -1 to 1, negative = down, positive = up
+  volatility: number; // standard deviation of recent ticks
+  
+  // Timestamp
+  lastUpdate: number;
+  isLoading: boolean;
+  error?: string;
+}
+
 interface MarketSignal {
   symbol: string;
   name: string;
@@ -71,26 +102,11 @@ interface MarketSignal {
   oddPct: number;
   overPct: number;
   underPct: number;
+  risePct: number;
+  fallPct: number;
   rsi: number;
   lastDigit: number;
-}
-
-interface MarketData {
-  symbol: string;
-  name: string;
-  prices: number[];
-  digits: number[];
-  lastPrice: number;
-  lastDigit: number;
-  evenPct: number;
-  oddPct: number;
-  overPct: number;
-  underPct: number;
-  digitPct: Record<number, number>;
-  mostCommonDigit: number;
-  leastCommonDigit: number;
-  rsi: number;
-  isLoading: boolean;
+  momentum: number;
 }
 
 interface LogEntry {
@@ -106,77 +122,387 @@ interface LogEntry {
   balance: number;
 }
 
-/* ── Helper Functions ── */
-function calcRSI(prices: number[], period: number = 14): number {
+/* ── HIGH-PERFORMANCE HELPER FUNCTIONS ── */
+
+// Get last digit from price
+const getLastDigit = (price: number): number => {
+  return Math.floor(price) % 10;
+};
+
+// Calculate percentages efficiently
+const calculatePercentages = (digits: number[]) => {
+  const total = digits.length;
+  let even = 0, odd = 0, over = 0, under = 0;
+  const digitCount = new Array(10).fill(0);
+  
+  for (const digit of digits) {
+    digitCount[digit]++;
+    if (digit % 2 === 0) even++;
+    else odd++;
+    if (digit > 4) over++;
+    else under++;
+  }
+  
+  const digitPct: Record<number, number> = {};
+  for (let i = 0; i < 10; i++) {
+    digitPct[i] = (digitCount[i] / total) * 100;
+  }
+  
+  // Find most and least common digits
+  let mostCommon = 0, leastCommon = 0;
+  for (let i = 1; i < 10; i++) {
+    if (digitCount[i] > digitCount[mostCommon]) mostCommon = i;
+    if (digitCount[i] < digitCount[leastCommon]) leastCommon = i;
+  }
+  
+  return {
+    evenPct: (even / total) * 100,
+    oddPct: (odd / total) * 100,
+    overPct: (over / total) * 100,
+    underPct: (under / total) * 100,
+    digitPct,
+    mostCommonDigit: mostCommon,
+    leastCommonDigit: leastCommon,
+  };
+};
+
+// Calculate Rise/Fall percentages from prices
+const calculateRiseFall = (prices: number[]) => {
+  let rise = 0, fall = 0;
+  for (let i = 1; i < prices.length; i++) {
+    if (prices[i] > prices[i - 1]) rise++;
+    else if (prices[i] < prices[i - 1]) fall++;
+  }
+  const total = prices.length - 1;
+  return {
+    risePct: total > 0 ? (rise / total) * 100 : 50,
+    fallPct: total > 0 ? (fall / total) * 100 : 50,
+  };
+};
+
+// Calculate match/diff strength based on consecutive repeats
+const calculateMatchDiffStrength = (digits: number[]) => {
+  if (digits.length < 20) return { matchStrength: 50, diffStrength: 50 };
+  
+  let repeats = 0;
+  let totalSequences = 0;
+  
+  // Analyze last 200 ticks for patterns
+  const recentDigits = digits.slice(-200);
+  let currentRepeat = 1;
+  
+  for (let i = 1; i < recentDigits.length; i++) {
+    if (recentDigits[i] === recentDigits[i - 1]) {
+      currentRepeat++;
+      if (currentRepeat >= 3) repeats++;
+    } else {
+      if (currentRepeat >= 2) totalSequences++;
+      currentRepeat = 1;
+    }
+  }
+  
+  // Calculate match strength (higher = more repeats)
+  const matchStrength = Math.min(95, (repeats / Math.max(1, totalSequences)) * 100);
+  const diffStrength = Math.min(95, 100 - matchStrength);
+  
+  return { matchStrength, diffStrength };
+};
+
+// Calculate momentum from last N ticks
+const calculateMomentum = (prices: number[], ticks: number = 10) => {
+  if (prices.length < ticks + 1) return 0;
+  const recentPrices = prices.slice(-ticks);
+  const first = recentPrices[0];
+  const last = recentPrices[recentPrices.length - 1];
+  const change = ((last - first) / first) * 100;
+  return Math.min(1, Math.max(-1, change / 5)); // Normalize to -1..1
+};
+
+// Calculate volatility (standard deviation)
+const calculateVolatility = (prices: number[], ticks: number = 20) => {
+  if (prices.length < ticks) return 0;
+  const recent = prices.slice(-ticks);
+  const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const variance = recent.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / recent.length;
+  return Math.sqrt(variance);
+};
+
+// Calculate RSI (optimized)
+const calculateRSI = (prices: number[], period: number = 14): number => {
   if (prices.length < period + 1) return 50;
+  
   let gains = 0, losses = 0;
   for (let i = 1; i <= period; i++) {
     const diff = prices[prices.length - i] - prices[prices.length - i - 1];
     if (diff > 0) gains += diff;
     else losses -= diff;
   }
+  
   const avgGain = gains / period;
   const avgLoss = losses / period;
+  
   if (avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
-}
+};
 
-function analyzeDigitsFreq(digits: number[]) {
-  const freq: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0 };
-  for (const d of digits) freq[d] = (freq[d] || 0) + 1;
-  const pct: Record<number, number> = {};
-  const total = digits.length || 1;
-  for (let i = 0; i < 10; i++) pct[i] = (freq[i] / total) * 100;
-  let mostCommon = 0, leastCommon = 0;
-  for (let i = 1; i < 10; i++) {
-    if (freq[i] > freq[mostCommon]) mostCommon = i;
-    if (freq[i] < freq[leastCommon]) leastCommon = i;
+// Signal generation with confirmation
+const generateSignals = (data: MarketData): MarketSignal[] => {
+  const signals: MarketSignal[] = [];
+  
+  // Risk filter: Check if market is choppy
+  const isChoppy = Math.abs(data.evenPct - data.oddPct) < 5 && 
+                   Math.abs(data.overPct - data.underPct) < 5 &&
+                   Math.abs(data.risePct - data.fallPct) < 5;
+  
+  // Check for sudden spikes (volatility spike)
+  const hasSpike = data.volatility > 0.5; // Adjust threshold based on market
+  
+  if (isChoppy || hasSpike) {
+    // Return empty signals if conditions are bad
+    return signals;
   }
-  return { freq, pct, mostCommon, leastCommon };
-}
+  
+  // Even/Odd signals
+  if (data.evenPct >= 55 && !isChoppy) {
+    const confidence = Math.min(95, data.evenPct);
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Even',
+      direction: 'DIGITEVEN',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+    });
+  }
+  
+  if (data.oddPct >= 55 && !isChoppy) {
+    const confidence = Math.min(95, data.oddPct);
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Odd',
+      direction: 'DIGITODD',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+    });
+  }
+  
+  // Over/Under signals
+  if (data.overPct >= 55 && !isChoppy) {
+    const confidence = Math.min(95, data.overPct);
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Over',
+      direction: 'DIGITOVER',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+      digit: 5,
+    });
+  }
+  
+  if (data.underPct >= 55 && !isChoppy) {
+    const confidence = Math.min(95, data.underPct);
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Under',
+      direction: 'DIGITUNDER',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+      digit: 4,
+    });
+  }
+  
+  // Rise/Fall signals with momentum confirmation
+  if (data.risePct >= 55 && !isChoppy && data.momentum > 0) {
+    const confidence = Math.min(95, data.risePct + (data.momentum * 10));
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Rise',
+      direction: 'CALL',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+    });
+  }
+  
+  if (data.fallPct >= 55 && !isChoppy && data.momentum < 0) {
+    const confidence = Math.min(95, data.fallPct + (Math.abs(data.momentum) * 10));
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Fall',
+      direction: 'PUT',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+    });
+  }
+  
+  // Match/Differ signals
+  if (data.matchStrength >= 55 && !isChoppy) {
+    const confidence = data.matchStrength;
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Match',
+      direction: 'DIGITMATCH',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+      digit: data.mostCommonDigit,
+    });
+  }
+  
+  if (data.diffStrength >= 55 && !isChoppy) {
+    const confidence = data.diffStrength;
+    signals.push({
+      symbol: data.symbol,
+      name: data.name,
+      type: 'Differ',
+      direction: 'DIGITDIFF',
+      confidence,
+      strength: getStrength(confidence),
+      evenPct: data.evenPct,
+      oddPct: data.oddPct,
+      overPct: data.overPct,
+      underPct: data.underPct,
+      risePct: data.risePct,
+      fallPct: data.fallPct,
+      rsi: calculateRSI(data.prices),
+      lastDigit: data.lastDigit,
+      momentum: data.momentum,
+      digit: data.leastCommonDigit,
+    });
+  }
+  
+  return signals;
+};
 
-async function fetchTickHistory(symbol: string, count: number = 1000): Promise<{ prices: number[]; times: number[] }> {
+const getStrength = (confidence: number): SignalStrength => {
+  if (confidence >= 75) return 'strong';
+  if (confidence >= 55) return 'moderate';
+  return 'weak';
+};
+
+// Fetch 1000 ticks using WebSocket API
+const fetch1000Ticks = async (symbol: string): Promise<{ prices: number[]; times: number[] }> => {
   return new Promise((resolve, reject) => {
-    const requestId = Date.now();
+    const requestId = Date.now() + Math.random();
     const message = {
       ticks_history: symbol,
       adjust_start_time: 1,
-      count: count,
+      count: 1000,
       end: 'latest',
       start: 1,
       style: 'ticks',
       subscribe: 0,
       req_id: requestId,
     };
-    const timeout = setTimeout(() => reject(new Error(`Timeout fetching ${symbol}`)), 10000);
-    const unsub = derivApi.onMessage((data: any) => {
-      if (data.req_id === requestId && data.ticks_history) {
-        clearTimeout(timeout);
-        unsub();
-        resolve({ prices: data.ticks_history.prices || [], times: data.ticks_history.times || [] });
-      } else if (data.error && data.req_id === requestId) {
-        clearTimeout(timeout);
-        unsub();
-        reject(new Error(data.error.message));
+    
+    let timeoutId: NodeJS.Timeout;
+    let unsubscribe: (() => void) | null = null;
+    
+    const handler = (data: any) => {
+      // Check if this is our response
+      if (data.req_id === requestId) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (unsubscribe) unsubscribe();
+        
+        if (data.error) {
+          reject(new Error(data.error.message || `Failed to fetch ticks for ${symbol}`));
+        } else if (data.ticks_history && data.ticks_history.prices) {
+          resolve({
+            prices: data.ticks_history.prices,
+            times: data.ticks_history.times || [],
+          });
+        } else {
+          reject(new Error(`Invalid response format for ${symbol}`));
+        }
       }
+    };
+    
+    unsubscribe = derivApi.onMessage(handler);
+    
+    timeoutId = setTimeout(() => {
+      if (unsubscribe) unsubscribe();
+      reject(new Error(`Timeout fetching 1000 ticks for ${symbol}`));
+    }, 15000);
+    
+    derivApi.send(message).catch((err) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (unsubscribe) unsubscribe();
+      reject(err);
     });
-    derivApi.send(message).catch(reject);
   });
-}
-
-function waitForNextTick(symbol: string): Promise<{ quote: number }> {
-  return new Promise((resolve) => {
-    const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) { unsub(); resolve({ quote: data.tick.quote }); }
-    });
-  });
-}
+};
 
 export default function AutoTradingHub() {
   const { isAuthorized, balance, activeAccount } = useAuth();
   const { recordLoss } = useLossRequirement();
-  const location = useLocation();
 
   // ==================== SIGNAL SCANNER STATE ====================
   const [marketsData, setMarketsData] = useState<Map<string, MarketData>>(new Map());
@@ -187,8 +513,11 @@ export default function AutoTradingHub() {
   const [isLoadingMarkets, setIsLoadingMarkets] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSpokenRef = useRef('');
+  const lastTradeTimeRef = useRef<number>(0);
+  const cooldownMs = 60000; // 1 minute cooldown between trades
 
   // ==================== BOT CONFIGURATION ====================
   const [botEnabled, setBotEnabled] = useState(false);
@@ -228,82 +557,174 @@ export default function AutoTradingHub() {
   // ==================== LOAD ALL MARKET DATA (1000 ticks each) ====================
   const loadAllMarkets = useCallback(async () => {
     setIsLoadingMarkets(true);
+    setLoadingProgress(0);
+    
     const filteredMarkets = groupFilter === 'all' 
       ? VOLATILITY_MARKETS 
       : VOLATILITY_MARKETS.filter(m => m.group === groupFilter);
     
+    let loaded = 0;
+    const newMarketsData = new Map(marketsData);
+    
     for (const market of filteredMarkets) {
       try {
-        const { prices } = await fetchTickHistory(market.symbol, 1000);
-        if (prices.length > 0) {
+        // Check if we already have fresh data (less than 30 seconds old)
+        const existing = newMarketsData.get(market.symbol);
+        if (existing && !existing.isLoading && (Date.now() - existing.lastUpdate) < 30000) {
+          loaded++;
+          setLoadingProgress((loaded / filteredMarkets.length) * 100);
+          continue;
+        }
+        
+        // Set loading state
+        newMarketsData.set(market.symbol, {
+          ...existing,
+          symbol: market.symbol,
+          name: market.name,
+          prices: [],
+          digits: [],
+          lastPrice: 0,
+          lastDigit: 0,
+          evenPct: 50,
+          oddPct: 50,
+          overPct: 50,
+          underPct: 50,
+          risePct: 50,
+          fallPct: 50,
+          digitPct: {},
+          mostCommonDigit: 0,
+          leastCommonDigit: 0,
+          matchStrength: 50,
+          diffStrength: 50,
+          momentum: 0,
+          volatility: 0,
+          lastUpdate: Date.now(),
+          isLoading: true,
+        });
+        
+        setMarketsData(new Map(newMarketsData));
+        
+        // Fetch 1000 ticks
+        const { prices, times } = await fetch1000Ticks(market.symbol);
+        
+        if (prices && prices.length > 0) {
           const digits = prices.map(getLastDigit);
-          const evenCount = digits.filter(d => d % 2 === 0).length;
-          const oddCount = digits.length - evenCount;
-          const overCount = digits.filter(d => d > 4).length;
-          const underCount = digits.length - overCount;
-          const evenPct = (evenCount / digits.length) * 100;
-          const oddPct = (oddCount / digits.length) * 100;
-          const overPct = (overCount / digits.length) * 100;
-          const underPct = (underCount / digits.length) * 100;
-          const { pct, mostCommon, leastCommon } = analyzeDigitsFreq(digits);
-          const rsi = calcRSI(prices);
+          const percentages = calculatePercentages(digits);
+          const riseFall = calculateRiseFall(prices);
+          const { matchStrength, diffStrength } = calculateMatchDiffStrength(digits);
+          const momentum = calculateMomentum(prices);
+          const volatility = calculateVolatility(prices);
           
-          setMarketsData(prev => new Map(prev).set(market.symbol, {
+          const marketData: MarketData = {
             symbol: market.symbol,
             name: market.name,
             prices,
             digits,
             lastPrice: prices[prices.length - 1],
             lastDigit: digits[digits.length - 1],
-            evenPct,
-            oddPct,
-            overPct,
-            underPct,
-            digitPct: pct,
-            mostCommonDigit: mostCommon,
-            leastCommonDigit: leastCommon,
-            rsi,
+            evenPct: percentages.evenPct,
+            oddPct: percentages.oddPct,
+            overPct: percentages.overPct,
+            underPct: percentages.underPct,
+            risePct: riseFall.risePct,
+            fallPct: riseFall.fallPct,
+            digitPct: percentages.digitPct,
+            mostCommonDigit: percentages.mostCommonDigit,
+            leastCommonDigit: percentages.leastCommonDigit,
+            matchStrength,
+            diffStrength,
+            momentum,
+            volatility,
+            lastUpdate: Date.now(),
             isLoading: false,
-          }));
+          };
+          
+          newMarketsData.set(market.symbol, marketData);
+          tickMapRef.current.set(market.symbol, digits);
+        } else {
+          newMarketsData.set(market.symbol, {
+            ...newMarketsData.get(market.symbol)!,
+            isLoading: false,
+            error: 'No data received',
+          });
         }
+        
+        loaded++;
+        setLoadingProgress((loaded / filteredMarkets.length) * 100);
+        setMarketsData(new Map(newMarketsData));
+        
       } catch (err) {
         console.error(`Failed to load ${market.symbol}:`, err);
+        newMarketsData.set(market.symbol, {
+          ...newMarketsData.get(market.symbol)!,
+          isLoading: false,
+          error: err instanceof Error ? err.message : 'Failed to load',
+        });
+        setMarketsData(new Map(newMarketsData));
+        loaded++;
+        setLoadingProgress((loaded / filteredMarkets.length) * 100);
       }
     }
+    
     setIsLoadingMarkets(false);
-  }, [groupFilter]);
+  }, [groupFilter, marketsData]);
 
-  // Subscribe to real-time ticks
+  // Subscribe to real-time ticks for updates
   useEffect(() => {
     if (!derivApi.isConnected) return;
     
     const handler = (data: any) => {
       if (!data.tick) return;
       const sym = data.tick.symbol as string;
-      const digit = getLastDigit(data.tick.quote);
+      const price = data.tick.quote;
+      const digit = getLastDigit(price);
       
-      // Update tick map for pattern matching
+      // Update tick map
       const map = tickMapRef.current;
       const arr = map.get(sym) || [];
       arr.push(digit);
-      if (arr.length > 200) arr.shift();
+      if (arr.length > 1000) arr.shift();
       map.set(sym, arr);
       setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
       
-      // Update market data
+      // Update market data incrementally
       setMarketsData(prev => {
         const existing = prev.get(sym);
         if (!existing || existing.isLoading) return prev;
-        const newPrices = [...existing.prices, data.tick.quote].slice(-1000);
-        const newDigits = [...existing.digits, digit].slice(-1000);
-        const evenCount = newDigits.filter(d => d % 2 === 0).length;
-        const oddCount = newDigits.length - evenCount;
-        const overCount = newDigits.filter(d => d > 4).length;
-        const underCount = newDigits.length - overCount;
-        const { pct, mostCommon, leastCommon } = analyzeDigitsFreq(newDigits);
-        const rsi = calcRSI(newPrices);
         
-        const updated = { ...existing, prices: newPrices, digits: newDigits, lastPrice: data.tick.quote, lastDigit: digit, evenPct: (evenCount / newDigits.length) * 100, oddPct: (oddCount / newDigits.length) * 100, overPct: (overCount / newDigits.length) * 100, underPct: (underCount / newDigits.length) * 100, digitPct: pct, mostCommonDigit: mostCommon, leastCommonDigit: leastCommon, rsi };
+        // Update arrays with new tick
+        const newPrices = [...existing.prices, price].slice(-1000);
+        const newDigits = [...existing.digits, digit].slice(-1000);
+        
+        // Recalculate all metrics efficiently
+        const percentages = calculatePercentages(newDigits);
+        const riseFall = calculateRiseFall(newPrices);
+        const { matchStrength, diffStrength } = calculateMatchDiffStrength(newDigits);
+        const momentum = calculateMomentum(newPrices);
+        const volatility = calculateVolatility(newPrices);
+        
+        const updated: MarketData = {
+          ...existing,
+          prices: newPrices,
+          digits: newDigits,
+          lastPrice: price,
+          lastDigit: digit,
+          evenPct: percentages.evenPct,
+          oddPct: percentages.oddPct,
+          overPct: percentages.overPct,
+          underPct: percentages.underPct,
+          risePct: riseFall.risePct,
+          fallPct: riseFall.fallPct,
+          digitPct: percentages.digitPct,
+          mostCommonDigit: percentages.mostCommonDigit,
+          leastCommonDigit: percentages.leastCommonDigit,
+          matchStrength,
+          diffStrength,
+          momentum,
+          volatility,
+          lastUpdate: Date.now(),
+        };
+        
         const newMap = new Map(prev);
         newMap.set(sym, updated);
         return newMap;
@@ -311,12 +732,20 @@ export default function AutoTradingHub() {
     };
     
     const unsub = derivApi.onMessage(handler);
-    VOLATILITY_MARKETS.forEach(m => derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}));
+    
+    // Subscribe to ticks for all markets
+    VOLATILITY_MARKETS.forEach(m => {
+      derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(console.error);
+    });
+    
+    // Initial load
     loadAllMarkets();
     
     return () => {
       unsub();
-      VOLATILITY_MARKETS.forEach(m => derivApi.unsubscribeTicks(m.symbol as MarketSymbol).catch(() => {}));
+      VOLATILITY_MARKETS.forEach(m => {
+        derivApi.unsubscribeTicks(m.symbol as MarketSymbol).catch(console.error);
+      });
     };
   }, [loadAllMarkets]);
 
@@ -325,42 +754,17 @@ export default function AutoTradingHub() {
     const allSignals: MarketSignal[] = [];
     
     for (const [symbol, data] of marketsData) {
-      if (data.isLoading || data.prices.length < 20) continue;
+      if (data.isLoading || data.prices.length < 100) continue;
       
-      // Rise/Fall signal based on RSI
-      let riseConfidence = 50;
-      if (data.rsi < 30) riseConfidence += 35;
-      else if (data.rsi < 45) riseConfidence += 20;
-      else if (data.rsi > 70) riseConfidence -= 35;
-      else if (data.rsi > 55) riseConfidence -= 20;
-      const fallConfidence = 100 - riseConfidence;
-      
-      // Even/Odd signal
-      const evenConfidence = Math.min(90, Math.abs(data.evenPct - 50) * 2 + 50);
-      const oddConfidence = Math.min(90, Math.abs(data.oddPct - 50) * 2 + 50);
-      
-      // Over/Under signal
-      const overConfidence = Math.min(90, Math.abs(data.overPct - 50) * 2 + 50);
-      const underConfidence = Math.min(90, Math.abs(data.underPct - 50) * 2 + 50);
-      
-      // Match signal
-      const matchConfidence = Math.min(90, data.digitPct[data.mostCommonDigit] * 2);
-      
-      allSignals.push(
-        { symbol, name: data.name, type: 'Rise', direction: 'CALL', confidence: Math.min(95, Math.max(10, riseConfidence)), strength: getStrength(riseConfidence), evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Fall', direction: 'PUT', confidence: Math.min(95, Math.max(10, fallConfidence)), strength: getStrength(fallConfidence), evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Even', direction: 'DIGITEVEN', confidence: evenConfidence, strength: getStrength(evenConfidence), evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Odd', direction: 'DIGITODD', confidence: oddConfidence, strength: getStrength(oddConfidence), evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Over', direction: 'DIGITOVER', confidence: overConfidence, strength: getStrength(overConfidence), evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Under', direction: 'DIGITUNDER', confidence: underConfidence, strength: getStrength(underConfidence), evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Match', direction: 'DIGITMATCH', confidence: matchConfidence, strength: getStrength(matchConfidence), digit: data.mostCommonDigit, evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit },
-        { symbol, name: data.name, type: 'Differ', direction: 'DIGITDIFF', confidence: 100 - matchConfidence, strength: getStrength(100 - matchConfidence), digit: data.leastCommonDigit, evenPct: data.evenPct, oddPct: data.oddPct, overPct: data.overPct, underPct: data.underPct, rsi: data.rsi, lastDigit: data.lastDigit }
-      );
+      const marketSignals = generateSignals(data);
+      allSignals.push(...marketSignals);
     }
     
+    // Sort by confidence
     allSignals.sort((a, b) => b.confidence - a.confidence);
     setSignals(allSignals);
     
+    // Get top signals (unique markets)
     const uniqueMarkets = new Map<string, MarketSignal>();
     for (const signal of allSignals) {
       if (!uniqueMarkets.has(signal.symbol) && signal.confidence >= 65) {
@@ -373,7 +777,7 @@ export default function AutoTradingHub() {
     // Voice announcement
     if (voiceEnabled && topSignals.length > 0 && topSignals[0].confidence >= 75) {
       const best = topSignals[0];
-      const msg = `Strong ${best.type} signal on ${best.name} with ${best.confidence} percent confidence`;
+      const msg = `Strong ${best.type} signal on ${best.name} with ${Math.round(best.confidence)} percent confidence`;
       if (lastSpokenRef.current !== msg) {
         lastSpokenRef.current = msg;
         const utterance = new SpeechSynthesisUtterance(msg);
@@ -384,18 +788,12 @@ export default function AutoTradingHub() {
     }
   }, [marketsData, voiceEnabled, topSignals]);
   
-  const getStrength = (confidence: number): SignalStrength => {
-    if (confidence >= 75) return 'strong';
-    if (confidence >= 55) return 'moderate';
-    return 'weak';
-  };
-  
   // Auto-refresh signals
   useEffect(() => {
     if (autoRefresh && marketsData.size > 0 && !isLoadingMarkets) {
       calculateSignals();
       if (intervalRef.current) clearInterval(intervalRef.current);
-      intervalRef.current = setInterval(calculateSignals, 5000);
+      intervalRef.current = setInterval(calculateSignals, 3000);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [autoRefresh, marketsData, calculateSignals, isLoadingMarkets]);
@@ -411,7 +809,24 @@ export default function AutoTradingHub() {
     setLogEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
   }, []);
   
+  const waitForNextTick = useCallback((symbol: string): Promise<{ quote: number }> => {
+    return new Promise((resolve) => {
+      const unsub = derivApi.onMessage((data: any) => {
+        if (data.tick && data.tick.symbol === symbol) {
+          unsub();
+          resolve({ quote: data.tick.quote });
+        }
+      });
+    });
+  }, []);
+  
   const executeTrade = useCallback(async (signal: MarketSignal, tradeStake: number, step: number) => {
+    // Check cooldown
+    if (Date.now() - lastTradeTimeRef.current < cooldownMs) {
+      toast.warning(`Please wait ${Math.ceil((cooldownMs - (Date.now() - lastTradeTimeRef.current)) / 1000)} seconds before next trade`);
+      return { won: false, pnl: 0, exitDigit: '-' };
+    }
+    
     const ct = signal.direction;
     const logId = addLog({
       time: new Date().toLocaleTimeString(),
@@ -422,7 +837,7 @@ export default function AutoTradingHub() {
       exitDigit: '...',
       result: 'Pending',
       pnl: 0,
-      balance,
+      balance: balance,
     });
     
     try {
@@ -443,6 +858,8 @@ export default function AutoTradingHub() {
       }
       
       const { contractId } = await derivApi.buyContract(buyParams);
+      lastTradeTimeRef.current = Date.now();
+      
       const result = await derivApi.waitForContractResult(contractId);
       const won = result.status === 'won';
       const pnl = result.profit;
@@ -452,10 +869,11 @@ export default function AutoTradingHub() {
       
       return { won, pnl, exitDigit };
     } catch (err: any) {
+      console.error('Trade execution error:', err);
       updateLog(logId, { result: 'Loss', exitDigit: '-', pnl: 0 });
       return { won: false, pnl: 0, exitDigit: '-' };
     }
-  }, [turboMode, duration, durationUnit, barrier, balance, addLog, updateLog]);
+  }, [turboMode, duration, durationUnit, barrier, balance, addLog, updateLog, waitForNextTick]);
   
   // ==================== MAIN BOT LOOP ====================
   const startBot = useCallback(async () => {
@@ -498,9 +916,9 @@ export default function AutoTradingHub() {
         setSelectedMarket(bestSignal.symbol);
         setContractType(bestSignal.direction);
         if (bestSignal.digit !== undefined) setBarrier(String(bestSignal.digit));
-        toast.info(`🎯 Signal detected: ${bestSignal.type} on ${bestSignal.name} (${bestSignal.confidence}%)`);
+        toast.info(`🎯 Signal detected: ${bestSignal.type} on ${bestSignal.name} (${Math.round(bestSignal.confidence)}%)`);
         if (voiceEnabled) {
-          const utterance = new SpeechSynthesisUtterance(`${bestSignal.type} signal on ${bestSignal.name} with ${bestSignal.confidence} percent confidence. Trading now.`);
+          const utterance = new SpeechSynthesisUtterance(`${bestSignal.type} signal on ${bestSignal.name} with ${Math.round(bestSignal.confidence)} percent confidence. Trading now.`);
           window.speechSynthesis?.speak(utterance);
         }
       }
@@ -513,7 +931,7 @@ export default function AutoTradingHub() {
         confidence: 80,
         strength: 'moderate',
         digit: DIGIT_CONTRACT_TYPES.includes(contractType) ? parseInt(barrier) : undefined,
-        evenPct: 50, oddPct: 50, overPct: 50, underPct: 50, rsi: 50, lastDigit: 0,
+        evenPct: 50, oddPct: 50, overPct: 50, underPct: 50, risePct: 50, fallPct: 50, rsi: 50, lastDigit: 0, momentum: 0,
       };
       
       const { won, pnl } = await executeTrade(signalToUse, cStake, mStep);
@@ -631,64 +1049,77 @@ export default function AutoTradingHub() {
         </div>
       </div>
       
+      {/* Loading Progress */}
+      {isLoadingMarkets && (
+        <Card>
+          <CardContent className="py-4">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>Loading market data...</span>
+                <span>{Math.round(loadingProgress)}%</span>
+              </div>
+              <Progress value={loadingProgress} className="h-2" />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      
       {/* Top Signals Dashboard */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        {isLoadingMarkets ? (
-          <div className="col-span-full text-center py-8">
-            <Loader2 className="w-8 h-8 mx-auto animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground mt-2">Loading market data (1000 ticks each)...</p>
-          </div>
-        ) : topSignals.length === 0 ? (
+        {!isLoadingMarkets && topSignals.length === 0 && (
           <div className="col-span-full text-center py-8 text-muted-foreground">
             <Scan className="w-8 h-8 mx-auto mb-2 opacity-30" />
-            <p>Waiting for signals...</p>
+            <p>Waiting for signals... Market may be choppy</p>
           </div>
-        ) : (
-          topSignals.map((signal, idx) => (
-            <motion.div
-              key={`${signal.symbol}-${signal.type}`}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: idx * 0.1 }}
-              className={`relative overflow-hidden rounded-xl border-2 cursor-pointer transition-all hover:scale-[1.02] ${
-                signal.strength === 'strong' ? 'border-profit shadow-lg shadow-profit/20' :
-                signal.strength === 'moderate' ? 'border-warning' : 'border-border'
-              } bg-card`}
-              onClick={() => handleUseSignal(signal)}
-            >
-              <div className="absolute top-0 right-0 w-16 h-16 -mr-8 -mt-8 rounded-full bg-primary/10" />
-              <div className="p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-foreground">{signal.name}</span>
-                  <Badge className={`text-[8px] px-1.5 ${signal.strength === 'strong' ? 'bg-profit' : signal.strength === 'moderate' ? 'bg-warning' : 'bg-muted'}`}>
-                    {signal.strength.toUpperCase()}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1">
-                    {signal.type === 'Rise' && <TrendingUp className="w-5 h-5 text-profit" />}
-                    {signal.type === 'Fall' && <TrendingDown className="w-5 h-5 text-loss" />}
-                    {(signal.type === 'Even' || signal.type === 'Odd') && <Activity className="w-5 h-5 text-primary" />}
-                    {(signal.type === 'Over' || signal.type === 'Under') && <ArrowUp className="w-5 h-5 text-primary" />}
-                    {(signal.type === 'Match' || signal.type === 'Differ') && <Target className="w-5 h-5 text-profit" />}
-                    <span className="text-lg font-bold text-foreground">{signal.type}</span>
-                  </div>
-                  <span className="text-xl font-mono font-bold text-primary">{signal.confidence}%</span>
-                </div>
-                <div className="h-1.5 bg-muted rounded-full mb-2">
-                  <div className={`h-full rounded-full ${signal.strength === 'strong' ? 'bg-profit' : signal.strength === 'moderate' ? 'bg-warning' : 'bg-muted-foreground'}`} style={{ width: `${signal.confidence}%` }} />
-                </div>
-                <div className="grid grid-cols-2 gap-1 text-[9px] text-muted-foreground">
-                  <span>E: {signal.evenPct.toFixed(0)}% / O: {signal.oddPct.toFixed(0)}%</span>
-                  <span>Ov: {signal.overPct.toFixed(0)}% / Un: {signal.underPct.toFixed(0)}%</span>
-                </div>
-                <Button size="sm" className="w-full mt-2 h-6 text-[9px]" variant="outline" onClick={(e) => { e.stopPropagation(); handleUseSignal(signal); }}>
-                  Use Signal
-                </Button>
-              </div>
-            </motion.div>
-          ))
         )}
+        {topSignals.map((signal, idx) => (
+          <motion.div
+            key={`${signal.symbol}-${signal.type}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: idx * 0.1 }}
+            className={`relative overflow-hidden rounded-xl border-2 cursor-pointer transition-all hover:scale-[1.02] ${
+              signal.strength === 'strong' ? 'border-profit shadow-lg shadow-profit/20' :
+              signal.strength === 'moderate' ? 'border-warning' : 'border-border'
+            } bg-card`}
+            onClick={() => handleUseSignal(signal)}
+          >
+            <div className="absolute top-0 right-0 w-16 h-16 -mr-8 -mt-8 rounded-full bg-primary/10" />
+            <div className="p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-bold text-foreground">{signal.name}</span>
+                <Badge className={`text-[8px] px-1.5 ${signal.strength === 'strong' ? 'bg-profit' : signal.strength === 'moderate' ? 'bg-warning' : 'bg-muted'}`}>
+                  {signal.strength.toUpperCase()}
+                </Badge>
+              </div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1">
+                  {signal.type === 'Rise' && <TrendingUp className="w-5 h-5 text-profit" />}
+                  {signal.type === 'Fall' && <TrendingDown className="w-5 h-5 text-loss" />}
+                  {(signal.type === 'Even' || signal.type === 'Odd') && <Activity className="w-5 h-5 text-primary" />}
+                  {(signal.type === 'Over' || signal.type === 'Under') && <ArrowUp className="w-5 h-5 text-primary" />}
+                  {(signal.type === 'Match' || signal.type === 'Differ') && <Target className="w-5 h-5 text-profit" />}
+                  <span className="text-lg font-bold text-foreground">{signal.type}</span>
+                </div>
+                <span className="text-xl font-mono font-bold text-primary">{Math.round(signal.confidence)}%</span>
+              </div>
+              <div className="h-1.5 bg-muted rounded-full mb-2">
+                <div className={`h-full rounded-full ${signal.strength === 'strong' ? 'bg-profit' : signal.strength === 'moderate' ? 'bg-warning' : 'bg-muted-foreground'}`} style={{ width: `${signal.confidence}%` }} />
+              </div>
+              <div className="grid grid-cols-2 gap-1 text-[9px] text-muted-foreground">
+                <span>E: {signal.evenPct.toFixed(0)}% / O: {signal.oddPct.toFixed(0)}%</span>
+                <span>Ov: {signal.overPct.toFixed(0)}% / Un: {signal.underPct.toFixed(0)}%</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1 text-[9px] text-muted-foreground mt-1">
+                <span>Rise: {signal.risePct.toFixed(0)}%</span>
+                <span>Fall: {signal.fallPct.toFixed(0)}%</span>
+              </div>
+              <Button size="sm" className="w-full mt-2 h-6 text-[9px]" variant="outline" onClick={(e) => { e.stopPropagation(); handleUseSignal(signal); }}>
+                Use Signal
+              </Button>
+            </div>
+          </motion.div>
+        ))}
       </div>
       
       {/* Main Content Tabs */}
@@ -720,7 +1151,7 @@ export default function AutoTradingHub() {
                   <div className="flex justify-between text-xs">
                     <span className="text-muted-foreground">Current Signal:</span>
                     <span className="font-mono font-bold">
-                      {currentSignal ? `${currentSignal.type} on ${currentSignal.name} (${currentSignal.confidence}%)` : 'Waiting...'}
+                      {currentSignal ? `${currentSignal.type} on ${currentSignal.name} (${Math.round(currentSignal.confidence)}%)` : 'Waiting...'}
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
@@ -736,6 +1167,10 @@ export default function AutoTradingHub() {
                   <div className="flex justify-between text-xs">
                     <span className="text-muted-foreground">Current Stake:</span>
                     <span className="font-mono font-bold">${currentStake.toFixed(2)}{martingaleStep > 0 && <span className="text-warning ml-1">M{martingaleStep}</span>}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Trades:</span>
+                    <span className="font-mono font-bold">{wins + losses} ({wins}W / {losses}L)</span>
                   </div>
                 </CardContent>
               </Card>
@@ -917,7 +1352,7 @@ export default function AutoTradingHub() {
             <CardContent className="max-h-[500px] overflow-auto">
               <table className="w-full text-[10px]">
                 <thead className="sticky top-0 bg-card">
-                  <tr className="text-muted-foreground">
+                  <tr className="text-muted-foreground border-b">
                     <th className="p-2 text-left">Market</th>
                     <th className="p-2 text-left">Rise</th>
                     <th className="p-2 text-left">Fall</th>
@@ -928,8 +1363,9 @@ export default function AutoTradingHub() {
                     <th className="p-2 text-left">Match</th>
                     <th className="p-2 text-left">Differ</th>
                     <th className="p-2 text-left">Last</th>
+                    <th className="p-2 text-left">Momentum</th>
                     <th className="p-2 text-left">RSI</th>
-                  </tr>
+                   </tr>
                 </thead>
                 <tbody>
                   {filteredMarkets.map(market => {
@@ -945,18 +1381,21 @@ export default function AutoTradingHub() {
                     const match = signals.find(s => s.symbol === market.symbol && s.type === 'Match');
                     const differ = signals.find(s => s.symbol === market.symbol && s.type === 'Differ');
                     
+                    const momentumIndicator = data.momentum > 0.3 ? '↑↑' : data.momentum > 0 ? '↑' : data.momentum < -0.3 ? '↓↓' : data.momentum < 0 ? '↓' : '→';
+                    
                     return (
                       <tr key={market.symbol} className="border-t border-border/30 hover:bg-muted/20">
                         <td className="p-2 font-mono font-bold">{market.name}</td>
-                        <td className="p-2"><span className={`font-mono ${rise?.confidence >= 70 ? 'text-profit' : rise?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{rise?.confidence || 0}%</span></td>
-                        <td className="p-2"><span className={`font-mono ${fall?.confidence >= 70 ? 'text-profit' : fall?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{fall?.confidence || 0}%</span></td>
-                        <td className="p-2"><span className={`font-mono ${even?.confidence >= 70 ? 'text-profit' : even?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{even?.confidence || 0}%</span></td>
-                        <td className="p-2"><span className={`font-mono ${odd?.confidence >= 70 ? 'text-profit' : odd?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{odd?.confidence || 0}%</span></td>
-                        <td className="p-2"><span className={`font-mono ${over?.confidence >= 70 ? 'text-profit' : over?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{over?.confidence || 0}%</span></td>
-                        <td className="p-2"><span className={`font-mono ${under?.confidence >= 70 ? 'text-profit' : under?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{under?.confidence || 0}%</span></td>
-                        <td className="p-2"><span className="font-mono">{match?.digit} ({match?.confidence || 0}%)</span></td>
-                        <td className="p-2"><span className="font-mono">{differ?.digit} ({differ?.confidence || 0}%)</span></td>
+                        <td className="p-2"><span className={`font-mono ${rise?.confidence >= 70 ? 'text-profit' : rise?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{Math.round(rise?.confidence || 0)}%</span></td>
+                        <td className="p-2"><span className={`font-mono ${fall?.confidence >= 70 ? 'text-profit' : fall?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{Math.round(fall?.confidence || 0)}%</span></td>
+                        <td className="p-2"><span className={`font-mono ${even?.confidence >= 70 ? 'text-profit' : even?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{Math.round(even?.confidence || 0)}%</span></td>
+                        <td className="p-2"><span className={`font-mono ${odd?.confidence >= 70 ? 'text-profit' : odd?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{Math.round(odd?.confidence || 0)}%</span></td>
+                        <td className="p-2"><span className={`font-mono ${over?.confidence >= 70 ? 'text-profit' : over?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{Math.round(over?.confidence || 0)}%</span></td>
+                        <td className="p-2"><span className={`font-mono ${under?.confidence >= 70 ? 'text-profit' : under?.confidence >= 50 ? 'text-warning' : 'text-muted-foreground'}`}>{Math.round(under?.confidence || 0)}%</span></td>
+                        <td className="p-2"><span className="font-mono">{match?.digit !== undefined ? `${match.digit} (${Math.round(match?.confidence || 0)}%)` : '-'}</span></td>
+                        <td className="p-2"><span className="font-mono">{differ?.digit !== undefined ? `${differ.digit} (${Math.round(differ?.confidence || 0)}%)` : '-'}</span></td>
                         <td className="p-2 font-mono font-bold">{data.lastDigit}</td>
+                        <td className="p-2 font-mono"><span className={data.momentum > 0 ? 'text-profit' : data.momentum < 0 ? 'text-loss' : ''}>{momentumIndicator}</span></td>
                         <td className="p-2 font-mono"><span className={data.rsi > 70 ? 'text-loss' : data.rsi < 30 ? 'text-profit' : ''}>{data.rsi.toFixed(1)}</span></td>
                       </tr>
                     );
@@ -969,4 +1408,4 @@ export default function AutoTradingHub() {
       </Tabs>
     </div>
   );
-}
+  }
