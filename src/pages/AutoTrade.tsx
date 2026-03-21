@@ -54,14 +54,29 @@ interface LogEntry {
 }
 
 /* ── Signal Types for Signal Forge ── */
-interface SignalCandidate {
-  type: string;
-  name: string;
-  strength: number;
+interface PatternSignal {
+  pattern: string;
+  wins: number;
+  winDigits: string[];
+  loses: number;
+  loseDigits: string[];
+}
+
+interface SignalData {
   symbol: string;
-  detail: string;
-  extra: string;
-  direction: 'up' | 'down' | 'neutral';
+  overPatterns: PatternSignal[];
+  underPatterns: PatternSignal[];
+  evenPatterns: PatternSignal[];
+  oddPatterns: PatternSignal[];
+  bestOver: PatternSignal | null;
+  bestUnder: PatternSignal | null;
+  bestEven: PatternSignal | null;
+  bestOdd: PatternSignal | null;
+  overRate: number;
+  underRate: number;
+  evenRate: number;
+  oddRate: number;
+  totalTicks: number;
 }
 
 /* ── Circular Tick Buffer ── */
@@ -94,7 +109,6 @@ class CircularTickBuffer {
     }
     return result;
   }
-  lastTs(): number { return this.count > 0 ? this.buffer[(this.head - 1 + this.capacity) % this.capacity].ts : 0; }
   get size() { return this.count; }
 }
 
@@ -131,49 +145,220 @@ function simulateVirtualContract(
   });
 }
 
-/* ── Signal Analysis Engine (reused from Signal Forge) ── */
-function computeDigitStats(ticks: number[], thresholdDigit: number = 5) {
-  if (!ticks || ticks.length < 50) return null;
-  const recent = ticks.slice(-1000);
-  const freq = Array(10).fill(0);
-  recent.forEach(d => { if (d >= 0 && d <= 9) freq[d]++; });
-
-  let entries = freq.map((count, digit) => ({ digit, count }));
-  entries.sort((a, b) => b.count - a.count);
-  const mostAppearing = entries[0]?.digit ?? 0;
-  const secondMost = entries[1]?.digit ?? mostAppearing;
-  const leastAppearing = (() => {
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].count > 0) return entries[i].digit;
+/* ── Advanced Pattern Analysis Engine (from signal generator) ── */
+function analyzePatterns(ticks: number[], threshold: number = 5, patternLengths: number[] = [1, 2, 3, 4, 5, 6]): SignalData | null {
+  if (!ticks || ticks.length === 0) return null;
+  
+  const recentTicks = ticks.slice(-2000);
+  const totalTicks = recentTicks.length;
+  
+  // Calculate basic rates
+  let overCount = 0, underCount = 0, evenCount = 0, oddCount = 0;
+  recentTicks.forEach(d => {
+    if (d > threshold) overCount++;
+    else if (d < threshold) underCount++;
+    if (d % 2 === 0) evenCount++;
+    else oddCount++;
+  });
+  
+  const overRate = totalTicks > 0 ? overCount / totalTicks : 0.5;
+  const underRate = totalTicks > 0 ? underCount / totalTicks : 0.5;
+  const evenRate = totalTicks > 0 ? evenCount / totalTicks : 0.5;
+  const oddRate = totalTicks > 0 ? oddCount / totalTicks : 0.5;
+  
+  let bestOver: PatternSignal | null = null;
+  let bestUnder: PatternSignal | null = null;
+  let bestEven: PatternSignal | null = null;
+  let bestOdd: PatternSignal | null = null;
+  const allOverPatterns: PatternSignal[] = [];
+  const allUnderPatterns: PatternSignal[] = [];
+  const allEvenPatterns: PatternSignal[] = [];
+  const allOddPatterns: PatternSignal[] = [];
+  
+  for (const len of patternLengths) {
+    const overPatterns: Record<string, PatternSignal> = {};
+    const underPatterns: Record<string, PatternSignal> = {};
+    const evenPatterns: Record<string, PatternSignal> = {};
+    const oddPatterns: Record<string, PatternSignal> = {};
+    
+    for (let i = 0; i < recentTicks.length - len; i++) {
+      const nextDigit = recentTicks[i + len];
+      const pattern = recentTicks.slice(i, i + len).join("");
+      
+      // Over/Under analysis
+      if (nextDigit > threshold) {
+        if (!overPatterns[pattern]) overPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        overPatterns[pattern].wins++;
+        overPatterns[pattern].winDigits.push(nextDigit.toString());
+        if (overPatterns[pattern].winDigits.length > 13) overPatterns[pattern].winDigits.shift();
+        
+        if (!underPatterns[pattern]) underPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        underPatterns[pattern].loses++;
+        underPatterns[pattern].loseDigits.push(nextDigit.toString());
+        if (underPatterns[pattern].loseDigits.length > 13) underPatterns[pattern].loseDigits.shift();
+      } else {
+        if (!underPatterns[pattern]) underPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        underPatterns[pattern].wins++;
+        underPatterns[pattern].winDigits.push(nextDigit.toString());
+        if (underPatterns[pattern].winDigits.length > 13) underPatterns[pattern].winDigits.shift();
+        
+        if (!overPatterns[pattern]) overPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        overPatterns[pattern].loses++;
+        overPatterns[pattern].loseDigits.push(nextDigit.toString());
+        if (overPatterns[pattern].loseDigits.length > 13) overPatterns[pattern].loseDigits.shift();
+      }
+      
+      // Even/Odd analysis
+      if (nextDigit % 2 === 0) {
+        if (!evenPatterns[pattern]) evenPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        evenPatterns[pattern].wins++;
+        evenPatterns[pattern].winDigits.push("E");
+        if (evenPatterns[pattern].winDigits.length > 13) evenPatterns[pattern].winDigits.shift();
+        
+        if (!oddPatterns[pattern]) oddPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        oddPatterns[pattern].loses++;
+        oddPatterns[pattern].loseDigits.push("E");
+        if (oddPatterns[pattern].loseDigits.length > 13) oddPatterns[pattern].loseDigits.shift();
+      } else {
+        if (!oddPatterns[pattern]) oddPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        oddPatterns[pattern].wins++;
+        oddPatterns[pattern].winDigits.push("O");
+        if (oddPatterns[pattern].winDigits.length > 13) oddPatterns[pattern].winDigits.shift();
+        
+        if (!evenPatterns[pattern]) evenPatterns[pattern] = { pattern, wins: 0, winDigits: [], loses: 0, loseDigits: [] };
+        evenPatterns[pattern].loses++;
+        evenPatterns[pattern].loseDigits.push("O");
+        if (evenPatterns[pattern].loseDigits.length > 13) evenPatterns[pattern].loseDigits.shift();
+      }
     }
-    return 0;
-  })();
-
-  let overCount = 0, underCount = 0;
-  recent.forEach(d => { if (d > thresholdDigit) overCount++; else if (d < thresholdDigit) underCount++; });
-
-  let oddCount = 0, evenCount = 0;
-  recent.forEach(d => { if (d % 2 === 0) evenCount++; else oddCount++; });
-
-  let riseCount = 0, fallCount = 0;
-  for (let i = 1; i < recent.length; i++) {
-    if (recent[i] > recent[i - 1]) riseCount++;
-    else if (recent[i] < recent[i - 1]) fallCount++;
+    
+    // Get top patterns
+    const topOver = Object.values(overPatterns).sort((a, b) => b.wins - a.wins).slice(0, 3);
+    const topUnder = Object.values(underPatterns).sort((a, b) => b.wins - a.wins).slice(0, 3);
+    const topEven = Object.values(evenPatterns).sort((a, b) => b.wins - a.wins).slice(0, 3);
+    const topOdd = Object.values(oddPatterns).sort((a, b) => b.wins - a.wins).slice(0, 3);
+    
+    allOverPatterns.push(...topOver);
+    allUnderPatterns.push(...topUnder);
+    allEvenPatterns.push(...topEven);
+    allOddPatterns.push(...topOdd);
+    
+    if (!bestOver && topOver.length) bestOver = topOver[0];
+    if (!bestUnder && topUnder.length) bestUnder = topUnder[0];
+    if (!bestEven && topEven.length) bestEven = topEven[0];
+    if (!bestOdd && topOdd.length) bestOdd = topOdd[0];
   }
-  const totalComp = recent.length - 1 || 1;
-
+  
   return {
-    mostAppearing,
-    secondMost,
-    leastAppearing,
-    overRate: overCount / recent.length,
-    underRate: underCount / recent.length,
-    oddRate: oddCount / recent.length,
-    evenRate: evenCount / recent.length,
-    riseRate: riseCount / totalComp,
-    fallRate: fallCount / totalComp,
-    totalTicks: recent.length
+    symbol: '',
+    overPatterns: allOverPatterns.slice(0, 5),
+    underPatterns: allUnderPatterns.slice(0, 5),
+    evenPatterns: allEvenPatterns.slice(0, 5),
+    oddPatterns: allOddPatterns.slice(0, 5),
+    bestOver,
+    bestUnder,
+    bestEven,
+    bestOdd,
+    overRate,
+    underRate,
+    evenRate,
+    oddRate,
+    totalTicks
   };
+}
+
+/* ── Generate Top Signals from All Markets ── */
+function generateTopSignals(
+  tickMap: Map<string, number[]>,
+  marketGroup: string,
+  threshold: number = 5
+): Array<{ symbol: string; type: string; name: string; strength: number; detail: string; pattern: string }> {
+  const allSignals: Array<{ symbol: string; type: string; name: string; strength: number; detail: string; pattern: string; wins: number }> = [];
+  
+  let symbolsToScan: string[] = [];
+  if (marketGroup === 'all') {
+    symbolsToScan = SCANNER_MARKETS.map(m => m.symbol);
+  } else if (marketGroup === 'vol') {
+    symbolsToScan = SCANNER_MARKETS.filter(m => m.symbol.startsWith('R_') || m.symbol.startsWith('1HZ')).map(m => m.symbol);
+  } else if (marketGroup === 'jump') {
+    symbolsToScan = SCANNER_MARKETS.filter(m => m.symbol.startsWith('JD')).map(m => m.symbol);
+  } else if (marketGroup === 'bull') {
+    symbolsToScan = ['RDBULL'];
+  } else if (marketGroup === 'bear') {
+    symbolsToScan = ['RDBEAR'];
+  }
+  
+  for (const symbol of symbolsToScan) {
+    const ticks = tickMap.get(symbol) || [];
+    if (ticks.length < 10) continue;
+    
+    const analysis = analyzePatterns(ticks, threshold, [2, 3, 4]);
+    if (!analysis) continue;
+    
+    // Best Over signal
+    if (analysis.bestOver && analysis.bestOver.wins > 5) {
+      const winRate = analysis.bestOver.wins / (analysis.bestOver.wins + analysis.bestOver.loses);
+      const strength = Math.min(0.95, 0.6 + winRate * 0.3 + analysis.overRate * 0.2);
+      allSignals.push({
+        symbol,
+        type: 'OVER',
+        name: '📈 OVER',
+        strength,
+        detail: `Pattern "${analysis.bestOver.pattern}" → ${analysis.bestOver.wins} wins, ${analysis.bestOver.loses} losses (${(winRate * 100).toFixed(0)}% win rate)`,
+        pattern: analysis.bestOver.pattern,
+        wins: analysis.bestOver.wins
+      });
+    }
+    
+    // Best Under signal
+    if (analysis.bestUnder && analysis.bestUnder.wins > 5) {
+      const winRate = analysis.bestUnder.wins / (analysis.bestUnder.wins + analysis.bestUnder.loses);
+      const strength = Math.min(0.95, 0.6 + winRate * 0.3 + analysis.underRate * 0.2);
+      allSignals.push({
+        symbol,
+        type: 'UNDER',
+        name: '📉 UNDER',
+        strength,
+        detail: `Pattern "${analysis.bestUnder.pattern}" → ${analysis.bestUnder.wins} wins, ${analysis.bestUnder.loses} losses (${(winRate * 100).toFixed(0)}% win rate)`,
+        pattern: analysis.bestUnder.pattern,
+        wins: analysis.bestUnder.wins
+      });
+    }
+    
+    // Best Even signal
+    if (analysis.bestEven && analysis.bestEven.wins > 5) {
+      const winRate = analysis.bestEven.wins / (analysis.bestEven.wins + analysis.bestEven.loses);
+      const strength = Math.min(0.95, 0.6 + winRate * 0.3 + analysis.evenRate * 0.2);
+      allSignals.push({
+        symbol,
+        type: 'EVEN',
+        name: '🎲 EVEN',
+        strength,
+        detail: `Pattern "${analysis.bestEven.pattern}" → ${analysis.bestEven.wins} wins, ${analysis.bestEven.loses} losses (${(winRate * 100).toFixed(0)}% win rate)`,
+        pattern: analysis.bestEven.pattern,
+        wins: analysis.bestEven.wins
+      });
+    }
+    
+    // Best Odd signal
+    if (analysis.bestOdd && analysis.bestOdd.wins > 5) {
+      const winRate = analysis.bestOdd.wins / (analysis.bestOdd.wins + analysis.bestOdd.loses);
+      const strength = Math.min(0.95, 0.6 + winRate * 0.3 + analysis.oddRate * 0.2);
+      allSignals.push({
+        symbol,
+        type: 'ODD',
+        name: '🎲 ODD',
+        strength,
+        detail: `Pattern "${analysis.bestOdd.pattern}" → ${analysis.bestOdd.wins} wins, ${analysis.bestOdd.loses} losses (${(winRate * 100).toFixed(0)}% win rate)`,
+        pattern: analysis.bestOdd.pattern,
+        wins: analysis.bestOdd.wins
+      });
+    }
+  }
+  
+  // Sort by strength and return top 4
+  allSignals.sort((a, b) => b.strength - a.strength);
+  return allSignals.slice(0, 4);
 }
 
 export default function ProScannerBot() {
@@ -248,9 +433,9 @@ export default function ProScannerBot() {
   const lastTickTsRef = useRef(0);
 
   /* ── Signal Forge State ── */
-  const [topSignals, setTopSignals] = useState<SignalCandidate[]>([]);
-  const [signalContractType, setSignalContractType] = useState<'overunder' | 'evenodd' | 'risefall'>('overunder');
+  const [topSignals, setTopSignals] = useState<Array<{ symbol: string; type: string; name: string; strength: number; detail: string; pattern: string }>>([]);
   const [signalMarketGroup, setSignalMarketGroup] = useState<'all' | 'vol' | 'jump' | 'bull' | 'bear'>('all');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   /* ── Bot state ── */
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
@@ -266,203 +451,44 @@ export default function ProScannerBot() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const logIdRef = useRef(0);
 
-  /* ── Tick data (legacy for pattern matching) ── */
+  /* ── Tick data ── */
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
 
-  /* ── Signal Generation Engine (integrated from Signal Forge) ── */
-  const generateSignals = useCallback(() => {
-    const allCandidates: SignalCandidate[] = [];
-    const symbolsToScan = signalMarketGroup === 'all' 
-      ? SCANNER_MARKETS.map(m => m.symbol)
-      : SCANNER_MARKETS.filter(m => {
-          if (signalMarketGroup === 'vol') return m.symbol.startsWith('R_') || m.symbol.startsWith('1HZ');
-          if (signalMarketGroup === 'jump') return m.symbol.startsWith('JD');
-          if (signalMarketGroup === 'bull') return m.symbol === 'RDBULL';
-          if (signalMarketGroup === 'bear') return m.symbol === 'RDBEAR';
-          return true;
-        }).map(m => m.symbol);
-
-    for (const symbol of symbolsToScan) {
-      const ticks = tickMapRef.current.get(symbol) || [];
-      if (ticks.length < 100) continue;
-
-      const stats = computeDigitStats(ticks, 5);
-      if (!stats) continue;
-
-      const { mostAppearing, secondMost, leastAppearing, overRate, underRate, oddRate, evenRate, riseRate, fallRate } = stats;
-
-      // Strategy 1: Over/Under based on most appearing digit
-      if (signalContractType === 'overunder' || signalContractType === 'risefall') {
-        let underOverSignal: string | null = null;
-        let underOverStrength = 0.5;
-        let underOverReason = "";
-        let direction: 'up' | 'down' | 'neutral' = 'neutral';
-
-        if (mostAppearing <= 6) {
-          underOverSignal = "📉 UNDER";
-          underOverStrength = 0.68 + (underRate * 0.25);
-          underOverReason = `Most digit ${mostAppearing} in 0-6 zone | Under rate ${(underRate * 100).toFixed(0)}%`;
-          direction = 'down';
-          if (secondMost <= 6) underOverStrength += 0.08;
-          if (leastAppearing >= 5) underOverStrength -= 0.03;
-        }
-        if (mostAppearing >= 5) {
-          underOverSignal = "📈 OVER";
-          underOverStrength = 0.68 + (overRate * 0.25);
-          underOverReason = `Most digit ${mostAppearing} in 5-9 zone | Over rate ${(overRate * 100).toFixed(0)}%`;
-          direction = 'up';
-          if (secondMost >= 5) underOverStrength += 0.08;
-          if (leastAppearing <= 4) underOverStrength -= 0.03;
-        }
-        underOverStrength = Math.min(0.96, Math.max(0.55, underOverStrength));
-
-        if (underOverSignal && underOverStrength > 0.58) {
-          allCandidates.push({
-            type: "Under/Over",
-            name: underOverSignal,
-            strength: underOverStrength,
-            symbol: symbol,
-            detail: underOverReason,
-            extra: `Threshold 5 | Most:${mostAppearing} 2nd:${secondMost}`,
-            direction
-          });
-        }
-      }
-
-      // Strategy 2: Odd/Even
-      if (signalContractType === 'evenodd' || signalContractType === 'overunder') {
-        let oddEvenSignal: string | null = null;
-        let oddEvenStrength = 0.5;
-        let direction: 'up' | 'down' | 'neutral' = 'neutral';
-        let oddEvenReason = "";
-
-        if (mostAppearing % 2 === 1) {
-          oddEvenSignal = "🎲 ODD";
-          oddEvenStrength = 0.65 + (oddRate * 0.25);
-          oddEvenReason = `Most digit ${mostAppearing} (odd) | Odd winrate ${(oddRate * 100).toFixed(0)}%`;
-          direction = 'up';
-          if (secondMost % 2 === 1) oddEvenStrength += 0.07;
-        } else {
-          oddEvenSignal = "🎲 EVEN";
-          oddEvenStrength = 0.65 + (evenRate * 0.25);
-          oddEvenReason = `Most digit ${mostAppearing} (even) | Even winrate ${(evenRate * 100).toFixed(0)}%`;
-          direction = 'down';
-          if (secondMost % 2 === 0) oddEvenStrength += 0.07;
-        }
-        oddEvenStrength = Math.min(0.94, Math.max(0.55, oddEvenStrength));
-
-        if (oddEvenSignal && oddEvenStrength > 0.58) {
-          allCandidates.push({
-            type: "Odd/Even",
-            name: oddEvenSignal,
-            strength: oddEvenStrength,
-            symbol: symbol,
-            detail: oddEvenReason,
-            extra: `Most digit ${mostAppearing} → ${mostAppearing % 2 === 0 ? 'Even' : 'Odd'} bias`,
-            direction
-          });
-        }
-      }
-
-      // Strategy 3: Rise/Fall momentum
-      if (signalContractType === 'risefall' || signalContractType === 'overunder') {
-        let riseFallSignal: string | null = null;
-        let riseFallStrength = 0.5;
-        let riseFallReason = "";
-        let direction: 'up' | 'down' | 'neutral' = 'neutral';
-
-        if (riseRate > fallRate && riseRate > 0.52) {
-          riseFallSignal = "⬆️ RISE";
-          riseFallStrength = 0.6 + riseRate * 0.3;
-          riseFallReason = `Rise momentum ${(riseRate * 100).toFixed(0)}% vs Fall ${(fallRate * 100).toFixed(0)}%`;
-          direction = 'up';
-        } else if (fallRate > riseRate && fallRate > 0.52) {
-          riseFallSignal = "⬇️ FALL";
-          riseFallStrength = 0.6 + fallRate * 0.3;
-          riseFallReason = `Fall momentum ${(fallRate * 100).toFixed(0)}% vs Rise ${(riseRate * 100).toFixed(0)}%`;
-          direction = 'down';
-        } else if (overRate > underRate && overRate > 0.55) {
-          riseFallSignal = "📈 RISE (over bias)";
-          riseFallStrength = 0.58 + overRate * 0.25;
-          riseFallReason = `Over zone dominance ${(overRate * 100).toFixed(0)}%`;
-          direction = 'up';
-        } else if (underRate > overRate && underRate > 0.55) {
-          riseFallSignal = "📉 FALL (under bias)";
-          riseFallStrength = 0.58 + underRate * 0.25;
-          riseFallReason = `Under zone dominance ${(underRate * 100).toFixed(0)}%`;
-          direction = 'down';
-        }
-
-        if (riseFallSignal && riseFallStrength > 0.58) {
-          allCandidates.push({
-            type: "Rise/Fall",
-            name: riseFallSignal,
-            strength: riseFallStrength,
-            symbol: symbol,
-            detail: riseFallReason,
-            extra: `Rise:${(riseRate * 100).toFixed(0)}% Fall:${(fallRate * 100).toFixed(0)}%`,
-            direction
-          });
-        }
-      }
-
-      // Strategy 4: Digit Cluster
-      const lowZone = [0, 1, 2, 3, 4, 5, 6];
-      const highZone = [5, 6, 7, 8, 9];
-      let lowScore = 0, highScore = 0;
-      if (lowZone.includes(mostAppearing)) lowScore += 0.45;
-      if (lowZone.includes(secondMost)) lowScore += 0.3;
-      if (lowZone.includes(leastAppearing)) lowScore += 0.2;
-      if (highZone.includes(mostAppearing)) highScore += 0.45;
-      if (highZone.includes(secondMost)) highScore += 0.3;
-      if (highZone.includes(leastAppearing)) highScore += 0.2;
-
-      if (lowScore > highScore && lowScore > 0.65) {
-        const strength = 0.65 + (underRate * 0.2);
-        if (strength > 0.58) {
-          allCandidates.push({
-            type: "Digit Cluster",
-            name: "🔻 UNDER CLUSTER",
-            strength,
-            symbol: symbol,
-            detail: `Digits ${mostAppearing},${secondMost},${leastAppearing} lean 0-6 zone`,
-            extra: `Most:${mostAppearing} 2nd:${secondMost} Least:${leastAppearing}`,
-            direction: 'down'
-          });
-        }
-      } else if (highScore > lowScore && highScore > 0.65) {
-        const strength = 0.65 + (overRate * 0.2);
-        if (strength > 0.58) {
-          allCandidates.push({
-            type: "Digit Cluster",
-            name: "🔺 OVER CLUSTER",
-            strength,
-            symbol: symbol,
-            detail: `Digits ${mostAppearing},${secondMost},${leastAppearing} lean 5-9 zone`,
-            extra: `Most:${mostAppearing} 2nd:${secondMost} Least:${leastAppearing}`,
-            direction: 'up'
-          });
-        }
-      }
+  /* ── Instant Signal Generation (updates every 3 seconds) ── */
+  const updateSignals = useCallback(() => {
+    if (isAnalyzing) return;
+    setIsAnalyzing(true);
+    
+    try {
+      const signals = generateTopSignals(tickMapRef.current, signalMarketGroup, 5);
+      setTopSignals(signals);
+    } catch (error) {
+      console.error('Signal generation error:', error);
+    } finally {
+      setIsAnalyzing(false);
     }
+  }, [signalMarketGroup, isAnalyzing]);
 
-    // Sort by strength and get top 4 distinct signals
-    allCandidates.sort((a, b) => b.strength - a.strength);
-    const seen = new Set<string>();
-    const top: SignalCandidate[] = [];
-    for (const sig of allCandidates) {
-      const key = `${sig.symbol}_${sig.type}`;
-      if (!seen.has(key) && top.length < 4) {
-        seen.add(key);
-        top.push(sig);
-      }
-      if (top.length === 4) break;
-    }
-    setTopSignals(top);
-  }, [signalContractType, signalMarketGroup]);
+  /* ── Auto-update signals every 3 seconds ── */
+  useEffect(() => {
+    // Initial update after 500ms to allow some ticks to accumulate
+    const initialTimeout = setTimeout(() => {
+      updateSignals();
+    }, 500);
+    
+    // Then update every 3 seconds
+    const interval = setInterval(() => {
+      updateSignals();
+    }, 3000);
+    
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(interval);
+    };
+  }, [updateSignals]);
 
-  /* Subscribe to all scanner markets and update signals */
+  /* Subscribe to all scanner markets */
   useEffect(() => {
     if (!derivApi.isConnected) return;
     let active = true;
@@ -472,6 +498,7 @@ export default function ProScannerBot() {
       const digit = getLastDigit(data.tick.quote);
       const now = performance.now();
 
+      // Legacy tick map
       const map = tickMapRef.current;
       const arr = map.get(sym) || [];
       arr.push(digit);
@@ -479,12 +506,14 @@ export default function ProScannerBot() {
       map.set(sym, arr);
       setTickCounts(prev => ({ ...prev, [sym]: arr.length }));
 
+      // Turbo circular buffer
       if (!turboBuffersRef.current.has(sym)) {
         turboBuffersRef.current.set(sym, new CircularTickBuffer(1000));
       }
       const buf = turboBuffersRef.current.get(sym)!;
       buf.push(digit);
 
+      // Turbo latency tracking
       if (lastTickTsRef.current > 0) {
         const lat = now - lastTickTsRef.current;
         setTurboLatency(Math.round(lat));
@@ -492,14 +521,11 @@ export default function ProScannerBot() {
       }
       lastTickTsRef.current = now;
       setTicksCaptured(prev => prev + 1);
-      
-      // Trigger signal generation on every tick (throttled via RAF)
-      requestAnimationFrame(() => generateSignals());
     };
     const unsub = derivApi.onMessage(handler);
     SCANNER_MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); });
     return () => { active = false; unsub(); };
-  }, [generateSignals]);
+  }, []);
 
   /* ── Pattern validation ── */
   const cleanM1Pattern = m1Pattern.toUpperCase().replace(/[^EO]/g, '');
@@ -958,67 +984,92 @@ export default function ProScannerBot() {
         </div>
       </div>
 
-      {/* Signal Forge - Elite Signals Section */}
+      {/* Signal Forge - Elite Signals Section (UPDATES EVERY 3 SECONDS) */}
       <div className="bg-gradient-to-r from-primary/5 via-purple-500/5 to-orange-500/5 border border-primary/20 rounded-xl p-3">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-primary" />
-            <h2 className="text-sm font-bold text-foreground">⚡ SIGNAL FORGE · ELITE SIGNALS</h2>
-            <Badge variant="outline" className="text-[9px]">Real-time AI Analysis</Badge>
+            <Sparkles className="w-4 h-4 text-primary animate-pulse" />
+            <h2 className="text-sm font-bold text-foreground">⚡ SIGNAL FORGE · ELITE PATTERN SIGNALS</h2>
+            <Badge variant="outline" className="text-[9px] bg-primary/10">Updates every 3s</Badge>
+            {isAnalyzing && <Badge variant="outline" className="text-[8px] animate-pulse">Analyzing...</Badge>}
           </div>
-          <div className="flex gap-2">
-            <Select value={signalContractType} onValueChange={(v: any) => setSignalContractType(v)}>
-              <SelectTrigger className="h-7 text-[10px] w-[110px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="overunder">Over/Under</SelectItem>
-                <SelectItem value="evenodd">Odd/Even</SelectItem>
-                <SelectItem value="risefall">Rise/Fall</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={signalMarketGroup} onValueChange={(v: any) => setSignalMarketGroup(v)}>
-              <SelectTrigger className="h-7 text-[10px] w-[100px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Markets</SelectItem>
-                <SelectItem value="vol">Volatility</SelectItem>
-                <SelectItem value="jump">Jump</SelectItem>
-                <SelectItem value="bull">RDBULL</SelectItem>
-                <SelectItem value="bear">RDBEAR</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <Select value={signalMarketGroup} onValueChange={(v: any) => setSignalMarketGroup(v)}>
+            <SelectTrigger className="h-7 text-[10px] w-[110px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">🌐 All Markets</SelectItem>
+              <SelectItem value="vol">📊 Volatility</SelectItem>
+              <SelectItem value="jump">🦘 Jump</SelectItem>
+              <SelectItem value="bull">🐂 RDBULL</SelectItem>
+              <SelectItem value="bear">🐻 RDBEAR</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
+        
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           {topSignals.length === 0 ? (
-            <div className="col-span-full text-center py-6 text-muted-foreground text-xs">
-              🔮 Analyzing {Object.keys(tickMapRef.current).length} markets... Gathering tick data for elite signals
+            <div className="col-span-full text-center py-8 text-muted-foreground text-sm">
+              <Signal className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              🔮 Analyzing {Array.from(tickMapRef.current.keys()).length} markets...
+              <div className="text-xs mt-1">Fetching pattern data (updates in 3 seconds)</div>
             </div>
           ) : (
             topSignals.map((sig, idx) => {
-              const strengthPercent = (sig.strength * 100).toFixed(0);
+              const strengthPercent = Math.min(100, Math.max(30, Math.floor(sig.strength * 100)));
+              const getSignalColor = () => {
+                if (sig.type === 'OVER' || sig.type === 'ODD') return 'from-green-500/20 to-green-600/10 border-green-500/30';
+                if (sig.type === 'UNDER' || sig.type === 'EVEN') return 'from-red-500/20 to-red-600/10 border-red-500/30';
+                return 'from-orange-500/20 to-yellow-600/10 border-orange-500/30';
+              };
               return (
-                <div key={`${sig.symbol}_${sig.type}_${idx}`} className="bg-card border border-primary/30 rounded-xl p-2.5 hover:border-primary/60 transition-all">
-                  <div className="flex items-center justify-between mb-1">
-                    <Badge className="text-[8px] bg-primary/20 text-primary">#{idx + 1} · {sig.type}</Badge>
-                    <span className="text-[9px] font-mono text-muted-foreground">{sig.symbol}</span>
+                <div key={`${sig.symbol}_${sig.type}_${idx}`} className={`bg-gradient-to-br ${getSignalColor()} rounded-xl p-3 border transition-all hover:scale-[1.02]`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <Badge className="text-[9px] bg-black/30 text-white">
+                      #{idx + 1} · {sig.symbol}
+                    </Badge>
+                    <Badge variant={sig.strength > 0.7 ? 'default' : 'outline'} className="text-[8px]">
+                      {sig.type}
+                    </Badge>
                   </div>
-                  <div className="flex items-center gap-1 mt-1">
-                    {sig.direction === 'up' ? <TrendingUp className="w-3.5 h-3.5 text-profit" /> : sig.direction === 'down' ? <TrendingDown className="w-3.5 h-3.5 text-loss" /> : <Signal className="w-3.5 h-3.5 text-warning" />}
-                    <span className="text-sm font-bold">{sig.name}</span>
+                  <div className="flex items-center gap-2 mb-1">
+                    {sig.type === 'OVER' || sig.type === 'ODD' ? 
+                      <TrendingUp className="w-4 h-4 text-green-400" /> : 
+                      sig.type === 'UNDER' || sig.type === 'EVEN' ? 
+                      <TrendingDown className="w-4 h-4 text-red-400" /> : 
+                      <Signal className="w-4 h-4 text-yellow-400" />
+                    }
+                    <span className="text-lg font-bold">{sig.name}</span>
                   </div>
-                  <div className="text-[9px] text-muted-foreground mt-1 truncate">{sig.detail}</div>
+                  <div className="text-[10px] font-mono bg-black/20 rounded p-1.5 mb-2 break-all">
+                    Pattern: <span className="font-bold text-primary">{sig.pattern}</span>
+                  </div>
+                  <div className="text-[9px] text-muted-foreground line-clamp-2 mb-2">
+                    {sig.detail}
+                  </div>
                   <div className="mt-2">
                     <div className="flex justify-between text-[8px] mb-0.5">
-                      <span>Confidence</span>
+                      <span>Signal Strength</span>
                       <span className="font-bold text-primary">{strengthPercent}%</span>
                     </div>
                     <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-primary to-orange-500 rounded-full" style={{ width: `${strengthPercent}%` }} />
+                      <div className={`h-full rounded-full transition-all duration-300 ${
+                        strengthPercent > 70 ? 'bg-gradient-to-r from-green-500 to-green-400' :
+                        strengthPercent > 50 ? 'bg-gradient-to-r from-yellow-500 to-orange-400' :
+                        'bg-gradient-to-r from-orange-500 to-red-500'
+                      }`} style={{ width: `${strengthPercent}%` }} />
                     </div>
                   </div>
                 </div>
               );
             })
           )}
+        </div>
+        
+        {/* Live tick count indicator */}
+        <div className="flex justify-end mt-2">
+          <div className="text-[8px] text-muted-foreground">
+            📊 Active markets: {Array.from(tickMapRef.current.keys()).filter(k => (tickMapRef.current.get(k)?.length || 0) > 0).length} / {SCANNER_MARKETS.length} · 
+            Total ticks: {ticksCaptured}
+          </div>
         </div>
       </div>
 
