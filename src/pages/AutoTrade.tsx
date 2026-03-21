@@ -4,21 +4,20 @@ import { getLastDigit, analyzeDigits, calculateRSI, calculateMACD, calculateBoll
 import { copyTradingService } from '@/services/copy-trading-service';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLossRequirement } from '@/hooks/useLossRequirement';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
-import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown,
-  Target, ShieldAlert, Gauge, Zap, Trophy, Play, Pause, StopCircle,
+  Target, ShieldAlert, Zap, Trophy, Play, Pause, StopCircle,
   Scan, Home, RefreshCw, Eye, Anchor, Download, Upload, Bot,
+  ChevronUp, ChevronDown, EyeOff,
 } from 'lucide-react';
 
 /* ── Markets ── */
@@ -83,9 +82,7 @@ const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'D
 interface Candle { open: number; high: number; low: number; close: number; time: number; }
 interface TradeRecord { id: string; time: number; type: string; stake: number; profit: number; status: 'won' | 'lost' | 'open'; symbol: string; }
 interface LogEntry { id: number; time: string; market: 'M1' | 'M2' | 'VH'; symbol: string; contract: string; stake: number; martingaleStep: number; exitDigit: string; result: 'Win' | 'Loss' | 'Pending' | 'V-Win' | 'V-Loss'; pnl: number; balance: number; switchInfo: string; }
-interface BotConfig { version: number; botName?: string; m1: any; m2: any; risk: any; strategy: any; scanner: any; turbo: any; }
 
-/* ── Helper Functions ── */
 function buildCandles(prices: number[], times: number[], tf: string): Candle[] {
   if (prices.length === 0) return [];
   const seconds: Record<string, number> = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '12h': 43200, '1d': 86400 };
@@ -115,71 +112,6 @@ function calcEMA(prices: number[], period: number): number {
   let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
   for (let i = period; i < prices.length; i++) ema = prices[i] * k + ema * (1 - k);
   return ema;
-}
-
-function calcEMASeries(prices: number[], period: number): (number | null)[] {
-  const result: (number | null)[] = [];
-  if (prices.length < period) return prices.map(() => null);
-  const k = 2 / (period + 1);
-  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = 0; i < period; i++) result.push(null);
-  result[period - 1] = ema;
-  for (let i = period; i < prices.length; i++) { ema = prices[i] * k + ema * (1 - k); result.push(ema); }
-  return result;
-}
-
-function calcSMASeries(prices: number[], period: number): (number | null)[] {
-  const result: (number | null)[] = [];
-  for (let i = 0; i < prices.length; i++) {
-    if (i < period - 1) { result.push(null); continue; }
-    const slice = prices.slice(i - period + 1, i + 1);
-    result.push(slice.reduce((a, b) => a + b, 0) / period);
-  }
-  return result;
-}
-
-function calcBBSeries(prices: number[], period: number, mult: number = 2) {
-  const upper: (number | null)[] = [], middle: (number | null)[] = [], lower: (number | null)[] = [];
-  for (let i = 0; i < prices.length; i++) {
-    if (i < period - 1) { upper.push(null); middle.push(null); lower.push(null); continue; }
-    const slice = prices.slice(i - period + 1, i + 1);
-    const ma = slice.reduce((a, b) => a + b, 0) / period;
-    const variance = slice.reduce((s, p) => s + (p - ma) ** 2, 0) / period;
-    const std = Math.sqrt(variance);
-    upper.push(ma + mult * std); middle.push(ma); lower.push(ma - mult * std);
-  }
-  return { upper, middle, lower };
-}
-
-function calcRSISeries(prices: number[], period: number = 14): (number | null)[] {
-  const result: (number | null)[] = [null];
-  if (prices.length < period + 1) return prices.map(() => null);
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) { const d = prices[i] - prices[i - 1]; if (d > 0) gains += d; else losses -= d; result.push(null); }
-  let avgGain = gains / period, avgLoss = losses / period;
-  const rsi0 = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  result[period] = rsi0;
-  for (let i = period + 1; i < prices.length; i++) {
-    const d = prices[i] - prices[i - 1];
-    avgGain = (avgGain * (period - 1) + Math.max(0, d)) / period;
-    avgLoss = (avgLoss * (period - 1) + Math.max(0, -d)) / period;
-    result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
-  }
-  return result;
-}
-
-function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string): number[] {
-  const seconds: Record<string, number> = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '12h': 43200, '1d': 86400 };
-  const interval = seconds[tf] || 60;
-  const indices: number[] = [];
-  let lastBucket = -1;
-  for (let i = 0; i < prices.length; i++) {
-    const t = times[i] || Date.now() / 1000 + i;
-    const bucket = Math.floor(t / interval) * interval;
-    if (bucket !== lastBucket) { if (lastBucket !== -1) indices.push(i - 1); lastBucket = bucket; }
-  }
-  indices.push(prices.length - 1);
-  return indices;
 }
 
 function calcSR(prices: number[]) {
@@ -219,7 +151,10 @@ export default function UnifiedTrading() {
   const { isAuthorized, balance, activeAccount } = useAuth();
   const { recordLoss } = useLossRequirement();
 
-  // ── Chart State ──
+  // Chart visibility
+  const [chartVisible, setChartVisible] = useState(true);
+
+  // Chart State
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
   const [timeframe, setTimeframe] = useState('1m');
@@ -237,7 +172,7 @@ export default function UnifiedTrading() {
   const priceAxisStartY = useRef(0);
   const priceAxisStartWidth = useRef(7);
 
-  // ── Manual Trade State ──
+  // Manual Trade State
   const [contractType, setContractType] = useState('CALL');
   const [prediction, setPrediction] = useState('5');
   const [duration, setDuration] = useState('1');
@@ -246,7 +181,7 @@ export default function UnifiedTrading() {
   const [selectedDigit, setSelectedDigit] = useState<number | null>(null);
   const [isTrading, setIsTrading] = useState(false);
 
-  // ── Pro Scanner Bot State ──
+  // Pro Scanner Bot State
   const [m1Enabled, setM1Enabled] = useState(true);
   const [m1Contract, setM1Contract] = useState('DIGITEVEN');
   const [m1Barrier, setM1Barrier] = useState('5');
@@ -307,7 +242,7 @@ export default function UnifiedTrading() {
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
 
-  // ── Simple Bot State (Chart Bot) ──
+  // Simple Bot State
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
   const [botRunning, setBotRunning] = useState(false);
   const [botPaused, setBotPaused] = useState(false);
@@ -319,7 +254,7 @@ export default function UnifiedTrading() {
   });
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
 
-  // ── Chart Data Loading ──
+  // Chart Data Loading
   useEffect(() => {
     let active = true;
     subscribedRef.current = false;
@@ -347,7 +282,7 @@ export default function UnifiedTrading() {
     return () => { active = false; derivApi.unsubscribeTicks(symbol as MarketSymbol).catch(() => { }); };
   }, [symbol]);
 
-  // ── Scanner Tick Subscription ──
+  // Scanner Tick Subscription
   useEffect(() => {
     if (!derivApi.isConnected) return;
     let active = true;
@@ -374,7 +309,7 @@ export default function UnifiedTrading() {
     return () => { active = false; unsub(); };
   }, []);
 
-  // ── Chart Derived Data ──
+  // Chart Derived Data
   const tfTicks = TF_TICKS[timeframe] || 60;
   const tfPrices = useMemo(() => prices.slice(-tfTicks), [prices, tfTicks]);
   const tfTimes = useMemo(() => times.slice(-tfTicks), [times, tfTicks]);
@@ -390,11 +325,9 @@ export default function UnifiedTrading() {
   const rsi = useMemo(() => calculateRSI(tfPrices, 14), [tfPrices]);
   const macd = useMemo(() => calcMACDFull(tfPrices), [tfPrices]);
   const evenCount = useMemo(() => digits.filter(d => d % 2 === 0).length, [digits]);
-  const oddCount = digits.length - evenCount;
   const evenPct = digits.length > 0 ? (evenCount / digits.length * 100) : 50;
   const oddPct = 100 - evenPct;
   const overCount = useMemo(() => digits.filter(d => d > 4).length, [digits]);
-  const underCount = digits.length - overCount;
   const overPct = digits.length > 0 ? (overCount / digits.length * 100) : 50;
   const underPct = 100 - overPct;
   const bbRange = bb.upper - bb.lower || 1;
@@ -404,70 +337,217 @@ export default function UnifiedTrading() {
   const ouSignal = useMemo(() => { const conf = Math.abs(overPct - 50) * 2 + 50; return { direction: overPct > 50 ? 'Over' : 'Under', confidence: Math.min(90, Math.round(conf)) }; }, [overPct]);
   const matchSignal = useMemo(() => { const bestPct = Math.max(...percentages); return { digit: mostCommon, confidence: Math.min(90, Math.round(bestPct * 3)) }; }, [percentages, mostCommon]);
 
-  const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
-  const emaSeries = useMemo(() => calcEMASeries(tfPrices, 50), [tfPrices]);
-  const smaSeries = useMemo(() => calcSMASeries(tfPrices, 20), [tfPrices]);
-  const bbSeries = useMemo(() => calcBBSeries(tfPrices, 20, 2), [tfPrices]);
-  const rsiSeries = useMemo(() => calcRSISeries(tfPrices, 14), [tfPrices]);
-
-  // ── Canvas Drawing ──
+  // Canvas Drawing
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const onWheel = (e: WheelEvent) => { e.preventDefault(); if (e.ctrlKey || e.metaKey) setCandleWidth(prev => Math.max(2, Math.min(20, prev - Math.sign(e.deltaY)))); else { const delta = Math.sign(e.deltaY) * Math.max(3, Math.floor(candles.length * 0.03)); setScrollOffset(prev => Math.max(0, Math.min(candles.length - 10, prev + delta))); } };
-    const onMouseDown = (e: MouseEvent) => { const canvasRect = canvas.getBoundingClientRect(); const pAxisX = canvasRect.width - 70; const localX = e.clientX - canvasRect.left; if (localX >= pAxisX) { isPriceAxisDragging.current = true; priceAxisStartY.current = e.clientY; priceAxisStartWidth.current = candleWidth; canvas.style.cursor = 'ns-resize'; } else { isDragging.current = true; dragStartX.current = e.clientX; dragStartOffset.current = scrollOffset; canvas.style.cursor = 'grabbing'; } };
-    const onMouseMove = (e: MouseEvent) => { if (isPriceAxisDragging.current) { const dy = priceAxisStartY.current - e.clientY; const newWidth = Math.max(2, Math.min(24, priceAxisStartWidth.current + Math.round(dy / 8))); setCandleWidth(newWidth); return; } if (!isDragging.current) return; const dx = dragStartX.current - e.clientX; const candlesPerPx = 1 / (candleWidth + 1); const delta = Math.round(dx * candlesPerPx); setScrollOffset(Math.max(0, Math.min(candles.length - 10, dragStartOffset.current + delta))); };
-    const onMouseUp = () => { isDragging.current = false; isPriceAxisDragging.current = false; canvas.style.cursor = 'crosshair'; };
-    canvas.addEventListener('wheel', onWheel, { passive: false }); canvas.addEventListener('mousedown', onMouseDown); window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
-    return () => { canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('mousedown', onMouseDown); window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); };
-  }, [candles.length, scrollOffset, candleWidth]);
-
-  useEffect(() => {
+    if (!chartVisible) return;
     const canvas = canvasRef.current;
     if (!canvas || candles.length < 2) return;
-    const ctx = canvas.getContext('2d'); if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1; const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr; canvas.height = rect.height * dpr; ctx.scale(dpr, dpr);
-    const W = rect.width; const totalH = rect.height; const rsiH = 80; const H = totalH - rsiH - 8; const priceAxisW = 70; const chartW = W - priceAxisW;
-    ctx.fillStyle = '#0D1117'; ctx.fillRect(0, 0, W, totalH);
-    const gap = 1; const totalCandleW = candleWidth + gap; const maxVisible = Math.floor(chartW / totalCandleW);
-    const endIdx = candles.length - scrollOffset; const startIdx = Math.max(0, endIdx - maxVisible);
-    const visibleCandles = candles.slice(startIdx, endIdx); const visibleEndIndices = candleEndIndices.slice(startIdx, endIdx);
-    if (visibleCandles.length < 1) return;
-    const allPrices = visibleCandles.flatMap(c => [c.high, c.low]);
-    for (let i = 0; i < visibleCandles.length; i++) { const idx = visibleEndIndices[i]; if (idx === undefined) continue; const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null; const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null; if (u !== null) allPrices.push(u); if (l !== null) allPrices.push(l); }
-    const rawMin = Math.min(...allPrices); const rawMax = Math.max(...allPrices); const priceRange = rawMax - rawMin; const padding = priceRange * 0.12 || 0.001;
-    const minP = rawMin - padding; const maxP = rawMax + padding; const range = maxP - minP || 1;
-    const chartPadTop = 20; const chartPadBot = 20; const drawH = H - chartPadTop - chartPadBot;
-    const toY = (p: number) => chartPadTop + ((maxP - p) / range) * drawH;
-    ctx.strokeStyle = '#21262D'; ctx.lineWidth = 0.5; const gridSteps = 8; ctx.font = '9px JetBrains Mono, monospace'; ctx.fillStyle = '#484F58';
-    for (let i = 0; i <= gridSteps; i++) { const y = chartPadTop + (i / gridSteps) * drawH; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke(); const pLabel = maxP - (i / gridSteps) * range; ctx.fillText(pLabel.toFixed(4), chartW + 4, y + 3); }
-    for (let i = 0; i < 10; i++) { const x = (chartW / 10) * i; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-    const offsetX = 5;
-    const drawLine = (values: (number | null)[], color: string, width: number, dash: number[] = []) => { ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash); ctx.beginPath(); let started = false; for (let i = 0; i < visibleCandles.length; i++) { const idx = visibleEndIndices[i]; if (idx === undefined) continue; const v = idx < values.length ? values[idx] : null; if (v === null) continue; const x = offsetX + i * totalCandleW + candleWidth / 2; const y = toY(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); } ctx.stroke(); ctx.setLineDash([]); };
-    ctx.fillStyle = 'rgba(188, 140, 255, 0.06)'; const bbUpperPoints: { x: number; y: number }[] = []; const bbLowerPoints: { x: number; y: number }[] = [];
-    for (let i = 0; i < visibleCandles.length; i++) { const idx = visibleEndIndices[i]; if (idx === undefined) continue; const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null; const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null; if (u === null || l === null) continue; const x = offsetX + i * totalCandleW + candleWidth / 2; bbUpperPoints.push({ x, y: toY(u) }); bbLowerPoints.push({ x, y: toY(l) }); }
-    if (bbUpperPoints.length > 1) { ctx.beginPath(); ctx.moveTo(bbUpperPoints[0].x, bbUpperPoints[0].y); bbUpperPoints.forEach(p => ctx.lineTo(p.x, p.y)); for (let i = bbLowerPoints.length - 1; i >= 0; i--) ctx.lineTo(bbLowerPoints[i].x, bbLowerPoints[i].y); ctx.closePath(); ctx.fill(); }
-    drawLine(bbSeries.upper, '#BC8CFF', 1.2, [5, 3]); drawLine(bbSeries.middle, '#BC8CFF', 1.5); drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3]); drawLine(emaSeries, '#2F81F7', 1.5); drawLine(smaSeries, '#E6B422', 1.5);
-    ctx.setLineDash([6, 4]); ctx.strokeStyle = '#3FB950'; ctx.lineWidth = 1.5; const supY = toY(support); ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(chartW, supY); ctx.stroke();
-    ctx.strokeStyle = '#F85149'; const resY = toY(resistance); ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(chartW, resY); ctx.stroke(); ctx.setLineDash([]);
-    ctx.font = '9px JetBrains Mono, monospace'; ctx.fillStyle = '#3FB950'; ctx.fillRect(chartW, supY - 7, priceAxisW, 14); ctx.fillStyle = '#0D1117'; ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
-    ctx.fillStyle = '#F85149'; ctx.fillRect(chartW, resY - 7, priceAxisW, 14); ctx.fillStyle = '#0D1117'; ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
-    for (let i = 0; i < visibleCandles.length; i++) { const c = visibleCandles[i]; const x = offsetX + i * totalCandleW; const isGreen = c.close >= c.open; const color = isGreen ? '#3FB950' : '#F85149'; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + candleWidth / 2, toY(c.high)); ctx.lineTo(x + candleWidth / 2, toY(c.low)); ctx.stroke(); const bodyTop = toY(Math.max(c.open, c.close)); const bodyBot = toY(Math.min(c.open, c.close)); const bodyH = Math.max(1, bodyBot - bodyTop); ctx.fillStyle = color; ctx.fillRect(x, bodyTop, candleWidth, bodyH); }
-    const curY = toY(currentPrice); ctx.setLineDash([2, 2]); ctx.strokeStyle = '#E6EDF3'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, curY); ctx.lineTo(chartW, curY); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = '#58A6FF'; ctx.fillRect(chartW, curY - 8, priceAxisW, 16); ctx.fillStyle = '#0D1117'; ctx.font = 'bold 10px JetBrains Mono, monospace'; ctx.fillText(currentPrice.toFixed(4), chartW + 2, curY + 4);
-    ctx.font = '10px JetBrains Mono, monospace'; const legends = [{ label: 'BB(20,2)', color: '#BC8CFF' }, { label: 'SMA 20', color: '#E6B422' }, { label: 'EMA 50', color: '#2F81F7' }, { label: 'Support', color: '#3FB950' }, { label: 'Resistance', color: '#F85149' }]; let lx = 8; legends.forEach(l => { ctx.fillStyle = l.color; ctx.fillRect(lx, 6, 10, 3); ctx.fillText(l.label, lx + 14, 12); lx += ctx.measureText(l.label).width + 24; });
-    ctx.fillStyle = '#484F58'; ctx.font = '9px JetBrains Mono, monospace'; ctx.fillText(`${visibleCandles.length} candles | Scroll: wheel | Zoom: Ctrl+wheel | Drag to pan`, 8, H - 6);
-    const rsiTop = H + 8; ctx.fillStyle = '#161B22'; ctx.fillRect(0, rsiTop, W, rsiH); ctx.strokeStyle = '#21262D'; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
-    const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8); ctx.font = '8px JetBrains Mono, monospace';
-    [30, 50, 70].forEach(level => { const y = rsiToY(level); ctx.setLineDash([3, 3]); ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050'); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = '#484F58'; ctx.fillText(String(level), chartW + 4, y + 3); });
-    ctx.fillStyle = '#8B949E'; ctx.font = '9px JetBrains Mono, monospace'; ctx.fillText('RSI(14)', 4, rsiTop + 12);
-    ctx.strokeStyle = '#D29922'; ctx.lineWidth = 1.5; ctx.beginPath(); let rsiStarted = false;
-    for (let i = 0; i < visibleCandles.length; i++) { const idx = visibleEndIndices[i]; if (idx === undefined) continue; const v = idx < rsiSeries.length ? rsiSeries[idx] : null; if (v === null) continue; const x = offsetX + i * totalCandleW + candleWidth / 2; const y = rsiToY(v); if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; } else ctx.lineTo(x, y); } ctx.stroke();
-    const lastRsi = rsi; const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922'; ctx.fillStyle = rsiColor; ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14); ctx.fillStyle = '#0D1117'; ctx.font = 'bold 9px JetBrains Mono, monospace'; ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
-    ctx.fillStyle = 'rgba(248, 81, 73, 0.04)'; ctx.fillRect(0, rsiTop, chartW, rsiToY(70) - rsiTop); ctx.fillStyle = 'rgba(63, 185, 80, 0.04)'; ctx.fillRect(0, rsiToY(30), chartW, rsiTop + rsiH - rsiToY(30));
-  }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, smaSeries, bbSeries, rsiSeries, rsi, candleWidth, scrollOffset]);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  // ── Pattern/Digit Helpers ──
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width;
+    const totalH = rect.height;
+    const rsiH = 80;
+    const H = totalH - rsiH - 8;
+    const priceAxisW = 70;
+    const chartW = W - priceAxisW;
+
+    ctx.fillStyle = '#0D1117';
+    ctx.fillRect(0, 0, W, totalH);
+
+    const gap = 1;
+    const totalCandleW = candleWidth + gap;
+    const maxVisible = Math.floor(chartW / totalCandleW);
+    const endIdx = candles.length - scrollOffset;
+    const startIdx = Math.max(0, endIdx - maxVisible);
+    const visibleCandles = candles.slice(startIdx, endIdx);
+
+    if (visibleCandles.length < 1) return;
+
+    const allPrices = visibleCandles.flatMap(c => [c.high, c.low]);
+    const rawMin = Math.min(...allPrices);
+    const rawMax = Math.max(...allPrices);
+    const priceRange = rawMax - rawMin;
+    const padding = priceRange * 0.12 || 0.001;
+    const minP = rawMin - padding;
+    const maxP = rawMax + padding;
+    const range = maxP - minP || 1;
+    const chartPadTop = 20;
+    const drawH = H - chartPadTop - 20;
+    const toY = (p: number) => chartPadTop + ((maxP - p) / range) * drawH;
+
+    ctx.strokeStyle = '#21262D';
+    ctx.lineWidth = 0.5;
+    const gridSteps = 8;
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillStyle = '#484F58';
+    for (let i = 0; i <= gridSteps; i++) {
+      const y = chartPadTop + (i / gridSteps) * drawH;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+      const pLabel = maxP - (i / gridSteps) * range;
+      ctx.fillText(pLabel.toFixed(4), chartW + 4, y + 3);
+    }
+
+    const offsetX = 5;
+    for (let i = 0; i < visibleCandles.length; i++) {
+      const c = visibleCandles[i];
+      const x = offsetX + i * totalCandleW;
+      const isGreen = c.close >= c.open;
+      const color = isGreen ? '#3FB950' : '#F85149';
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x + candleWidth / 2, toY(c.high));
+      ctx.lineTo(x + candleWidth / 2, toY(c.low));
+      ctx.stroke();
+
+      const bodyTop = toY(Math.max(c.open, c.close));
+      const bodyBot = toY(Math.min(c.open, c.close));
+      const bodyH = Math.max(1, bodyBot - bodyTop);
+      ctx.fillStyle = color;
+      ctx.fillRect(x, bodyTop, candleWidth, bodyH);
+    }
+
+    const curY = toY(currentPrice);
+    ctx.setLineDash([2, 2]);
+    ctx.strokeStyle = '#E6EDF3';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, curY); ctx.lineTo(chartW, curY); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#58A6FF';
+    ctx.fillRect(chartW, curY - 8, priceAxisW, 16);
+    ctx.fillStyle = '#0D1117';
+    ctx.font = 'bold 10px JetBrains Mono, monospace';
+    ctx.fillText(currentPrice.toFixed(4), chartW + 2, curY + 4);
+
+    // Support/Resistance lines
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = '#3FB950';
+    ctx.lineWidth = 1.5;
+    const supY = toY(support);
+    ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(chartW, supY); ctx.stroke();
+
+    ctx.strokeStyle = '#F85149';
+    const resY = toY(resistance);
+    ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(chartW, resY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillStyle = '#3FB950';
+    ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
+    ctx.fillStyle = '#F85149';
+    ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
+
+    // RSI subplot
+    const rsiTop = H + 8;
+    ctx.fillStyle = '#161B22';
+    ctx.fillRect(0, rsiTop, W, rsiH);
+    ctx.strokeStyle = '#21262D';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
+
+    const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8);
+    ctx.font = '8px JetBrains Mono, monospace';
+    [30, 50, 70].forEach(level => {
+      const y = rsiToY(level);
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050');
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#484F58';
+      ctx.fillText(String(level), chartW + 4, y + 3);
+    });
+
+    ctx.fillStyle = '#8B949E';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillText('RSI(14)', 4, rsiTop + 12);
+
+    // RSI value
+    const lastRsi = rsi;
+    const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922';
+    ctx.fillStyle = rsiColor;
+    ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.font = 'bold 9px JetBrains Mono, monospace';
+    ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
+  }, [candles, support, resistance, currentPrice, rsi, candleWidth, scrollOffset, chartVisible]);
+
+  // Canvas mouse handlers
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !chartVisible) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        setCandleWidth(prev => Math.max(2, Math.min(20, prev - Math.sign(e.deltaY))));
+      } else {
+        const delta = Math.sign(e.deltaY) * Math.max(3, Math.floor(candles.length * 0.03));
+        setScrollOffset(prev => Math.max(0, Math.min(candles.length - 10, prev + delta)));
+      }
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      const canvasRect = canvas.getBoundingClientRect();
+      const pAxisX = canvasRect.width - 70;
+      const localX = e.clientX - canvasRect.left;
+      if (localX >= pAxisX) {
+        isPriceAxisDragging.current = true;
+        priceAxisStartY.current = e.clientY;
+        priceAxisStartWidth.current = candleWidth;
+        canvas.style.cursor = 'ns-resize';
+      } else {
+        isDragging.current = true;
+        dragStartX.current = e.clientX;
+        dragStartOffset.current = scrollOffset;
+        canvas.style.cursor = 'grabbing';
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (isPriceAxisDragging.current) {
+        const dy = priceAxisStartY.current - e.clientY;
+        const newWidth = Math.max(2, Math.min(24, priceAxisStartWidth.current + Math.round(dy / 8)));
+        setCandleWidth(newWidth);
+        return;
+      }
+      if (!isDragging.current) return;
+      const dx = dragStartX.current - e.clientX;
+      const candlesPerPx = 1 / (candleWidth + 1);
+      const delta = Math.round(dx * candlesPerPx);
+      setScrollOffset(Math.max(0, Math.min(candles.length - 10, dragStartOffset.current + delta)));
+    };
+
+    const onMouseUp = () => {
+      isDragging.current = false;
+      isPriceAxisDragging.current = false;
+      canvas.style.cursor = 'crosshair';
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [candles.length, scrollOffset, candleWidth, chartVisible]);
+
+  // Pattern/Digit Helpers
   const cleanM1Pattern = m1Pattern.toUpperCase().replace(/[^EO]/g, '');
   const m1PatternValid = cleanM1Pattern.length >= 2;
   const cleanM2Pattern = m2Pattern.toUpperCase().replace(/[^EO]/g, '');
@@ -477,35 +557,60 @@ export default function UnifiedTrading() {
     const digits = tickMapRef.current.get(symbol) || [];
     if (digits.length < cleanPat.length) return false;
     const recent = digits.slice(-cleanPat.length);
-    for (let i = 0; i < cleanPat.length; i++) { const expected = cleanPat[i]; const actual = recent[i] % 2 === 0 ? 'E' : 'O'; if (expected !== actual) return false; }
+    for (let i = 0; i < cleanPat.length; i++) {
+      const expected = cleanPat[i];
+      const actual = recent[i] % 2 === 0 ? 'E' : 'O';
+      if (expected !== actual) return false;
+    }
     return true;
   }, []);
 
   const checkDigitConditionWith = useCallback((symbol: string, condition: string, compare: string, window: string): boolean => {
     const digits = tickMapRef.current.get(symbol) || [];
-    const win = parseInt(window) || 3; const comp = parseInt(compare);
+    const win = parseInt(window) || 3;
+    const comp = parseInt(compare);
     if (digits.length < win) return false;
     const recent = digits.slice(-win);
-    return recent.every(d => { switch (condition) { case '>': return d > comp; case '<': return d < comp; case '>=': return d >= comp; case '<=': return d <= comp; case '==': return d === comp; default: return false; } });
+    return recent.every(d => {
+      switch (condition) {
+        case '>': return d > comp;
+        case '<': return d < comp;
+        case '>=': return d >= comp;
+        case '<=': return d <= comp;
+        case '==': return d === comp;
+        default: return false;
+      }
+    });
   }, []);
 
   const checkStrategyForMarket = useCallback((symbol: string, market: 1 | 2): boolean => {
     const mode = market === 1 ? m1StrategyMode : m2StrategyMode;
-    if (mode === 'pattern') { const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern; return checkPatternMatchWith(symbol, pat); }
-    const cond = market === 1 ? m1DigitCondition : m2DigitCondition; const comp = market === 1 ? m1DigitCompare : m2DigitCompare; const win = market === 1 ? m1DigitWindow : m2DigitWindow;
+    if (mode === 'pattern') {
+      const pat = market === 1 ? cleanM1Pattern : cleanM2Pattern;
+      return checkPatternMatchWith(symbol, pat);
+    }
+    const cond = market === 1 ? m1DigitCondition : m2DigitCondition;
+    const comp = market === 1 ? m1DigitCompare : m2DigitCompare;
+    const win = market === 1 ? m1DigitWindow : m2DigitWindow;
     return checkDigitConditionWith(symbol, cond, comp, win);
   }, [m1StrategyMode, m2StrategyMode, cleanM1Pattern, cleanM2Pattern, checkPatternMatchWith, checkDigitConditionWith, m1DigitCondition, m1DigitCompare, m1DigitWindow, m2DigitCondition, m2DigitCompare, m2DigitWindow]);
 
-  const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => { for (const m of SCANNER_MARKETS) if (checkStrategyForMarket(m.symbol, market)) return m.symbol; return null; }, [checkStrategyForMarket]);
+  const findScannerMatchForMarket = useCallback((market: 1 | 2): string | null => {
+    for (const m of SCANNER_MARKETS) if (checkStrategyForMarket(m.symbol, market)) return m.symbol;
+    return null;
+  }, [checkStrategyForMarket]);
 
-  // ── Logging ──
+  // Logging
   const addLog = useCallback((id: number, entry: Omit<LogEntry, 'id'>) => { setLogEntries(prev => [{ ...entry, id }, ...prev].slice(0, 100)); }, []);
   const updateLog = useCallback((id: number, updates: Partial<LogEntry>) => { setLogEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e)); }, []);
   const clearLog = useCallback(() => { setLogEntries([]); setWins(0); setLosses(0); setTotalStaked(0); setNetProfit(0); setMartingaleStepState(0); setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle'); setTicksCaptured(0); setTicksMissed(0); }, []);
 
-  // ── Real Trade Execution ──
+  // Real Trade Execution
   const executeRealTrade = useCallback(async (cfg: { contract: string; barrier: string; symbol: string }, tradeSymbol: string, cStake: number, mStep: number, mkt: 1 | 2, localBalance: number, localPnl: number, baseStake: number) => {
-    const logId = ++logIdRef.current; const now = new Date().toLocaleTimeString(); setTotalStaked(prev => prev + cStake); setCurrentStakeState(cStake);
+    const logId = ++logIdRef.current;
+    const now = new Date().toLocaleTimeString();
+    setTotalStaked(prev => prev + cStake);
+    setCurrentStakeState(cStake);
     addLog(logId, { time: now, market: mkt === 1 ? 'M1' : 'M2', symbol: tradeSymbol, contract: cfg.contract, stake: cStake, martingaleStep: mStep, exitDigit: '...', result: 'Pending', pnl: 0, balance: localBalance, switchInfo: '' });
     let inRecovery = mkt === 2;
     try {
@@ -515,21 +620,43 @@ export default function UnifiedTrading() {
       const { contractId } = await derivApi.buyContract(buyParams);
       if (copyTradingService.enabled) copyTradingService.copyTrade({ ...buyParams, masterTradeId: contractId }).catch(err => console.error('Copy trading error:', err));
       const result = await derivApi.waitForContractResult(contractId);
-      const won = result.status === 'won'; const pnl = result.profit; localPnl += pnl; localBalance += pnl; const exitDigit = String(getLastDigit(result.sellPrice || 0));
+      const won = result.status === 'won';
+      const pnl = result.profit;
+      localPnl += pnl;
+      localBalance += pnl;
+      const exitDigit = String(getLastDigit(result.sellPrice || 0));
       let switchInfo = '';
-      if (won) { setWins(prev => prev + 1); if (inRecovery) { switchInfo = '✓ Recovery WIN → Back to M1'; inRecovery = false; } else { switchInfo = '→ Continue M1'; } mStep = 0; cStake = baseStake; }
-      else { setLosses(prev => prev + 1); if (activeAccount?.is_virtual) recordLoss(cStake, tradeSymbol, 6000); if (!inRecovery && m2Enabled) { inRecovery = true; switchInfo = '✗ Loss → Switch to M2'; } else { switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1'; } if (martingaleOn) { const maxS = parseInt(martingaleMaxSteps) || 5; if (mStep < maxS) { cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2)); mStep++; } else { mStep = 0; cStake = baseStake; } } }
-      setNetProfit(prev => prev + pnl); setMartingaleStepState(mStep); setCurrentStakeState(cStake);
+      if (won) {
+        setWins(prev => prev + 1);
+        if (inRecovery) { switchInfo = '✓ Recovery WIN → Back to M1'; inRecovery = false; } else { switchInfo = '→ Continue M1'; }
+        mStep = 0;
+        cStake = baseStake;
+      } else {
+        setLosses(prev => prev + 1);
+        if (activeAccount?.is_virtual) recordLoss(cStake, tradeSymbol, 6000);
+        if (!inRecovery && m2Enabled) { inRecovery = true; switchInfo = '✗ Loss → Switch to M2'; } else { switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1'; }
+        if (martingaleOn) {
+          const maxS = parseInt(martingaleMaxSteps) || 5;
+          if (mStep < maxS) { cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2)); mStep++; } else { mStep = 0; cStake = baseStake; }
+        }
+      }
+      setNetProfit(prev => prev + pnl);
+      setMartingaleStepState(mStep);
+      setCurrentStakeState(cStake);
       updateLog(logId, { exitDigit, result: won ? 'Win' : 'Loss', pnl, balance: localBalance, switchInfo });
       let shouldBreak = false;
       if (localPnl >= parseFloat(takeProfit)) { toast.success(`🎯 Take Profit! +$${localPnl.toFixed(2)}`); shouldBreak = true; }
       if (localPnl <= -parseFloat(stopLoss)) { toast.error(`🛑 Stop Loss! $${localPnl.toFixed(2)}`); shouldBreak = true; }
       if (localBalance < cStake) { toast.error('Insufficient balance'); shouldBreak = true; }
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
-    } catch (err: any) { updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: `Error: ${err.message}` }); if (!turboMode) await new Promise(r => setTimeout(r, 2000)); return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false }; }
+    } catch (err: any) {
+      updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: `Error: ${err.message}` });
+      if (!turboMode) await new Promise(r => setTimeout(r, 2000));
+      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
+    }
   }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
 
-  // ── Pro Scanner Bot Main Loop ──
+  // Pro Scanner Bot Main Loop
   const startProBot = useCallback(async () => {
     if (!isAuthorized || isRunning) return;
     const baseStake = parseFloat(stake);
@@ -538,55 +665,119 @@ export default function UnifiedTrading() {
     if (strategyM1Enabled && m1StrategyMode === 'pattern' && !m1PatternValid) { toast.error('Invalid M1 pattern (min 2 E/O)'); return; }
     if (strategyEnabled && m2StrategyMode === 'pattern' && !m2PatternValid) { toast.error('Invalid M2 pattern (min 2 E/O)'); return; }
 
-    setIsRunning(true); runningRef.current = true; setCurrentMarket(1); setBotStatus('trading_m1'); setCurrentStakeState(baseStake); setMartingaleStepState(0);
-    setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
+    setIsRunning(true);
+    runningRef.current = true;
+    setCurrentMarket(1);
+    setBotStatus('trading_m1');
+    setCurrentStakeState(baseStake);
+    setMartingaleStepState(0);
+    setVhFakeWins(0);
+    setVhFakeLosses(0);
+    setVhConsecLosses(0);
+    setVhStatus('idle');
 
-    let cStake = baseStake; let mStep = 0; let inRecovery = false; let localPnl = 0; let localBalance = balance;
+    let cStake = baseStake;
+    let mStep = 0;
+    let inRecovery = false;
+    let localPnl = 0;
+    let localBalance = balance;
     const getConfig = (market: 1 | 2) => ({ contract: market === 1 ? m1Contract : m2Contract, barrier: market === 1 ? m1Barrier : m2Barrier, symbol: market === 1 ? m1Symbol : m2Symbol });
 
     while (runningRef.current) {
-      const mkt: 1 | 2 = inRecovery ? 2 : 1; setCurrentMarket(mkt);
+      const mkt: 1 | 2 = inRecovery ? 2 : 1;
+      setCurrentMarket(mkt);
       if (mkt === 1 && !m1Enabled) { if (m2Enabled) { inRecovery = true; continue; } else break; }
       if (mkt === 2 && !m2Enabled) { inRecovery = false; continue; }
 
-      let tradeSymbol: string; const cfg = getConfig(mkt); const hookEnabled = mkt === 1 ? m1HookEnabled : m2HookEnabled;
-      const requiredLosses = parseInt(mkt === 1 ? m1VirtualLossCount : m2VirtualLossCount) || 3; const realCount = parseInt(mkt === 1 ? m1RealCount : m2RealCount) || 2;
+      let tradeSymbol: string;
+      const cfg = getConfig(mkt);
+      const hookEnabled = mkt === 1 ? m1HookEnabled : m2HookEnabled;
+      const requiredLosses = parseInt(mkt === 1 ? m1VirtualLossCount : m2VirtualLossCount) || 3;
+      const realCount = parseInt(mkt === 1 ? m1RealCount : m2RealCount) || 2;
 
       if (inRecovery && strategyEnabled) {
-        setBotStatus('waiting_pattern'); let matched = false; let matchedSymbol = '';
-        while (runningRef.current && !matched) { if (scannerActive) { const found = findScannerMatchForMarket(2); if (found) { matched = true; matchedSymbol = found; } } else { if (checkStrategyForMarket(cfg.symbol, 2)) { matched = true; matchedSymbol = cfg.symbol; } } if (!matched) { await new Promise<void>(r => { if (turboMode) requestAnimationFrame(() => r()); else setTimeout(r, 500); }); } }
-        if (!runningRef.current) break; setBotStatus('pattern_matched'); tradeSymbol = matchedSymbol; if (!turboMode) await new Promise(r => setTimeout(r, 300));
+        setBotStatus('waiting_pattern');
+        let matched = false;
+        let matchedSymbol = '';
+        while (runningRef.current && !matched) {
+          if (scannerActive) { const found = findScannerMatchForMarket(2); if (found) { matched = true; matchedSymbol = found; } } else { if (checkStrategyForMarket(cfg.symbol, 2)) { matched = true; matchedSymbol = cfg.symbol; } }
+          if (!matched) { await new Promise<void>(r => { if (turboMode) requestAnimationFrame(() => r()); else setTimeout(r, 500); }); }
+        }
+        if (!runningRef.current) break;
+        setBotStatus('pattern_matched');
+        tradeSymbol = matchedSymbol;
+        if (!turboMode) await new Promise(r => setTimeout(r, 300));
       } else if (!inRecovery && strategyM1Enabled) {
-        setBotStatus('waiting_pattern'); let matched = false;
-        while (runningRef.current && !matched) { if (checkStrategyForMarket(cfg.symbol, 1)) { matched = true; } if (!matched) { await new Promise<void>(r => { if (turboMode) requestAnimationFrame(() => r()); else setTimeout(r, 500); }); } }
-        if (!runningRef.current) break; setBotStatus('pattern_matched'); tradeSymbol = cfg.symbol; if (!turboMode) await new Promise(r => setTimeout(r, 300));
-      } else { setBotStatus(mkt === 1 ? 'trading_m1' : 'recovery'); tradeSymbol = cfg.symbol; }
+        setBotStatus('waiting_pattern');
+        let matched = false;
+        while (runningRef.current && !matched) {
+          if (checkStrategyForMarket(cfg.symbol, 1)) { matched = true; }
+          if (!matched) { await new Promise<void>(r => { if (turboMode) requestAnimationFrame(() => r()); else setTimeout(r, 500); }); }
+        }
+        if (!runningRef.current) break;
+        setBotStatus('pattern_matched');
+        tradeSymbol = cfg.symbol;
+        if (!turboMode) await new Promise(r => setTimeout(r, 300));
+      } else {
+        setBotStatus(mkt === 1 ? 'trading_m1' : 'recovery');
+        tradeSymbol = cfg.symbol;
+      }
 
       if (hookEnabled) {
-        setBotStatus('virtual_hook'); setVhStatus('waiting'); setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0);
-        let consecLosses = 0; let virtualTradeNum = 0;
+        setBotStatus('virtual_hook');
+        setVhStatus('waiting');
+        setVhFakeWins(0);
+        setVhFakeLosses(0);
+        setVhConsecLosses(0);
+        let consecLosses = 0;
+        let virtualTradeNum = 0;
         while (consecLosses < requiredLosses && runningRef.current) {
-          virtualTradeNum++; const vLogId = ++logIdRef.current; const vNow = new Date().toLocaleTimeString();
+          virtualTradeNum++;
+          const vLogId = ++logIdRef.current;
+          const vNow = new Date().toLocaleTimeString();
           addLog(vLogId, { time: vNow, market: 'VH', symbol: tradeSymbol, contract: cfg.contract, stake: 0, martingaleStep: 0, exitDigit: '...', result: 'Pending', pnl: 0, balance: localBalance, switchInfo: `Virtual #${virtualTradeNum} (losses: ${consecLosses}/${requiredLosses})` });
-          const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol); if (!runningRef.current) break;
+          const vResult = await simulateVirtualContract(cfg.contract, cfg.barrier, tradeSymbol);
+          if (!runningRef.current) break;
           if (vResult.won) { consecLosses = 0; setVhConsecLosses(0); setVhFakeWins(prev => prev + 1); updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Win', switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` }); }
           else { consecLosses++; setVhConsecLosses(consecLosses); setVhFakeLosses(prev => prev + 1); updateLog(vLogId, { exitDigit: String(vResult.digit), result: 'V-Loss', switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` }); }
         }
-        if (!runningRef.current) break; setVhStatus('confirmed'); toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
-        for (let ri = 0; ri < realCount && runningRef.current; ri++) { const result = await executeRealTrade(cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake); if (!result || !runningRef.current) break; localPnl = result.localPnl; localBalance = result.localBalance; cStake = result.cStake; mStep = result.mStep; inRecovery = result.inRecovery; if (result.shouldBreak) { runningRef.current = false; break; } }
-        setVhStatus('idle'); setVhConsecLosses(0); if (!runningRef.current) break; continue;
+        if (!runningRef.current) break;
+        setVhStatus('confirmed');
+        toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
+        for (let ri = 0; ri < realCount && runningRef.current; ri++) {
+          const result = await executeRealTrade(cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake);
+          if (!result || !runningRef.current) break;
+          localPnl = result.localPnl;
+          localBalance = result.localBalance;
+          cStake = result.cStake;
+          mStep = result.mStep;
+          inRecovery = result.inRecovery;
+          if (result.shouldBreak) { runningRef.current = false; break; }
+        }
+        setVhStatus('idle');
+        setVhConsecLosses(0);
+        if (!runningRef.current) break;
+        continue;
       }
 
       const result = await executeRealTrade(cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake);
-      if (!result || !runningRef.current) break; localPnl = result.localPnl; localBalance = result.localBalance; cStake = result.cStake; mStep = result.mStep; inRecovery = result.inRecovery;
-      if (result.shouldBreak) break; if (!turboMode) await new Promise(r => setTimeout(r, 400));
+      if (!result || !runningRef.current) break;
+      localPnl = result.localPnl;
+      localBalance = result.localBalance;
+      cStake = result.cStake;
+      mStep = result.mStep;
+      inRecovery = result.inRecovery;
+      if (result.shouldBreak) break;
+      if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
-    setIsRunning(false); runningRef.current = false; setBotStatus('idle');
+    setIsRunning(false);
+    runningRef.current = false;
+    setBotStatus('idle');
   }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Contract, m2Contract, m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, m1StrategyMode, m2StrategyMode, m1PatternValid, m2PatternValid, scannerActive, findScannerMatchForMarket, checkStrategyForMarket, addLog, updateLog, turboMode, m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount, executeRealTrade]);
 
   const stopProBot = useCallback(() => { runningRef.current = false; setIsRunning(false); setBotStatus('idle'); }, []);
 
-  // ── Simple Bot Functions ──
+  // Simple Bot Functions
   const startSimpleBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     setBotRunning(true); setBotPaused(false); botRunningRef.current = true; botPausedRef.current = false;
@@ -612,7 +803,7 @@ export default function UnifiedTrading() {
   const stopSimpleBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
   const togglePauseSimpleBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
 
-  // ── UI Helpers ──
+  // UI Helpers
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
   const totalTrades = tradeHistory.filter(t => t.status !== 'open').length;
@@ -622,7 +813,6 @@ export default function UnifiedTrading() {
   const winRate = totalTrades > 0 ? (simpleWins / totalTrades * 100) : 0;
   const statusConfig: Record<BotStatus, { icon: string; label: string; color: string }> = { idle: { icon: '⚪', label: 'IDLE', color: 'text-muted-foreground' }, trading_m1: { icon: '🟢', label: 'TRADING M1', color: 'text-profit' }, recovery: { icon: '🟣', label: 'RECOVERY MODE', color: 'text-purple-400' }, waiting_pattern: { icon: '🟡', label: 'WAITING PATTERN', color: 'text-warning' }, pattern_matched: { icon: '✅', label: 'PATTERN MATCHED', color: 'text-profit' }, virtual_hook: { icon: '🎣', label: 'VIRTUAL HOOK', color: 'text-primary' } };
   const proStatus = statusConfig[botStatus];
-
   const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
   const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
 
@@ -645,65 +835,75 @@ export default function UnifiedTrading() {
 
   return (
     <div className="space-y-4 max-w-[1920px] mx-auto p-4">
-      <Tabs defaultValue="chart" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 mb-4">
-          <TabsTrigger value="chart" className="flex items-center gap-2"><BarChart3 className="w-4 h-4" /> Chart & Signals</TabsTrigger>
-          <TabsTrigger value="simple-bot" className="flex items-center gap-2"><Bot className="w-4 h-4" /> Auto Bot</TabsTrigger>
-          <TabsTrigger value="pro-scanner" className="flex items-center gap-2"><Scan className="w-4 h-4" /> Pro Scanner Bot</TabsTrigger>
-        </TabsList>
+      {/* Chart Toggle Button */}
+      <div className="flex justify-end">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setChartVisible(!chartVisible)}
+          className="flex items-center gap-2"
+        >
+          {chartVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          {chartVisible ? 'Hide Chart' : 'Show Chart'}
+          {chartVisible ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </Button>
+      </div>
 
-        {/* TAB 1: Chart & Signals */}
-        <TabsContent value="chart" className="space-y-4">
+      {/* Collapsible Chart Section */}
+      {chartVisible && (
+        <div className="space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div><h1 className="text-xl font-bold text-foreground flex items-center gap-2"><BarChart3 className="w-5 h-5 text-primary" /> Trading Chart</h1><p className="text-xs text-muted-foreground">{marketName} • {timeframe} • {tfPrices.length} ticks</p></div>
             <Badge className="font-mono text-sm" variant="outline">{currentPrice.toFixed(4)}</Badge>
           </div>
           <div className="bg-card border border-border rounded-xl p-3"><div className="flex flex-wrap gap-1 mb-2">{GROUPS.map(g => (<Button key={g.value} size="sm" variant={groupFilter === g.value ? 'default' : 'outline'} className="h-6 text-[10px] px-2" onClick={() => setGroupFilter(g.value)}>{g.label}</Button>))}</div><div className="flex flex-wrap gap-1 max-h-20 overflow-auto">{filteredMarkets.map(m => (<Button key={m.symbol} size="sm" variant={symbol === m.symbol ? 'default' : 'ghost'} className={`h-6 text-[9px] px-2 ${symbol === m.symbol ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`} onClick={() => setSymbol(m.symbol)}>{m.name}</Button>))}</div></div>
           <div className="flex flex-wrap gap-1">{TIMEFRAMES.map(tf => (<Button key={tf} size="sm" variant={timeframe === tf ? 'default' : 'outline'} className={`h-7 text-xs px-3 ${timeframe === tf ? 'bg-primary text-primary-foreground' : ''}`} onClick={() => setTimeframe(tf)}>{tf}</Button>))}</div>
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-            <div className="xl:col-span-8 space-y-3">
-              <div className="bg-[#0D1117] border border-[#30363D] rounded-xl overflow-hidden"><canvas ref={canvasRef} className="w-full" style={{ height: 520, cursor: 'crosshair' }} /></div>
-              <div className="grid grid-cols-3 md:grid-cols-7 gap-2">{[{ label: 'Price', value: currentPrice.toFixed(4), color: 'text-foreground' }, { label: 'Last Digit', value: String(lastDigit), color: 'text-primary' }, { label: 'Support', value: support.toFixed(2), color: 'text-[#3FB950]' }, { label: 'Resistance', value: resistance.toFixed(2), color: 'text-[#F85149]' }, { label: 'BB Upper', value: bb.upper.toFixed(2), color: 'text-[#BC8CFF]' }, { label: 'BB Middle', value: bb.middle.toFixed(2), color: 'text-[#BC8CFF]' }, { label: 'BB Lower', value: bb.lower.toFixed(2), color: 'text-[#BC8CFF]' }].map(item => (<div key={item.label} className="bg-card border border-border rounded-lg p-2 text-center"><div className="text-[9px] text-muted-foreground">{item.label}</div><div className={`font-mono text-xs font-bold ${item.color}`}>{item.value}</div></div>))}</div>
-              <div className="bg-card border border-border rounded-xl p-3 space-y-3"><h3 className="text-xs font-semibold text-foreground">Digit Analysis</h3><div className="grid grid-cols-2 md:grid-cols-4 gap-2"><div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2"><div className="text-[9px] text-[#D29922]">Odd</div><div className="font-mono text-sm font-bold text-[#D29922]">{oddPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${oddPct}%` }} /></div></div><div className="bg-[#3FB950]/10 border border-[#3FB950]/30 rounded-lg p-2"><div className="text-[9px] text-[#3FB950]">Even</div><div className="font-mono text-sm font-bold text-[#3FB950]">{evenPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#3FB950] rounded-full" style={{ width: `${evenPct}%` }} /></div></div><div className="bg-primary/10 border border-primary/30 rounded-lg p-2"><div className="text-[9px] text-primary">Over 4 (5-9)</div><div className="font-mono text-sm font-bold text-primary">{overPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-primary rounded-full" style={{ width: `${overPct}%` }} /></div></div><div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2"><div className="text-[9px] text-[#D29922]">Under 5 (0-4)</div><div className="font-mono text-sm font-bold text-[#D29922]">{underPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${underPct}%` }} /></div></div></div>
-                <div className="grid grid-cols-5 md:grid-cols-10 gap-1.5">{Array.from({ length: 10 }, (_, d) => { const pct = percentages[d] || 0; const count = frequency[d] || 0; const isHot = pct > 12; const isWarm = pct > 9; const isBestMatch = d === mostCommon; const isBestDiffer = d === leastCommon; return (<button key={d} onClick={() => { setSelectedDigit(d); setPrediction(String(d)); }} className={`relative rounded-lg p-2 text-center transition-all border cursor-pointer hover:ring-2 hover:ring-primary ${selectedDigit === d ? 'ring-2 ring-primary' : ''} ${isHot ? 'bg-loss/10 border-loss/40 text-loss' : isWarm ? 'bg-warning/10 border-warning/40 text-warning' : 'bg-card border-border text-primary'}`}><div className="font-mono text-lg font-bold">{d}</div><div className="text-[8px]">{count} ({pct.toFixed(1)}%)</div><div className="h-1 bg-muted rounded-full mt-1"><div className={`h-full rounded-full ${isHot ? 'bg-loss' : isWarm ? 'bg-warning' : 'bg-primary'}`} style={{ width: `${Math.min(100, pct * 5)}%` }} /></div>{isBestMatch && <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match</Badge>}{isBestDiffer && <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Avoid</Badge>}</button>); })}</div></div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2"><div className="bg-card border border-profit/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Best Match</div><div className="font-mono text-lg font-bold text-profit">{mostCommon}</div><div className="text-[8px] text-muted-foreground">{percentages[mostCommon]?.toFixed(1)}% frequency</div></div><div className="bg-card border border-loss/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Best Differ</div><div className="font-mono text-lg font-bold text-loss">{leastCommon}</div><div className="text-[8px] text-muted-foreground">{percentages[leastCommon]?.toFixed(1)}% frequency</div></div><div className="bg-card border border-[#D29922]/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Even/Odd</div><div className={`font-mono text-lg font-bold ${evenPct > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>{evenPct > 50 ? 'EVEN' : 'ODD'}</div><div className="text-[8px] text-muted-foreground">{Math.max(evenPct, oddPct).toFixed(1)}%</div></div><div className="bg-card border border-primary/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Over/Under</div><div className={`font-mono text-lg font-bold ${overPct > 50 ? 'text-primary' : 'text-[#D29922]'}`}>{overPct > 50 ? 'OVER' : 'UNDER'}</div><div className="text-[8px] text-muted-foreground">{Math.max(overPct, underPct).toFixed(1)}%</div></div></div>
-            </div>
-            <div className="xl:col-span-4 space-y-3">
-              <div className="grid grid-cols-2 gap-2"><div className="bg-card border border-border rounded-xl p-3"><div className="flex items-center gap-1 mb-1">{riseSignal.direction === 'Rise' ? <TrendingUp className="w-3.5 h-3.5 text-profit" /> : <TrendingDown className="w-3.5 h-3.5 text-loss" />}<span className="text-[10px] font-semibold">Rise/Fall</span></div><div className={`font-mono text-sm font-bold ${riseSignal.direction === 'Rise' ? 'text-profit' : 'text-loss'}`}>{riseSignal.direction}</div><div className="text-[8px] text-muted-foreground mb-1">RSI: {rsi.toFixed(1)}</div><div className="h-1.5 bg-muted rounded-full"><div className={`h-full rounded-full ${riseSignal.direction === 'Rise' ? 'bg-profit' : 'bg-loss'}`} style={{ width: `${riseSignal.confidence}%` }} /></div><div className="text-[8px] text-right text-muted-foreground mt-0.5">{riseSignal.confidence}%</div></div><div className="bg-card border border-border rounded-xl p-3"><div className="flex items-center gap-1 mb-1"><Activity className="w-3.5 h-3.5 text-primary" /><span className="text-[10px] font-semibold">Even/Odd</span></div><div className={`font-mono text-sm font-bold ${eoSignal.direction === 'Even' ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>{eoSignal.direction}</div><div className="text-[8px] text-muted-foreground mb-1">{evenPct.toFixed(1)}% even</div><div className="h-1.5 bg-muted rounded-full"><div className={`h-full rounded-full ${eoSignal.direction === 'Even' ? 'bg-[#3FB950]' : 'bg-[#D29922]'}`} style={{ width: `${eoSignal.confidence}%` }} /></div><div className="text-[8px] text-right text-muted-foreground mt-0.5">{eoSignal.confidence}%</div></div><div className="bg-card border border-border rounded-xl p-3"><div className="flex items-center gap-1 mb-1"><ArrowUp className="w-3.5 h-3.5 text-primary" /><span className="text-[10px] font-semibold">Over/Under</span></div><div className={`font-mono text-sm font-bold ${ouSignal.direction === 'Over' ? 'text-primary' : 'text-[#D29922]'}`}>{ouSignal.direction}</div><div className="text-[8px] text-muted-foreground mb-1">{overPct.toFixed(1)}% over</div><div className="h-1.5 bg-muted rounded-full"><div className={`h-full rounded-full ${ouSignal.direction === 'Over' ? 'bg-primary' : 'bg-[#D29922]'}`} style={{ width: `${ouSignal.confidence}%` }} /></div><div className="text-[8px] text-right text-muted-foreground mt-0.5">{ouSignal.confidence}%</div></div><div className="bg-card border border-border rounded-xl p-3"><div className="flex items-center gap-1 mb-1"><Target className="w-3.5 h-3.5 text-profit" /><span className="text-[10px] font-semibold">Best Match</span></div><div className="font-mono text-sm font-bold text-profit">Digit {matchSignal.digit}</div><div className="text-[8px] text-muted-foreground mb-1">{percentages[mostCommon]?.toFixed(1)}% freq</div><div className="h-1.5 bg-muted rounded-full"><div className="h-full bg-profit rounded-full" style={{ width: `${matchSignal.confidence}%` }} /></div><div className="text-[8px] text-right text-muted-foreground mt-0.5">{matchSignal.confidence}%</div></div></div>
-              <div className="bg-card border border-border rounded-xl p-3"><h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3><div className="flex gap-1 flex-wrap justify-center">{last26.map((d, i) => { const isLast = i === last26.length - 1; const isEven = d % 2 === 0; return (<motion.div key={i} initial={isLast ? { scale: 0.8 } : {}} animate={isLast ? { scale: [1, 1.1, 1] } : {}} transition={isLast ? { duration: 1, repeat: Infinity } : {}} className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${isLast ? 'w-9 h-11 text-sm ring-2 ring-primary' : ''} ${isEven ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10' : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'}`}>{d}</motion.div>); })}</div></div>
-              <div className="bg-card border border-border rounded-xl p-3 space-y-2"><div className="flex items-center justify-between"><h3 className="text-xs font-semibold text-foreground flex items-center gap-1"><Zap className="w-3.5 h-3.5 text-primary" /> Manual Trade</h3><div className="flex items-center gap-2"><Button size="sm" variant={turboMode ? 'default' : 'outline'} className={`h-6 text-[9px] px-2 ${turboMode ? 'bg-profit hover:bg-profit/90 text-profit-foreground animate-pulse' : ''}`} onClick={() => setTurboMode(!turboMode)} disabled={botRunning}> <Zap className="w-3 h-3 mr-0.5" />{turboMode ? '⚡ TURBO' : 'Turbo'}</Button></div></div><Select value={contractType} onValueChange={setContractType}><SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select>{needsBarrier(contractType) && (<div><label className="text-[9px] text-muted-foreground">Prediction (0-9)</label><div className="grid grid-cols-5 gap-1">{Array.from({ length: 10 }, (_, i) => (<button key={i} onClick={() => setPrediction(String(i))} className={`h-6 rounded text-[10px] font-mono font-bold transition-all ${prediction === String(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'}`}>{i}</button>))}</div></div)}<div className="grid grid-cols-2 gap-2"><div><label className="text-[9px] text-muted-foreground">Stake ($)</label><Input type="number" min="0.35" step="0.01" value={tradeStake} onChange={e => setTradeStake(e.target.value)} className="h-7 text-xs" /></div><div><label className="text-[9px] text-muted-foreground">Duration</label><div className="flex gap-1"><Input type="number" min="1" value={duration} onChange={e => setDuration(e.target.value)} className="h-7 text-xs flex-1" /><Select value={durationUnit} onValueChange={setDurationUnit}><SelectTrigger className="h-7 text-xs w-16"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="t">T</SelectItem><SelectItem value="s">S</SelectItem><SelectItem value="m">M</SelectItem></SelectContent></Select></div></div></div><div className="grid grid-cols-2 gap-2"><Button onClick={() => handleBuy('buy')} disabled={isTrading || !isAuthorized} className="h-10 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground"><TrendingUp className="w-4 h-4 mr-1" /> RISE</Button><Button onClick={() => handleBuy('sell')} disabled={isTrading || !isAuthorized} variant="destructive" className="h-10 text-xs font-bold"><TrendingDown className="w-4 h-4 mr-1" /> FALL</Button></div></div>
-              <div className="bg-card border border-border rounded-xl p-3 space-y-2"><h3 className="text-xs font-semibold text-foreground flex items-center gap-1"><ShieldAlert className="w-3.5 h-3.5 text-primary" /> Technical Status</h3><div className="space-y-1.5"><div className="flex items-center justify-between text-[10px]"><span className="text-muted-foreground">RSI (14)</span><span className={`font-mono font-bold ${rsi > 70 ? 'text-loss' : rsi < 30 ? 'text-profit' : 'text-foreground'}`}>{rsi.toFixed(1)} {rsi > 70 ? '🔴 Overbought' : rsi < 30 ? '🟢 Oversold' : '⚪ Neutral'}</span></div><div className="flex items-center justify-between text-[10px]"><span className="text-muted-foreground">MACD</span><span className={`font-mono font-bold ${macd.macd > 0 ? 'text-profit' : 'text-loss'}`}>{macd.macd.toFixed(4)} {macd.macd > 0 ? '📈 Bullish' : '📉 Bearish'}</span></div><div className="flex items-center justify-between text-[10px]"><span className="text-muted-foreground">EMA 50</span><span className={`font-mono font-bold ${currentPrice > ema50 ? 'text-profit' : 'text-loss'}`}>{currentPrice > ema50 ? '📈 Above' : '📉 Below'} ({ema50.toFixed(2)})</span></div><div className="flex items-center justify-between text-[10px]"><span className="text-muted-foreground">BB Position</span><span className="font-mono font-bold text-[#BC8CFF]">{bbPosition.toFixed(1)}%</span></div><div className="h-1.5 bg-muted rounded-full"><div className="h-full bg-[#BC8CFF] rounded-full" style={{ width: `${Math.min(100, Math.max(0, bbPosition))}%` }} /></div></div></div>
-            </div>
+          <div className="bg-[#0D1117] border border-[#30363D] rounded-xl overflow-hidden">
+            <canvas ref={canvasRef} className="w-full" style={{ height: 520, cursor: 'crosshair' }} />
           </div>
-        </TabsContent>
+          <div className="grid grid-cols-3 md:grid-cols-7 gap-2">{[{ label: 'Price', value: currentPrice.toFixed(4), color: 'text-foreground' }, { label: 'Last Digit', value: String(lastDigit), color: 'text-primary' }, { label: 'Support', value: support.toFixed(2), color: 'text-[#3FB950]' }, { label: 'Resistance', value: resistance.toFixed(2), color: 'text-[#F85149]' }, { label: 'BB Upper', value: bb.upper.toFixed(2), color: 'text-[#BC8CFF]' }, { label: 'BB Middle', value: bb.middle.toFixed(2), color: 'text-[#BC8CFF]' }, { label: 'BB Lower', value: bb.lower.toFixed(2), color: 'text-[#BC8CFF]' }].map(item => (<div key={item.label} className="bg-card border border-border rounded-lg p-2 text-center"><div className="text-[9px] text-muted-foreground">{item.label}</div><div className={`font-mono text-xs font-bold ${item.color}`}>{item.value}</div></div>))}</div>
+          <div className="bg-card border border-border rounded-xl p-3 space-y-3"><h3 className="text-xs font-semibold text-foreground">Digit Analysis</h3><div className="grid grid-cols-2 md:grid-cols-4 gap-2"><div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2"><div className="text-[9px] text-[#D29922]">Odd</div><div className="font-mono text-sm font-bold text-[#D29922]">{oddPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${oddPct}%` }} /></div></div><div className="bg-[#3FB950]/10 border border-[#3FB950]/30 rounded-lg p-2"><div className="text-[9px] text-[#3FB950]">Even</div><div className="font-mono text-sm font-bold text-[#3FB950]">{evenPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#3FB950] rounded-full" style={{ width: `${evenPct}%` }} /></div></div><div className="bg-primary/10 border border-primary/30 rounded-lg p-2"><div className="text-[9px] text-primary">Over 4 (5-9)</div><div className="font-mono text-sm font-bold text-primary">{overPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-primary rounded-full" style={{ width: `${overPct}%` }} /></div></div><div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2"><div className="text-[9px] text-[#D29922]">Under 5 (0-4)</div><div className="font-mono text-sm font-bold text-[#D29922]">{underPct.toFixed(1)}%</div><div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${underPct}%` }} /></div></div></div>
+            <div className="grid grid-cols-5 md:grid-cols-10 gap-1.5">{Array.from({ length: 10 }, (_, d) => { const pct = percentages[d] || 0; const count = frequency[d] || 0; const isHot = pct > 12; const isWarm = pct > 9; const isBestMatch = d === mostCommon; const isBestDiffer = d === leastCommon; return (<button key={d} onClick={() => { setSelectedDigit(d); setPrediction(String(d)); }} className={`relative rounded-lg p-2 text-center transition-all border cursor-pointer hover:ring-2 hover:ring-primary ${selectedDigit === d ? 'ring-2 ring-primary' : ''} ${isHot ? 'bg-loss/10 border-loss/40 text-loss' : isWarm ? 'bg-warning/10 border-warning/40 text-warning' : 'bg-card border-border text-primary'}`}><div className="font-mono text-lg font-bold">{d}</div><div className="text-[8px]">{count} ({pct.toFixed(1)}%)</div><div className="h-1 bg-muted rounded-full mt-1"><div className={`h-full rounded-full ${isHot ? 'bg-loss' : isWarm ? 'bg-warning' : 'bg-primary'}`} style={{ width: `${Math.min(100, pct * 5)}%` }} /></div>{isBestMatch && <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match</Badge>}{isBestDiffer && <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Avoid</Badge>}</button>); })}</div></div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2"><div className="bg-card border border-profit/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Best Match</div><div className="font-mono text-lg font-bold text-profit">{mostCommon}</div><div className="text-[8px] text-muted-foreground">{percentages[mostCommon]?.toFixed(1)}% frequency</div></div><div className="bg-card border border-loss/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Best Differ</div><div className="font-mono text-lg font-bold text-loss">{leastCommon}</div><div className="text-[8px] text-muted-foreground">{percentages[leastCommon]?.toFixed(1)}% frequency</div></div><div className="bg-card border border-[#D29922]/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Even/Odd</div><div className={`font-mono text-lg font-bold ${evenPct > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>{evenPct > 50 ? 'EVEN' : 'ODD'}</div><div className="text-[8px] text-muted-foreground">{Math.max(evenPct, oddPct).toFixed(1)}%</div></div><div className="bg-card border border-primary/30 rounded-lg p-2"><div className="text-[9px] text-muted-foreground">Over/Under</div><div className={`font-mono text-lg font-bold ${overPct > 50 ? 'text-primary' : 'text-[#D29922]'}`}>{overPct > 50 ? 'OVER' : 'UNDER'}</div><div className="text-[8px] text-muted-foreground">{Math.max(overPct, underPct).toFixed(1)}%</div></div></div>
+        </div>
+      )}
 
-        {/* TAB 2: Simple Auto Bot */}
+      {/* Tabs for Bots */}
+      <Tabs defaultValue="simple-bot" className="w-full">
+        <TabsList className="grid w-full grid-cols-2 mb-4">
+          <TabsTrigger value="simple-bot" className="flex items-center gap-2"><Bot className="w-4 h-4" /> Auto Bot</TabsTrigger>
+          <TabsTrigger value="pro-scanner" className="flex items-center gap-2"><Scan className="w-4 h-4" /> Pro Scanner Bot</TabsTrigger>
+        </TabsList>
+
+        {/* TAB 1: Simple Auto Bot */}
         <TabsContent value="simple-bot" className="space-y-4">
-          <div className="bg-card border rounded-xl p-4 space-y-4">
-            <div className="flex items-center justify-between"><h2 className="text-lg font-bold flex items-center gap-2"><Bot className="w-5 h-5 text-primary" /> Auto Trading Bot</h2><div className="flex items-center gap-2"><Button size="sm" variant={turboMode ? 'default' : 'outline'} className={`h-6 text-[9px] px-2 ${turboMode ? 'bg-profit hover:bg-profit/90 text-profit-foreground animate-pulse' : ''}`} onClick={() => setTurboMode(!turboMode)} disabled={botRunning}><Zap className="w-3 h-3 mr-0.5" />{turboMode ? '⚡ TURBO' : 'Turbo'}</Button>{botRunning && <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.5 }}><Badge className="text-[8px] bg-profit text-profit-foreground">RUNNING</Badge></motion.div>}</div></div>
-            <Select value={botConfig.contractType} onValueChange={v => setBotConfig(p => ({ ...p, contractType: v }))} disabled={botRunning}><SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select>
-            {['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(botConfig.contractType) && (<div><label className="text-[9px] text-muted-foreground">Prediction (0-9)</label><div className="grid grid-cols-5 gap-1">{Array.from({ length: 10 }, (_, i) => (<button key={i} disabled={botRunning} onClick={() => setBotConfig(p => ({ ...p, prediction: String(i) }))} className={`h-6 rounded text-[10px] font-mono font-bold transition-all ${botConfig.prediction === String(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'}`}>{i}</button>))}</div></div>)}
-            <div className="grid grid-cols-2 gap-3"><div><label className="text-[10px] text-muted-foreground">Stake ($)</label><Input type="number" min="0.35" step="0.01" value={botConfig.stake} onChange={e => setBotConfig(p => ({ ...p, stake: e.target.value }))} disabled={botRunning} /></div><div><label className="text-[10px] text-muted-foreground">Duration</label><div className="flex gap-1"><Input type="number" min="1" value={botConfig.duration} onChange={e => setBotConfig(p => ({ ...p, duration: e.target.value }))} disabled={botRunning} className="flex-1" /><Select value={botConfig.durationUnit} onValueChange={v => setBotConfig(p => ({ ...p, durationUnit: v }))} disabled={botRunning}><SelectTrigger className="w-16"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="t">T</SelectItem><SelectItem value="s">S</SelectItem><SelectItem value="m">M</SelectItem></SelectContent></Select></div></div></div>
-            <div className="flex items-center justify-between"><label className="text-[10px] text-foreground">Martingale</label><div className="flex items-center gap-2">{botConfig.martingale && (<Input type="number" min="1.1" step="0.1" value={botConfig.multiplier} onChange={e => setBotConfig(p => ({ ...p, multiplier: e.target.value }))} disabled={botRunning} className="h-6 text-[10px] w-14" />)}<button onClick={() => setBotConfig(p => ({ ...p, martingale: !p.martingale }))} disabled={botRunning} className={`w-9 h-5 rounded-full transition-colors ${botConfig.martingale ? 'bg-primary' : 'bg-muted'} relative`}><div className={`w-4 h-4 rounded-full bg-background shadow absolute top-0.5 transition-transform ${botConfig.martingale ? 'translate-x-4' : 'translate-x-0.5'}`} /></button></div></div>
-            <div className="grid grid-cols-3 gap-2"><div><label className="text-[8px] text-muted-foreground">Stop Loss</label><Input type="number" value={botConfig.stopLoss} onChange={e => setBotConfig(p => ({ ...p, stopLoss: e.target.value }))} disabled={botRunning} /></div><div><label className="text-[8px] text-muted-foreground">Take Profit</label><Input type="number" value={botConfig.takeProfit} onChange={e => setBotConfig(p => ({ ...p, takeProfit: e.target.value }))} disabled={botRunning} /></div><div><label className="text-[8px] text-muted-foreground">Max Trades</label><Input type="number" value={botConfig.maxTrades} onChange={e => setBotConfig(p => ({ ...p, maxTrades: e.target.value }))} disabled={botRunning} /></div></div>
-            {botRunning && (<div className="grid grid-cols-3 gap-2 text-center"><div className="bg-muted/30 rounded p-2"><div className="text-[10px] text-muted-foreground">Current Stake</div><div className="font-mono text-sm font-bold">${botStats.currentStake.toFixed(2)}</div></div><div className="bg-muted/30 rounded p-2"><div className="text-[10px] text-muted-foreground">Loss Streak</div><div className="font-mono text-sm font-bold text-loss">{botStats.consecutiveLosses}L</div></div><div className={`${botStats.pnl >= 0 ? 'bg-profit/10' : 'bg-loss/10'} rounded p-2`}><div className="text-[10px] text-muted-foreground">P/L</div><div className={`font-mono text-sm font-bold ${botStats.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>{botStats.pnl >= 0 ? '+' : ''}{botStats.pnl.toFixed(2)}</div></div></div>)}
-            <div className="flex gap-3">{!botRunning ? (<Button onClick={startSimpleBot} disabled={!isAuthorized} className="flex-1 h-12 text-base font-bold bg-profit hover:bg-profit/90"><Play className="w-5 h-5 mr-2" /> Start Bot</Button>) : (<><Button onClick={togglePauseSimpleBot} variant="outline" className="flex-1 h-12"><Pause className="w-5 h-5 mr-2" /> {botPaused ? 'Resume' : 'Pause'}</Button><Button onClick={stopSimpleBot} variant="destructive" className="flex-1 h-12"><StopCircle className="w-5 h-5 mr-2" /> Stop</Button></>)}</div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-card border rounded-xl p-4 space-y-4">
+              <div className="flex items-center justify-between"><h2 className="text-lg font-bold flex items-center gap-2"><Bot className="w-5 h-5 text-primary" /> Auto Trading Bot</h2><div className="flex items-center gap-2"><Button size="sm" variant={turboMode ? 'default' : 'outline'} className={`h-6 text-[9px] px-2 ${turboMode ? 'bg-profit hover:bg-profit/90 text-profit-foreground animate-pulse' : ''}`} onClick={() => setTurboMode(!turboMode)} disabled={botRunning}><Zap className="w-3 h-3 mr-0.5" />{turboMode ? '⚡ TURBO' : 'Turbo'}</Button>{botRunning && <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.5 }}><Badge className="text-[8px] bg-profit text-profit-foreground">RUNNING</Badge></motion.div>}</div></div>
+              <Select value={botConfig.contractType} onValueChange={v => setBotConfig(p => ({ ...p, contractType: v }))} disabled={botRunning}><SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select>
+              {['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(botConfig.contractType) && (<div><label className="text-[9px] text-muted-foreground">Prediction (0-9)</label><div className="grid grid-cols-5 gap-1">{Array.from({ length: 10 }, (_, i) => (<button key={i} disabled={botRunning} onClick={() => setBotConfig(p => ({ ...p, prediction: String(i) }))} className={`h-6 rounded text-[10px] font-mono font-bold transition-all ${botConfig.prediction === String(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'}`}>{i}</button>))}</div></div>)}
+              <div className="grid grid-cols-2 gap-3"><div><label className="text-[10px] text-muted-foreground">Stake ($)</label><Input type="number" min="0.35" step="0.01" value={botConfig.stake} onChange={e => setBotConfig(p => ({ ...p, stake: e.target.value }))} disabled={botRunning} /></div><div><label className="text-[10px] text-muted-foreground">Duration</label><div className="flex gap-1"><Input type="number" min="1" value={botConfig.duration} onChange={e => setBotConfig(p => ({ ...p, duration: e.target.value }))} disabled={botRunning} className="flex-1" /><Select value={botConfig.durationUnit} onValueChange={v => setBotConfig(p => ({ ...p, durationUnit: v }))} disabled={botRunning}><SelectTrigger className="w-16"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="t">T</SelectItem><SelectItem value="s">S</SelectItem><SelectItem value="m">M</SelectItem></SelectContent></Select></div></div></div>
+              <div className="flex items-center justify-between"><label className="text-[10px] text-foreground">Martingale</label><div className="flex items-center gap-2">{botConfig.martingale && (<Input type="number" min="1.1" step="0.1" value={botConfig.multiplier} onChange={e => setBotConfig(p => ({ ...p, multiplier: e.target.value }))} disabled={botRunning} className="h-6 text-[10px] w-14" />)}<button onClick={() => setBotConfig(p => ({ ...p, martingale: !p.martingale }))} disabled={botRunning} className={`w-9 h-5 rounded-full transition-colors ${botConfig.martingale ? 'bg-primary' : 'bg-muted'} relative`}><div className={`w-4 h-4 rounded-full bg-background shadow absolute top-0.5 transition-transform ${botConfig.martingale ? 'translate-x-4' : 'translate-x-0.5'}`} /></button></div></div>
+              <div className="grid grid-cols-3 gap-2"><div><label className="text-[8px] text-muted-foreground">Stop Loss</label><Input type="number" value={botConfig.stopLoss} onChange={e => setBotConfig(p => ({ ...p, stopLoss: e.target.value }))} disabled={botRunning} /></div><div><label className="text-[8px] text-muted-foreground">Take Profit</label><Input type="number" value={botConfig.takeProfit} onChange={e => setBotConfig(p => ({ ...p, takeProfit: e.target.value }))} disabled={botRunning} /></div><div><label className="text-[8px] text-muted-foreground">Max Trades</label><Input type="number" value={botConfig.maxTrades} onChange={e => setBotConfig(p => ({ ...p, maxTrades: e.target.value }))} disabled={botRunning} /></div></div>
+              {botRunning && (<div className="grid grid-cols-3 gap-2 text-center"><div className="bg-muted/30 rounded p-2"><div className="text-[10px] text-muted-foreground">Current Stake</div><div className="font-mono text-sm font-bold">${botStats.currentStake.toFixed(2)}</div></div><div className="bg-muted/30 rounded p-2"><div className="text-[10px] text-muted-foreground">Loss Streak</div><div className="font-mono text-sm font-bold text-loss">{botStats.consecutiveLosses}L</div></div><div className={`${botStats.pnl >= 0 ? 'bg-profit/10' : 'bg-loss/10'} rounded p-2`}><div className="text-[10px] text-muted-foreground">P/L</div><div className={`font-mono text-sm font-bold ${botStats.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>{botStats.pnl >= 0 ? '+' : ''}{botStats.pnl.toFixed(2)}</div></div></div>)}
+              <div className="flex gap-3">{!botRunning ? (<Button onClick={startSimpleBot} disabled={!isAuthorized} className="flex-1 h-12 text-base font-bold bg-profit hover:bg-profit/90"><Play className="w-5 h-5 mr-2" /> Start Bot</Button>) : (<><Button onClick={togglePauseSimpleBot} variant="outline" className="flex-1 h-12"><Pause className="w-5 h-5 mr-2" /> {botPaused ? 'Resume' : 'Pause'}</Button><Button onClick={stopSimpleBot} variant="destructive" className="flex-1 h-12"><StopCircle className="w-5 h-5 mr-2" /> Stop</Button></>)}</div>
+            </div>
+            <div className="bg-card border border-border rounded-xl p-4"><div className="flex items-center justify-between mb-3"><h3 className="text-sm font-semibold flex items-center gap-2"><Trophy className="w-4 h-4 text-primary" /> Trade Progress</h3><Button variant="ghost" size="sm" onClick={() => { setTradeHistory([]); setBotStats({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 }); }}>Clear</Button></div><div className="grid grid-cols-4 gap-3 mb-4"><div className="text-center p-2 bg-muted/30 rounded"><div className="text-[10px] text-muted-foreground">Trades</div><div className="text-xl font-bold">{totalTrades}</div></div><div className="text-center p-2 bg-profit/10 rounded"><div className="text-[10px] text-profit">Wins</div><div className="text-xl font-bold text-profit">{simpleWins}</div></div><div className="text-center p-2 bg-loss/10 rounded"><div className="text-[10px] text-loss">Losses</div><div className="text-xl font-bold text-loss">{simpleLosses}</div></div><div className={`text-center p-2 ${totalProfit >= 0 ? 'bg-profit/10' : 'bg-loss/10'} rounded`}><div className="text-[10px] text-muted-foreground">P/L</div><div className={`text-xl font-bold ${totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>{totalProfit >= 0 ? '+' : ''}{totalProfit.toFixed(2)}</div></div></div>{totalTrades > 0 && (<div><div className="flex justify-between text-xs mb-1"><span>Win Rate</span><span className="font-mono font-bold">{winRate.toFixed(1)}%</span></div><div className="h-2 bg-muted rounded-full"><div className="h-full bg-profit rounded-full" style={{ width: `${winRate}%` }} /></div></div>)}<div className="max-h-60 overflow-auto mt-4"><table className="w-full text-xs"><thead className="text-muted-foreground border-b"><tr><th className="text-left p-2">Time</th><th className="text-left p-2">Type</th><th className="text-right p-2">Stake</th><th className="text-center p-2">Result</th><th className="text-right p-2">P/L</th></tr></thead><tbody>{tradeHistory.slice(0, 20).map(t => (<tr key={t.id} className="border-t"><td className="p-2 text-[10px]">{new Date(t.time).toLocaleTimeString()}</td><td className="p-2">{t.type}</td><td className="p-2 text-right">${t.stake.toFixed(2)}</td><td className="p-2 text-center"><Badge variant={t.status === 'won' ? 'default' : t.status === 'lost' ? 'destructive' : 'secondary'} className="text-[9px]">{t.status === 'open' ? 'Pending' : t.status === 'won' ? 'Win' : 'Loss'}</Badge></td><td className={`p-2 text-right font-mono ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>{t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}</td></tr>))}</tbody></table></div></div>
           </div>
-          <div className="bg-card border border-border rounded-xl p-4"><div className="flex items-center justify-between mb-3"><h3 className="text-sm font-semibold flex items-center gap-2"><Trophy className="w-4 h-4 text-primary" /> Trade Progress</h3><Button variant="ghost" size="sm" onClick={() => { setTradeHistory([]); setBotStats({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 }); }}>Clear</Button></div><div className="grid grid-cols-4 gap-3 mb-4"><div className="text-center p-2 bg-muted/30 rounded"><div className="text-[10px] text-muted-foreground">Trades</div><div className="text-xl font-bold">{totalTrades}</div></div><div className="text-center p-2 bg-profit/10 rounded"><div className="text-[10px] text-profit">Wins</div><div className="text-xl font-bold text-profit">{simpleWins}</div></div><div className="text-center p-2 bg-loss/10 rounded"><div className="text-[10px] text-loss">Losses</div><div className="text-xl font-bold text-loss">{simpleLosses}</div></div><div className={`text-center p-2 ${totalProfit >= 0 ? 'bg-profit/10' : 'bg-loss/10'} rounded`}><div className="text-[10px] text-muted-foreground">P/L</div><div className={`text-xl font-bold ${totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>{totalProfit >= 0 ? '+' : ''}{totalProfit.toFixed(2)}</div></div></div>{totalTrades > 0 && (<div><div className="flex justify-between text-xs mb-1"><span>Win Rate</span><span className="font-mono font-bold">{winRate.toFixed(1)}%</span></div><div className="h-2 bg-muted rounded-full"><div className="h-full bg-profit rounded-full" style={{ width: `${winRate}%` }} /></div></div>)}<div className="max-h-60 overflow-auto mt-4"><table className="w-full text-xs"><thead className="text-muted-foreground border-b"><tr><th className="text-left p-2">Time</th><th className="text-left p-2">Type</th><th className="text-right p-2">Stake</th><th className="text-center p-2">Result</th><th className="text-right p-2">P/L</th></tr></thead><tbody>{tradeHistory.slice(0, 20).map(t => (<tr key={t.id} className="border-t"><td className="p-2 text-[10px]">{new Date(t.time).toLocaleTimeString()}</td><td className="p-2">{t.type}</td><td className="p-2 text-right">${t.stake.toFixed(2)}</td><td className="p-2 text-center"><Badge variant={t.status === 'won' ? 'default' : t.status === 'lost' ? 'destructive' : 'secondary'} className="text-[9px]">{t.status === 'open' ? 'Pending' : t.status === 'won' ? 'Win' : 'Loss'}</Badge></td><td className={`p-2 text-right font-mono ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>{t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}</td></tr>))}</tbody></table></div></div>
         </TabsContent>
 
-        {/* TAB 3: Pro Scanner Bot */}
+        {/* TAB 2: Pro Scanner Bot */}
         <TabsContent value="pro-scanner" className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
             <div className="lg:col-span-4 space-y-3">
               <div className="bg-card border-2 border-profit/30 rounded-xl p-3"><div className="flex items-center justify-between"><h3 className="text-xs font-bold text-profit flex items-center gap-1"><Home className="w-3.5 h-3.5" /> M1 — Home</h3><Switch checked={m1Enabled} onCheckedChange={setM1Enabled} disabled={isRunning} /></div><Select value={m1Symbol} onValueChange={setM1Symbol} disabled={isRunning}><SelectTrigger className="h-7 text-xs mt-2"><SelectValue /></SelectTrigger><SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name}</SelectItem>)}</SelectContent></Select><Select value={m1Contract} onValueChange={setM1Contract} disabled={isRunning}><SelectTrigger className="h-7 text-xs mt-1"><SelectValue /></SelectTrigger><SelectContent>{CONTRACT_TYPES_SIMPLE.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select>{needsBarrier(m1Contract) && <Input type="number" min="0" max="9" value={m1Barrier} onChange={e => setM1Barrier(e.target.value)} className="h-7 text-xs mt-1" placeholder="Barrier (0-9)" disabled={isRunning} />}<div className="border-t border-border/30 pt-2 mt-2"><div className="flex items-center justify-between"><span className="text-[9px] font-semibold text-primary flex items-center gap-1"><Anchor className="w-3 h-3" /> Virtual Hook</span><Switch checked={m1HookEnabled} onCheckedChange={setM1HookEnabled} disabled={isRunning} /></div>{m1HookEnabled && (<div className="grid grid-cols-2 gap-1 mt-1"><div><label className="text-[8px] text-muted-foreground">V-Losses</label><Input type="number" min="1" max="20" value={m1VirtualLossCount} onChange={e => setM1VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /></div><div><label className="text-[8px] text-muted-foreground">Real Trades</label><Input type="number" min="1" max="10" value={m1RealCount} onChange={e => setM1RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /></div></div>)}</div></div>
               <div className="bg-card border-2 border-purple-500/30 rounded-xl p-3"><div className="flex items-center justify-between"><h3 className="text-xs font-bold text-purple-400 flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" /> M2 — Recovery</h3><Switch checked={m2Enabled} onCheckedChange={setM2Enabled} disabled={isRunning} /></div><Select value={m2Symbol} onValueChange={setM2Symbol} disabled={isRunning}><SelectTrigger className="h-7 text-xs mt-2"><SelectValue /></SelectTrigger><SelectContent>{SCANNER_MARKETS.map(m => <SelectItem key={m.symbol} value={m.symbol}>{m.name}</SelectItem>)}</SelectContent></Select><Select value={m2Contract} onValueChange={setM2Contract} disabled={isRunning}><SelectTrigger className="h-7 text-xs mt-1"><SelectValue /></SelectTrigger><SelectContent>{CONTRACT_TYPES_SIMPLE.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select>{needsBarrier(m2Contract) && <Input type="number" min="0" max="9" value={m2Barrier} onChange={e => setM2Barrier(e.target.value)} className="h-7 text-xs mt-1" placeholder="Barrier (0-9)" disabled={isRunning} />}<div className="border-t border-border/30 pt-2 mt-2"><div className="flex items-center justify-between"><span className="text-[9px] font-semibold text-primary flex items-center gap-1"><Anchor className="w-3 h-3" /> Virtual Hook</span><Switch checked={m2HookEnabled} onCheckedChange={setM2HookEnabled} disabled={isRunning} /></div>{m2HookEnabled && (<div className="grid grid-cols-2 gap-1 mt-1"><div><label className="text-[8px] text-muted-foreground">V-Losses</label><Input type="number" min="1" max="20" value={m2VirtualLossCount} onChange={e => setM2VirtualLossCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /></div><div><label className="text-[8px] text-muted-foreground">Real Trades</label><Input type="number" min="1" max="10" value={m2RealCount} onChange={e => setM2RealCount(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /></div></div>)}</div></div>
-              <div className="bg-card border border-border rounded-xl p-3"><h3 className="text-xs font-semibold mb-2 flex items-center gap-1"><Shield className="w-3.5 h-3.5" /> Risk</h3><div className="grid grid-cols-3 gap-1"><div><label className="text-[8px] text-muted-foreground">Stake ($)</label><Input type="number" min="0.35" step="0.01" value={stake} onChange={e => setStake(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div><div><label className="text-[8px] text-muted-foreground">TP ($)</label><Input type="number" value={takeProfit} onChange={e => setTakeProfit(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div><div><label className="text-[8px] text-muted-foreground">SL ($)</label><Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div></div><div className="flex items-center justify-between mt-2"><label className="text-[10px]">Martingale</label><Switch checked={martingaleOn} onCheckedChange={setMartingaleOn} disabled={isRunning} /></div>{martingaleOn && (<div className="grid grid-cols-2 gap-1 mt-1"><div><label className="text-[8px] text-muted-foreground">Multiplier</label><Input type="number" min="1.1" step="0.1" value={martingaleMultiplier} onChange={e => setMartingaleMultiplier(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div><div><label className="text-[8px] text-muted-foreground">Max Steps</label><Input type="number" min="1" max="10" value={martingaleMaxSteps} onChange={e => setMartingaleMaxSteps(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div></div>)}<div className="flex items-center gap-3 mt-2"><label className="flex items-center gap-1 text-[10px]"><input type="checkbox" checked={strategyM1Enabled} onChange={e => setStrategyM1Enabled(e.target.checked)} disabled={isRunning} /> Strategy M1</label><label className="flex items-center gap-1 text-[10px]"><input type="checkbox" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} /> Strategy M2</label></div></div>
+              <div className="bg-card border border-border rounded-xl p-3"><h3 className="text-xs font-semibold mb-2 flex items-center gap-1"><ShieldAlert className="w-3.5 h-3.5" /> Risk</h3><div className="grid grid-cols-3 gap-1"><div><label className="text-[8px] text-muted-foreground">Stake ($)</label><Input type="number" min="0.35" step="0.01" value={stake} onChange={e => setStake(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div><div><label className="text-[8px] text-muted-foreground">TP ($)</label><Input type="number" value={takeProfit} onChange={e => setTakeProfit(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div><div><label className="text-[8px] text-muted-foreground">SL ($)</label><Input type="number" value={stopLoss} onChange={e => setStopLoss(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div></div><div className="flex items-center justify-between mt-2"><label className="text-[10px]">Martingale</label><Switch checked={martingaleOn} onCheckedChange={setMartingaleOn} disabled={isRunning} /></div>{martingaleOn && (<div className="grid grid-cols-2 gap-1 mt-1"><div><label className="text-[8px] text-muted-foreground">Multiplier</label><Input type="number" min="1.1" step="0.1" value={martingaleMultiplier} onChange={e => setMartingaleMultiplier(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div><div><label className="text-[8px] text-muted-foreground">Max Steps</label><Input type="number" min="1" max="10" value={martingaleMaxSteps} onChange={e => setMartingaleMaxSteps(e.target.value)} disabled={isRunning} className="h-7 text-xs" /></div></div>)}<div className="flex items-center gap-3 mt-2"><label className="flex items-center gap-1 text-[10px]"><input type="checkbox" checked={strategyM1Enabled} onChange={e => setStrategyM1Enabled(e.target.checked)} disabled={isRunning} /> Strategy M1</label><label className="flex items-center gap-1 text-[10px]"><input type="checkbox" checked={strategyEnabled} onChange={e => setStrategyEnabled(e.target.checked)} disabled={isRunning} /> Strategy M2</label></div></div>
               {(strategyEnabled || strategyM1Enabled) && (<div className="bg-card border border-warning/30 rounded-xl p-3"><h3 className="text-xs font-semibold text-warning mb-2 flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Strategy (Pattern/Digit)</h3>{strategyM1Enabled && (<div className="border border-profit/20 rounded-lg p-2 mb-2"><div className="flex items-center justify-between mb-1"><label className="text-[9px] font-semibold text-profit">M1 Strategy</label><div className="flex gap-0.5"><Button size="sm" variant={m1StrategyMode === 'pattern' ? 'default' : 'outline'} className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('pattern')} disabled={isRunning}>Pattern</Button><Button size="sm" variant={m1StrategyMode === 'digit' ? 'default' : 'outline'} className="text-[9px] h-5 px-1.5" onClick={() => setM1StrategyMode('digit')} disabled={isRunning}>Digit</Button></div></div>{m1StrategyMode === 'pattern' ? (<><Textarea placeholder="E=Even O=Odd e.g. EEEOE" value={m1Pattern} onChange={e => setM1Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))} disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" /><div className={`text-[9px] font-mono ${m1PatternValid ? 'text-profit' : 'text-loss'}`}>{cleanM1Pattern.length === 0 ? 'Enter pattern...' : m1PatternValid ? `✓ ${cleanM1Pattern}` : `✗ Need 2+`}</div></>) : (<div className="grid grid-cols-3 gap-1"><Select value={m1DigitCondition} onValueChange={setM1DigitCondition} disabled={isRunning}><SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger><SelectContent>{['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select><Input type="number" min="0" max="9" value={m1DigitCompare} onChange={e => setM1DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /><Input type="number" min="1" max="50" value={m1DigitWindow} onChange={e => setM1DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /></div>)}</div>)}{strategyEnabled && (<div className="border border-destructive/20 rounded-lg p-2"><div className="flex items-center justify-between mb-1"><label className="text-[9px] font-semibold text-destructive">M2 Strategy</label><div className="flex gap-0.5"><Button size="sm" variant={m2StrategyMode === 'pattern' ? 'default' : 'outline'} className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('pattern')} disabled={isRunning}>Pattern</Button><Button size="sm" variant={m2StrategyMode === 'digit' ? 'default' : 'outline'} className="text-[9px] h-5 px-1.5" onClick={() => setM2StrategyMode('digit')} disabled={isRunning}>Digit</Button></div></div>{m2StrategyMode === 'pattern' ? (<><Textarea placeholder="E=Even O=Odd e.g. OOEEO" value={m2Pattern} onChange={e => setM2Pattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))} disabled={isRunning} className="h-10 text-[10px] font-mono min-h-0" /><div className={`text-[9px] font-mono ${m2PatternValid ? 'text-profit' : 'text-loss'}`}>{cleanM2Pattern.length === 0 ? 'Enter pattern...' : m2PatternValid ? `✓ ${cleanM2Pattern}` : `✗ Need 2+`}</div></>) : (<div className="grid grid-cols-3 gap-1"><Select value={m2DigitCondition} onValueChange={setM2DigitCondition} disabled={isRunning}><SelectTrigger className="h-6 text-[10px]"><SelectValue /></SelectTrigger><SelectContent>{['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select><Input type="number" min="0" max="9" value={m2DigitCompare} onChange={e => setM2DigitCompare(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /><Input type="number" min="1" max="50" value={m2DigitWindow} onChange={e => setM2DigitWindow(e.target.value)} disabled={isRunning} className="h-6 text-[10px]" /></div>)}</div>)}</div>)}
               <div className="grid grid-cols-2 gap-2"><Button onClick={startProBot} disabled={isRunning || !isAuthorized || balance < parseFloat(stake)} className="h-12 bg-profit hover:bg-profit/90"><Play className="w-4 h-4 mr-2" /> START PRO BOT</Button><Button onClick={stopProBot} disabled={!isRunning} variant="destructive" className="h-12"><StopCircle className="w-4 h-4 mr-2" /> STOP</Button></div>
             </div>
             <div className="lg:col-span-8 space-y-3">
-              <div className="bg-card border border-border rounded-xl p-3"><div className="flex items-center justify-between mb-2"><h3 className="text-xs font-semibold">Live Digits — {activeSymbol}</h3><Badge className={`${proStatus.color} text-[10px]`}>{proStatus.icon} {proStatus.label}</Badge></div><div className="flex gap-1 justify-center">{activeDigits.length === 0 ? <span className="text-[10px] text-muted-foreground">Waiting for ticks...</span> : activeDigits.map((d, i) => { const isOver = d >= 5; const isEven = d % 2 === 0; const isLast = i === activeDigits.length - 1; return (<div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${isLast ? 'ring-2 ring-primary' : ''} ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}><span className="text-sm">{d}</span><span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span></div>); })}</div></div>
+              <div className="bg-card border border-border rounded-xl p-3"><div className="flex items-center justify-between mb-2"><h3 className="text-xs font-semibold">Live Digits — {activeSymbol}</h3><Badge className={`${proStatus.color} text-[10px]`}>{proStatus.icon} {proStatus.label}</Badge></div><div className="flex gap-1 justify-center flex-wrap">{activeDigits.length === 0 ? <span className="text-[10px] text-muted-foreground">Waiting for ticks...</span> : activeDigits.map((d, i) => { const isOver = d >= 5; const isEven = d % 2 === 0; const isLast = i === activeDigits.length - 1; return (<div key={i} className={`w-8 h-10 rounded-lg flex flex-col items-center justify-center text-xs font-mono font-bold border ${isLast ? 'ring-2 ring-primary' : ''} ${isOver ? 'bg-loss/10 border-loss/30 text-loss' : 'bg-profit/10 border-profit/30 text-profit'}`}><span className="text-sm">{d}</span><span className="text-[7px] opacity-60">{isOver ? 'O' : 'U'}{isEven ? 'E' : 'O'}</span></div>); })}</div></div>
               <div className="grid grid-cols-5 gap-2"><div className="bg-card border rounded-lg p-2 text-center"><div className="text-[8px] text-muted-foreground">Trades</div><div className="font-mono text-sm font-bold">{wins + losses}</div></div><div className="bg-card border rounded-lg p-2 text-center"><div className="text-[8px] text-muted-foreground">Wins</div><div className="font-mono text-sm font-bold text-profit">{wins}</div></div><div className="bg-card border rounded-lg p-2 text-center"><div className="text-[8px] text-muted-foreground">Losses</div><div className="font-mono text-sm font-bold text-loss">{losses}</div></div><div className="bg-card border rounded-lg p-2 text-center"><div className="text-[8px] text-muted-foreground">P/L</div><div className={`font-mono text-sm font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>{netProfit >= 0 ? '+' : ''}{netProfit.toFixed(2)}</div></div><div className="bg-card border rounded-lg p-2 text-center"><div className="text-[8px] text-muted-foreground">Staked</div><div className="font-mono text-sm font-bold">${totalStaked.toFixed(2)}</div></div></div>
               <div className="bg-card border border-border rounded-xl overflow-hidden"><div className="px-3 py-2 border-b flex justify-between items-center"><h3 className="text-xs font-semibold">Activity Log</h3><Button variant="ghost" size="sm" onClick={clearLog}><Trash2 className="w-3 h-3" /></Button></div><div className="max-h-96 overflow-auto"><table className="w-full text-[10px]"><thead className="text-muted-foreground bg-muted/30"><tr><th className="p-1.5 text-left">Time</th><th className="p-1">Mkt</th><th className="p-1">Symbol</th><th className="p-1">Type</th><th className="p-1 text-right">Stake</th><th className="p-1 text-center">Digit</th><th className="p-1 text-center">Result</th><th className="p-1 text-right">P/L</th></tr></thead><tbody>{logEntries.length === 0 ? (<tr><td colSpan={8} className="text-center py-8 text-muted-foreground">No trades yet — start the bot</td></tr>) : logEntries.map(e => (<tr key={e.id} className={`border-t ${e.market === 'M1' ? 'border-l-2 border-l-profit' : e.market === 'VH' ? 'border-l-2 border-l-primary' : 'border-l-2 border-l-purple-500'}`}><td className="p-1 font-mono">{e.time}</td><td className={`p-1 font-bold ${e.market === 'M1' ? 'text-profit' : e.market === 'VH' ? 'text-primary' : 'text-purple-400'}`}>{e.market}</td><td className="p-1">{e.symbol}</td><td className="p-1">{e.contract.replace('DIGIT', '')}</td><td className="p-1 text-right">{e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}{e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-warning ml-0.5">M{e.martingaleStep}</span>}</td><td className="p-1 text-center font-mono">{e.exitDigit}</td><td className="p-1 text-center"><span className={`px-1 py-0.5 rounded-full text-[8px] font-bold ${e.result === 'Win' || e.result === 'V-Win' ? 'bg-profit/20 text-profit' : e.result === 'Loss' || e.result === 'V-Loss' ? 'bg-loss/20 text-loss' : 'bg-warning/20 text-warning'}`}>{e.result === 'Pending' ? '...' : e.result}</span></td><td className={`p-1 text-right ${e.pnl > 0 ? 'text-profit' : e.pnl < 0 ? 'text-loss' : ''}`}>{e.result === 'Pending' ? '...' : e.market === 'VH' ? '-' : `${e.pnl > 0 ? '+' : ''}${e.pnl.toFixed(2)}`}</td></tr>))}</tbody></table></div></div>
             </div>
