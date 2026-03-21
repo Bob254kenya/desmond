@@ -15,6 +15,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
   Target, ShieldAlert, Gauge, Zap, Trophy, Play, Pause, StopCircle,
+  Eye, EyeOff, ChevronUp, ChevronDown,
 } from 'lucide-react';
 
 /* ── Markets ── */
@@ -226,6 +227,18 @@ export default function TradingChart() {
   const subscribedRef = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Chart visibility - default hidden
+  const [chartVisible, setChartVisible] = useState(false);
+
+  // Indicator visibility toggles
+  const [indicators, setIndicators] = useState({
+    bollingerBands: true,
+    sma: true,
+    ema: true,
+    supportResistance: true,
+    rsi: true,
+  });
+
   // Zoom & pan state
   const [candleWidth, setCandleWidth] = useState(7);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -411,16 +424,17 @@ export default function TradingChart() {
     }
   }, [strategyEnabled, strategyMode, checkPatternMatch, checkDigitCondition]);
 
-  /* ── Canvas Chart ── */
+  /* ── Canvas Chart with styled indicators ── */
   const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
   const emaSeries = useMemo(() => calcEMASeries(tfPrices, 50), [tfPrices]);
   const smaSeries = useMemo(() => calcSMASeries(tfPrices, 20), [tfPrices]);
   const bbSeries = useMemo(() => calcBBSeries(tfPrices, 20, 2), [tfPrices]);
   const rsiSeries = useMemo(() => calcRSISeries(tfPrices, 14), [tfPrices]);
 
+  // Canvas mouse handlers
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !chartVisible) return;
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -480,9 +494,11 @@ export default function TradingChart() {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-  }, [candles.length, scrollOffset, candleWidth]);
+  }, [candles.length, scrollOffset, candleWidth, chartVisible]);
 
+  // Main chart drawing with styled indicators
   useEffect(() => {
+    if (!chartVisible) return;
     const canvas = canvasRef.current;
     if (!canvas || candles.length < 2) return;
     const ctx = canvas.getContext('2d');
@@ -495,11 +511,12 @@ export default function TradingChart() {
     ctx.scale(dpr, dpr);
     const W = rect.width;
     const totalH = rect.height;
-    const rsiH = 80;
+    const rsiH = indicators.rsi ? 80 : 0;
     const H = totalH - rsiH - 8;
     const priceAxisW = 70;
     const chartW = W - priceAxisW;
 
+    // Background
     ctx.fillStyle = '#0D1117';
     ctx.fillRect(0, 0, W, totalH);
 
@@ -513,14 +530,17 @@ export default function TradingChart() {
 
     if (visibleCandles.length < 1) return;
 
+    // Calculate price range
     const allPrices = visibleCandles.flatMap(c => [c.high, c.low]);
-    for (let i = 0; i < visibleCandles.length; i++) {
-      const idx = visibleEndIndices[i];
-      if (idx === undefined) continue;
-      const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
-      const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
-      if (u !== null) allPrices.push(u);
-      if (l !== null) allPrices.push(l);
+    if (indicators.bollingerBands) {
+      for (let i = 0; i < visibleCandles.length; i++) {
+        const idx = visibleEndIndices[i];
+        if (idx === undefined) continue;
+        const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
+        const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
+        if (u !== null) allPrices.push(u);
+        if (l !== null) allPrices.push(l);
+      }
     }
     const rawMin = Math.min(...allPrices);
     const rawMax = Math.max(...allPrices);
@@ -534,6 +554,7 @@ export default function TradingChart() {
     const drawH = H - chartPadTop - chartPadBot;
     const toY = (p: number) => chartPadTop + ((maxP - p) / range) * drawH;
 
+    // Grid
     ctx.strokeStyle = '#21262D';
     ctx.lineWidth = 0.5;
     const gridSteps = 8;
@@ -552,7 +573,8 @@ export default function TradingChart() {
 
     const offsetX = 5;
 
-    const drawLine = (values: (number | null)[], color: string, width: number, dash: number[] = []) => {
+    // Draw line helper with styled indicators
+    const drawLine = (values: (number | null)[], color: string, width: number, dash: number[] = [], label?: string) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
       ctx.setLineDash(dash);
@@ -570,63 +592,99 @@ export default function TradingChart() {
       }
       ctx.stroke();
       ctx.setLineDash([]);
+      
+      // Add label
+      if (label && visibleCandles.length > 0) {
+        const lastIdx = visibleEndIndices[visibleCandles.length - 1];
+        if (lastIdx !== undefined) {
+          const lastVal = lastIdx < values.length ? values[lastIdx] : null;
+          if (lastVal !== null) {
+            const x = offsetX + (visibleCandles.length - 1) * totalCandleW + candleWidth / 2;
+            const y = toY(lastVal);
+            ctx.fillStyle = color;
+            ctx.font = 'bold 8px JetBrains Mono, monospace';
+            ctx.shadowBlur = 0;
+            ctx.fillText(label, x + 3, y - 3);
+          }
+        }
+      }
     };
 
-    ctx.fillStyle = 'rgba(188, 140, 255, 0.06)';
-    const bbUpperPoints: { x: number; y: number }[] = [];
-    const bbLowerPoints: { x: number; y: number }[] = [];
-    for (let i = 0; i < visibleCandles.length; i++) {
-      const idx = visibleEndIndices[i];
-      if (idx === undefined) continue;
-      const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
-      const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
-      if (u === null || l === null) continue;
-      const x = offsetX + i * totalCandleW + candleWidth / 2;
-      bbUpperPoints.push({ x, y: toY(u) });
-      bbLowerPoints.push({ x, y: toY(l) });
+    // Draw Bollinger Bands fill area
+    if (indicators.bollingerBands) {
+      ctx.fillStyle = 'rgba(188, 140, 255, 0.08)';
+      const bbUpperPoints: { x: number; y: number }[] = [];
+      const bbLowerPoints: { x: number; y: number }[] = [];
+      for (let i = 0; i < visibleCandles.length; i++) {
+        const idx = visibleEndIndices[i];
+        if (idx === undefined) continue;
+        const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
+        const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
+        if (u === null || l === null) continue;
+        const x = offsetX + i * totalCandleW + candleWidth / 2;
+        bbUpperPoints.push({ x, y: toY(u) });
+        bbLowerPoints.push({ x, y: toY(l) });
+      }
+      if (bbUpperPoints.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(bbUpperPoints[0].x, bbUpperPoints[0].y);
+        bbUpperPoints.forEach(p => ctx.lineTo(p.x, p.y));
+        for (let i = bbLowerPoints.length - 1; i >= 0; i--) ctx.lineTo(bbLowerPoints[i].x, bbLowerPoints[i].y);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
-    if (bbUpperPoints.length > 1) {
-      ctx.beginPath();
-      ctx.moveTo(bbUpperPoints[0].x, bbUpperPoints[0].y);
-      bbUpperPoints.forEach(p => ctx.lineTo(p.x, p.y));
-      for (let i = bbLowerPoints.length - 1; i >= 0; i--) ctx.lineTo(bbLowerPoints[i].x, bbLowerPoints[i].y);
-      ctx.closePath();
-      ctx.fill();
+
+    // Draw Bollinger Bands lines
+    if (indicators.bollingerBands) {
+      drawLine(bbSeries.upper, '#BC8CFF', 1.2, [5, 3], 'BB Upper');
+      drawLine(bbSeries.middle, '#BC8CFF', 1.5, [], 'BB Mid');
+      drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3], 'BB Lower');
     }
 
-    drawLine(bbSeries.upper, '#BC8CFF', 1.2, [5, 3]);
-    drawLine(bbSeries.middle, '#BC8CFF', 1.5);
-    drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3]);
-    drawLine(emaSeries, '#2F81F7', 1.5);
-    drawLine(smaSeries, '#E6B422', 1.5);
+    // Draw EMA 50
+    if (indicators.ema) {
+      drawLine(emaSeries, '#FF6B6B', 2, [], 'EMA 50');
+    }
 
-    ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = '#3FB950';
-    ctx.lineWidth = 1.5;
-    const supY = toY(support);
-    ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(chartW, supY); ctx.stroke();
+    // Draw SMA 20
+    if (indicators.sma) {
+      drawLine(smaSeries, '#4ECDC4', 2, [], 'SMA 20');
+    }
 
-    ctx.strokeStyle = '#F85149';
-    const resY = toY(resistance);
-    ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(chartW, resY); ctx.stroke();
-    ctx.setLineDash([]);
+    // Draw Support/Resistance
+    if (indicators.supportResistance) {
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#3FB950';
+      ctx.lineWidth = 1.8;
+      const supY = toY(support);
+      ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(chartW, supY); ctx.stroke();
 
-    ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillStyle = '#3FB950';
-    ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
-    ctx.fillStyle = '#0D1117';
-    ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
-    ctx.fillStyle = '#F85149';
-    ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
-    ctx.fillStyle = '#0D1117';
-    ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
+      ctx.strokeStyle = '#F85149';
+      const resY = toY(resistance);
+      ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(chartW, resY); ctx.stroke();
+      ctx.setLineDash([]);
 
+      // Labels
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.fillStyle = '#3FB950';
+      ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
+      ctx.fillStyle = '#0D1117';
+      ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
+      ctx.fillStyle = '#F85149';
+      ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
+      ctx.fillStyle = '#0D1117';
+      ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
+    }
+
+    // Draw Candlesticks
     for (let i = 0; i < visibleCandles.length; i++) {
       const c = visibleCandles[i];
       const x = offsetX + i * totalCandleW;
       const isGreen = c.close >= c.open;
       const color = isGreen ? '#3FB950' : '#F85149';
 
+      // Wick
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -634,6 +692,7 @@ export default function TradingChart() {
       ctx.lineTo(x + candleWidth / 2, toY(c.low));
       ctx.stroke();
 
+      // Body
       const bodyTop = toY(Math.max(c.open, c.close));
       const bodyBot = toY(Math.min(c.open, c.close));
       const bodyH = Math.max(1, bodyBot - bodyTop);
@@ -641,6 +700,7 @@ export default function TradingChart() {
       ctx.fillRect(x, bodyTop, candleWidth, bodyH);
     }
 
+    // Current price line
     const curY = toY(currentPrice);
     ctx.setLineDash([2, 2]);
     ctx.strokeStyle = '#E6EDF3';
@@ -653,79 +713,88 @@ export default function TradingChart() {
     ctx.font = 'bold 10px JetBrains Mono, monospace';
     ctx.fillText(currentPrice.toFixed(4), chartW + 2, curY + 4);
 
+    // Legend
     ctx.font = '10px JetBrains Mono, monospace';
-    const legends = [
-      { label: 'BB(20,2)', color: '#BC8CFF' },
-      { label: 'SMA 20', color: '#E6B422' },
-      { label: 'EMA 50', color: '#2F81F7' },
-      { label: 'Support', color: '#3FB950' },
-      { label: 'Resistance', color: '#F85149' },
+    const legendItems = [
+      { label: 'BB(20,2)', color: '#BC8CFF', visible: indicators.bollingerBands },
+      { label: 'SMA 20', color: '#4ECDC4', visible: indicators.sma },
+      { label: 'EMA 50', color: '#FF6B6B', visible: indicators.ema },
+      { label: 'Support', color: '#3FB950', visible: indicators.supportResistance },
+      { label: 'Resistance', color: '#F85149', visible: indicators.supportResistance },
     ];
     let lx = 8;
-    legends.forEach(l => {
-      ctx.fillStyle = l.color;
-      ctx.fillRect(lx, 6, 10, 3);
-      ctx.fillText(l.label, lx + 14, 12);
-      lx += ctx.measureText(l.label).width + 24;
+    legendItems.forEach(l => {
+      if (l.visible) {
+        ctx.fillStyle = l.color;
+        ctx.fillRect(lx, 6, 10, 3);
+        ctx.fillText(l.label, lx + 14, 12);
+        lx += ctx.measureText(l.label).width + 24;
+      }
     });
 
     ctx.fillStyle = '#484F58';
     ctx.font = '9px JetBrains Mono, monospace';
     ctx.fillText(`${visibleCandles.length} candles | Scroll: wheel | Zoom: Ctrl+wheel | Drag to pan`, 8, H - 6);
 
-    const rsiTop = H + 8;
-    ctx.fillStyle = '#161B22';
-    ctx.fillRect(0, rsiTop, W, rsiH);
-    ctx.strokeStyle = '#21262D';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
+    // RSI Subplot
+    if (indicators.rsi) {
+      const rsiTop = H + 8;
+      ctx.fillStyle = '#161B22';
+      ctx.fillRect(0, rsiTop, W, rsiH);
+      ctx.strokeStyle = '#21262D';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
 
-    const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8);
-    ctx.font = '8px JetBrains Mono, monospace';
-    [30, 50, 70].forEach(level => {
-      const y = rsiToY(level);
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050');
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#484F58';
-      ctx.fillText(String(level), chartW + 4, y + 3);
-    });
+      const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8);
+      ctx.font = '8px JetBrains Mono, monospace';
+      [30, 50, 70].forEach(level => {
+        const y = rsiToY(level);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050');
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#484F58';
+        ctx.fillText(String(level), chartW + 4, y + 3);
+      });
 
-    ctx.fillStyle = '#8B949E';
-    ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillText('RSI(14)', 4, rsiTop + 12);
+      ctx.fillStyle = '#8B949E';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.fillText('RSI(14)', 4, rsiTop + 12);
 
-    ctx.strokeStyle = '#D29922';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    let rsiStarted = false;
-    for (let i = 0; i < visibleCandles.length; i++) {
-      const idx = visibleEndIndices[i];
-      if (idx === undefined) continue;
-      const v = idx < rsiSeries.length ? rsiSeries[idx] : null;
-      if (v === null) continue;
-      const x = offsetX + i * totalCandleW + candleWidth / 2;
-      const y = rsiToY(v);
-      if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; }
-      else ctx.lineTo(x, y);
+      // RSI line
+      ctx.strokeStyle = '#D29922';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      let rsiStarted = false;
+      for (let i = 0; i < visibleCandles.length; i++) {
+        const idx = visibleEndIndices[i];
+        if (idx === undefined) continue;
+        const v = idx < rsiSeries.length ? rsiSeries[idx] : null;
+        if (v === null) continue;
+        const x = offsetX + i * totalCandleW + candleWidth / 2;
+        const y = rsiToY(v);
+        if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Current RSI value
+      const lastRsi = rsi;
+      const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922';
+      ctx.fillStyle = rsiColor;
+      ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14);
+      ctx.fillStyle = '#0D1117';
+      ctx.font = 'bold 9px JetBrains Mono, monospace';
+      ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
+
+      // Overbought/Oversold zones
+      ctx.fillStyle = 'rgba(248, 81, 73, 0.05)';
+      ctx.fillRect(0, rsiTop, chartW, rsiToY(70) - rsiTop);
+      ctx.fillStyle = 'rgba(63, 185, 80, 0.05)';
+      ctx.fillRect(0, rsiToY(30), chartW, rsiTop + rsiH - rsiToY(30));
     }
-    ctx.stroke();
 
-    const lastRsi = rsi;
-    const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922';
-    ctx.fillStyle = rsiColor;
-    ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14);
-    ctx.fillStyle = '#0D1117';
-    ctx.font = 'bold 9px JetBrains Mono, monospace';
-    ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
-
-    ctx.fillStyle = 'rgba(248, 81, 73, 0.04)';
-    ctx.fillRect(0, rsiTop, chartW, rsiToY(70) - rsiTop);
-    ctx.fillStyle = 'rgba(63, 185, 80, 0.04)';
-    ctx.fillRect(0, rsiToY(30), chartW, rsiTop + rsiH - rsiToY(30));
-
-  }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, smaSeries, bbSeries, rsiSeries, rsi, candleWidth, scrollOffset]);
+  }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, smaSeries, bbSeries, rsiSeries, rsi, candleWidth, scrollOffset, chartVisible, indicators]);
 
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
@@ -870,9 +939,69 @@ export default function TradingChart() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-        {/* LEFT: Chart + Info */}
-        <div className="xl:col-span-8 space-y-3">
+      {/* Chart Toggle Button */}
+      <div className="flex justify-between items-center">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setChartVisible(!chartVisible)}
+          className="flex items-center gap-2"
+        >
+          {chartVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          {chartVisible ? 'Hide Chart' : 'Show Chart'}
+          {chartVisible ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </Button>
+
+        {/* Indicator Toggles - only visible when chart is shown */}
+        {chartVisible && (
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={indicators.bollingerBands ? 'default' : 'outline'}
+              className="h-7 text-[10px] px-2"
+              onClick={() => setIndicators(prev => ({ ...prev, bollingerBands: !prev.bollingerBands }))}
+            >
+              BB
+            </Button>
+            <Button
+              size="sm"
+              variant={indicators.sma ? 'default' : 'outline'}
+              className="h-7 text-[10px] px-2"
+              onClick={() => setIndicators(prev => ({ ...prev, sma: !prev.sma }))}
+            >
+              SMA
+            </Button>
+            <Button
+              size="sm"
+              variant={indicators.ema ? 'default' : 'outline'}
+              className="h-7 text-[10px] px-2"
+              onClick={() => setIndicators(prev => ({ ...prev, ema: !prev.ema }))}
+            >
+              EMA
+            </Button>
+            <Button
+              size="sm"
+              variant={indicators.supportResistance ? 'default' : 'outline'}
+              className="h-7 text-[10px] px-2"
+              onClick={() => setIndicators(prev => ({ ...prev, supportResistance: !prev.supportResistance }))}
+            >
+              S/R
+            </Button>
+            <Button
+              size="sm"
+              variant={indicators.rsi ? 'default' : 'outline'}
+              className="h-7 text-[10px] px-2"
+              onClick={() => setIndicators(prev => ({ ...prev, rsi: !prev.rsi }))}
+            >
+              RSI
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Chart Section - Collapsible */}
+      {chartVisible && (
+        <div className="space-y-3">
           {/* Candlestick Chart */}
           <div className="bg-[#0D1117] border border-[#30363D] rounded-xl overflow-hidden">
             <canvas ref={canvasRef} className="w-full" style={{ height: 520, cursor: 'crosshair' }} />
@@ -985,8 +1114,10 @@ export default function TradingChart() {
             </div>
           </div>
         </div>
+      )}
 
-        {/* RIGHT: Signals + Trade + Tech */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        {/* LEFT: Trading Signals and Bot Controls */}
         <div className="xl:col-span-4 space-y-3">
           {/* Trading Signals */}
           <div className="grid grid-cols-2 gap-2">
@@ -1397,6 +1528,97 @@ export default function TradingChart() {
                 <div className="h-full bg-[#BC8CFF] rounded-full" style={{ width: `${Math.min(100, Math.max(0, bbPosition))}%` }} />
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* RIGHT: Manual Trading Panel */}
+        <div className="xl:col-span-8 space-y-3">
+          {/* Manual Trade Panel */}
+          <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Zap className="w-4 h-4 text-primary" /> Manual Trading
+            </h3>
+            
+            <Select value={contractType} onValueChange={setContractType}>
+              <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
+            </Select>
+
+            {needsBarrier(contractType) && (
+              <div>
+                <label className="text-xs text-muted-foreground">Prediction (0-9)</label>
+                <div className="grid grid-cols-5 gap-2 mt-1">
+                  {Array.from({ length: 10 }, (_, i) => (
+                    <button key={i} onClick={() => setPrediction(String(i))}
+                      className={`h-10 rounded-lg text-sm font-mono font-bold transition-all ${
+                        prediction === String(i) ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-secondary'
+                      }`}>{i}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground">Stake ($)</label>
+                <Input type="number" min="0.35" step="0.01" value={tradeStake} onChange={e => setTradeStake(e.target.value)} className="h-9" />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Duration</label>
+                <div className="flex gap-2">
+                  <Input type="number" min="1" value={duration} onChange={e => setDuration(e.target.value)} className="flex-1 h-9" />
+                  <Select value={durationUnit} onValueChange={setDurationUnit}>
+                    <SelectTrigger className="w-20 h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="t">Ticks</SelectItem>
+                      <SelectItem value="s">Seconds</SelectItem>
+                      <SelectItem value="m">Minutes</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <Button onClick={() => handleBuy('buy')} disabled={isTrading || !isAuthorized} className="h-12 text-base font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
+                <TrendingUp className="w-5 h-5 mr-2" /> RISE
+              </Button>
+              <Button onClick={() => handleBuy('sell')} disabled={isTrading || !isAuthorized} variant="destructive" className="h-12 text-base font-bold">
+                <TrendingDown className="w-5 h-5 mr-2" /> FALL
+              </Button>
+            </div>
+          </div>
+
+          {/* Recent Trades */}
+          <div className="bg-card border border-border rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-foreground mb-3">Recent Trades</h3>
+            {tradeHistory.length === 0 ? (
+              <div className="text-center text-muted-foreground text-sm py-8">No trades yet</div>
+            ) : (
+              <div className="space-y-2 max-h-96 overflow-auto">
+                {tradeHistory.slice(0, 20).map(t => (
+                  <div key={t.id} className={`flex items-center justify-between p-2 rounded-lg border ${
+                    t.status === 'open' ? 'border-primary/30 bg-primary/5' :
+                    t.status === 'won' ? 'border-profit/30 bg-profit/5' :
+                    'border-loss/30 bg-loss/5'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`font-bold ${t.status === 'won' ? 'text-profit' : t.status === 'lost' ? 'text-loss' : 'text-primary'}`}>
+                        {t.status === 'open' ? '⏳' : t.status === 'won' ? '✅' : '❌'}
+                      </span>
+                      <span className="font-mono text-sm">{t.type}</span>
+                      <span className="text-muted-foreground">${t.stake.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-muted-foreground">{new Date(t.time).toLocaleTimeString()}</span>
+                      <span className={`font-mono font-bold ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                        {t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
