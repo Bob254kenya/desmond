@@ -988,7 +988,7 @@ export default function TradingChart() {
           <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-primary" /> Trading Chart
           </h1>
-          <p className="text-xs text-muted-foreground">Advanced Trading Platform with AI Signals</p>
+          <p className="text-xs text-muted-foreground"> Ramzfx Advanced Trading Platform with AI Signals</p>
         </div>
         <Button
           onClick={() => setShowChart(!showChart)}
@@ -1258,7 +1258,7 @@ export default function TradingChart() {
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Zap className="w-3.5 h-3.5 text-primary" /> Auto Trading Bot
+                <Zap className="w-3.5 h-3.5 text-primary" /> Speed Bot
               </h3>
               <div className="flex items-center gap-2">
                 <Button
@@ -1364,7 +1364,7 @@ export default function TradingChart() {
                       onClick={() => setStrategyMode('digit')}
                       disabled={botRunning}
                     >
-                      Digit Condition
+                      Digit Condition 
                     </Button>
                   </div>
 
@@ -1385,14 +1385,11 @@ export default function TradingChart() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-3 gap-1">
-                      <div>
-                        <label className="text-[8px] text-muted-foreground">Condition</label>
-                        <Select value={digitCondition} onValueChange={setDigitCondition} disabled={botRunning}>
-                          <SelectTrigger className="h-7 text-[10px]"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                     <div>
+                        <label className="text-[8px] text-muted-foreground">Ticks</label>
+                        <Input type="number" min="1" max="50" value={digitWindow}
+                          onChange={e => setDigitWindow(e.target.value)} disabled={botRunning}
+                          className="h-7 text-[10px]" />
                       </div>
                       <div>
                         <label className="text-[8px] text-muted-foreground">Digit</label>
@@ -1400,11 +1397,15 @@ export default function TradingChart() {
                           onChange={e => setDigitCompare(e.target.value)} disabled={botRunning}
                           className="h-7 text-[10px]" />
                       </div>
-                      <div>
-                        <label className="text-[8px] text-muted-foreground">Window</label>
-                        <Input type="number" min="1" max="50" value={digitWindow}
-                          onChange={e => setDigitWindow(e.target.value)} disabled={botRunning}
-                          className="h-7 text-[10px]" />
+                      
+                       <div>
+                        <label className="text-[8px] text-muted-foreground">Condition If </label>
+                        <Select value={digitCondition} onValueChange={setDigitCondition} disabled={botRunning}>
+                          <SelectTrigger className="h-7 text-[10px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {['==', '>', '<', '>=', '<='].map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                   )}
@@ -1475,7 +1476,7 @@ export default function TradingChart() {
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
+                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Results
               </h3>
               {tradeHistory.length > 0 && (
                 <Button variant="ghost" size="sm" className="h-6 text-[9px] text-muted-foreground hover:text-loss"
