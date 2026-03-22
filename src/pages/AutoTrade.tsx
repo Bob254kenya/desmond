@@ -1386,13 +1386,13 @@ export default function TradingChart() {
                   ) : (
                     <div className="grid grid-cols-3 gap-1">
                      <div>
-                        <label className="text-[8px] text-muted-foreground">If last ticks are</label>
+                        <label className="text-[8px] text-muted-foreground">If last </label>
                         <Input type="number" min="1" max="50" value={digitWindow}
                           onChange={e => setDigitWindow(e.target.value)} disabled={botRunning}
                           className="h-7 text-[10px]" />
                       </div>
                        <div>
-                        <label className="text-[8px] text-muted-foreground">Condition </label>
+                        <label className="text-[8px] text-muted-foreground">ticks are </label>
                         <Select value={digitCondition} onValueChange={setDigitCondition} disabled={botRunning}>
                           <SelectTrigger className="h-7 text-[10px]"><SelectValue /></SelectTrigger>
                           <SelectContent>
