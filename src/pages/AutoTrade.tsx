@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
-  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff,
+  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff, Search,
 } from 'lucide-react';
 
 /* ── Markets ── */
@@ -308,6 +308,10 @@ export default function TradingChart() {
   });
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
+  
+  // Strategy Check Markets
+  const [strategyCheckMarkets, setStrategyCheckMarkets] = useState<{ symbol: string, name: string, matches: boolean }[]>([]);
+  const [isCheckingMarkets, setIsCheckingMarkets] = useState(false);
 
   /* ── Load history + subscribe ── */
   useEffect(() => {
@@ -438,7 +442,7 @@ export default function TradingChart() {
         case '>=': return d >= comp;
         case '<=': return d <= comp;
         case '==': return d === comp;
-        case '!=': return d !== comp;  // ← NOT EQUAL condition added
+        case '!=': return d !== comp;
         default: return false;
       }
     });
@@ -452,6 +456,92 @@ export default function TradingChart() {
       return checkDigitCondition();
     }
   }, [strategyEnabled, strategyMode, checkPatternMatch, checkDigitCondition]);
+
+  // Check strategy on all markets
+  const checkStrategyOnAllMarkets = useCallback(async () => {
+    if (!strategyEnabled) {
+      toast.error('Please enable a strategy first');
+      return;
+    }
+    
+    setIsCheckingMarkets(true);
+    setStrategyCheckMarkets([]);
+    
+    // Save current symbol to restore later
+    const originalSymbol = symbol;
+    
+    const results: { symbol: string, name: string, matches: boolean }[] = [];
+    
+    // We'll check each market by temporarily switching and checking tick history
+    for (const market of ALL_MARKETS) {
+      try {
+        // Fetch tick history for this market
+        const hist = await derivApi.getTickHistory(market.symbol as MarketSymbol, 200);
+        
+        if (hist && hist.history && hist.history.prices) {
+          // Build tick history for this market
+          const marketDigits = hist.history.prices.map((p: number) => getLastDigit(p));
+          const tempTickHistory: number[] = marketDigits.slice(-50);
+          
+          // Create a temporary checker function using this market's data
+          const checkTempPattern = (): boolean => {
+            if (strategyMode === 'pattern') {
+              const cleanPat = patternInput.toUpperCase().replace(/[^EO]/g, '');
+              if (cleanPat.length < 2) return false;
+              if (tempTickHistory.length < cleanPat.length) return false;
+              const recent = tempTickHistory.slice(-cleanPat.length);
+              for (let i = 0; i < cleanPat.length; i++) {
+                const expected = cleanPat[i];
+                const actual = recent[i] % 2 === 0 ? 'E' : 'O';
+                if (expected !== actual) return false;
+              }
+              return true;
+            } else {
+              const win = parseInt(digitWindow) || 3;
+              const comp = parseInt(digitCompare);
+              if (tempTickHistory.length < win) return false;
+              const recent = tempTickHistory.slice(-win);
+              return recent.every(d => {
+                switch (digitCondition) {
+                  case '>': return d > comp;
+                  case '<': return d < comp;
+                  case '>=': return d >= comp;
+                  case '<=': return d <= comp;
+                  case '==': return d === comp;
+                  case '!=': return d !== comp;
+                  default: return false;
+                }
+              });
+            }
+          };
+          
+          const matches = checkTempPattern();
+          results.push({
+            symbol: market.symbol,
+            name: market.name,
+            matches
+          });
+        }
+      } catch (err) {
+        console.error(`Error checking ${market.symbol}:`, err);
+      }
+      
+      // Add small delay to avoid rate limiting
+      await new Promise(r => setTimeout(r, 100));
+    }
+    
+    setStrategyCheckMarkets(results);
+    setIsCheckingMarkets(false);
+    
+    // Count matching markets
+    const matchingCount = results.filter(r => r.matches).length;
+    toast.success(`Strategy check complete! ${matchingCount}/${results.length} markets match your ${strategyMode === 'pattern' ? 'pattern' : 'digit condition'}`);
+    
+    // Restore original symbol if needed
+    if (originalSymbol !== symbol) {
+      setSymbol(originalSymbol);
+    }
+  }, [strategyEnabled, strategyMode, patternInput, digitCondition, digitCompare, digitWindow, symbol]);
 
   /* ── Canvas Chart ── */
   const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
@@ -1354,6 +1444,73 @@ export default function TradingChart() {
                           onChange={e => setDigitCompare(e.target.value)} disabled={botRunning}
                           className="h-7 text-[10px]" />
                       </div>
+                    </div>
+                  )}
+
+                  {/* Check Strategy Button */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full h-7 text-[10px] gap-1 mt-1"
+                    onClick={checkStrategyOnAllMarkets}
+                    disabled={isCheckingMarkets || botRunning}
+                  >
+                    {isCheckingMarkets ? (
+                      <>
+                        <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                        Checking Markets...
+                      </>
+                    ) : (
+                      <>
+                        <Search className="w-3 h-3" />
+                        Check Strategy on All Markets
+                      </>
+                    )}
+                  </Button>
+
+                  {/* Display strategy check results */}
+                  {strategyCheckMarkets.length > 0 && !isCheckingMarkets && (
+                    <div className="mt-2 space-y-1.5">
+                      <div className="flex items-center justify-between text-[9px]">
+                        <span className="text-muted-foreground">Markets matching strategy:</span>
+                        <span className="font-mono font-bold text-profit">
+                          {strategyCheckMarkets.filter(m => m.matches).length}/{strategyCheckMarkets.length}
+                        </span>
+                      </div>
+                      <div className="max-h-32 overflow-auto space-y-0.5">
+                        {strategyCheckMarkets.slice(0, 15).map((market, idx) => (
+                          <div 
+                            key={idx} 
+                            className={`flex items-center justify-between text-[8px] p-1 rounded cursor-pointer hover:bg-muted/30
+                              ${market.matches ? 'bg-profit/5 border-l-2 border-profit' : 'bg-muted/10'}`}
+                            onClick={() => {
+                              setSymbol(market.symbol);
+                              setStrategyCheckMarkets([]); // Clear results after selection
+                              toast.info(`Switched to ${market.name}`);
+                            }}
+                          >
+                            <span className="truncate flex-1">{market.name}</span>
+                            {market.matches ? (
+                              <Badge className="text-[7px] px-1 bg-profit text-profit-foreground">MATCH</Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-[7px] px-1 text-muted-foreground">No</Badge>
+                            )}
+                          </div>
+                        ))}
+                        {strategyCheckMarkets.length > 15 && (
+                          <div className="text-[8px] text-center text-muted-foreground pt-1">
+                            +{strategyCheckMarkets.length - 15} more markets
+                          </div>
+                        )}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full h-5 text-[8px] text-muted-foreground"
+                        onClick={() => setStrategyCheckMarkets([])}
+                      >
+                        Clear Results
+                      </Button>
                     </div>
                   )}
 
