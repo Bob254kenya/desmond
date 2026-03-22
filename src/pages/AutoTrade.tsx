@@ -266,6 +266,8 @@ interface TradeRecord {
 
 // Tick storage for pattern/digit strategy - FIXED: ensures single digits only
 const tickHistoryRef: { [symbol: string]: number[] } = {};
+// Store actual tick quotes for last 26 digits display
+const tickQuotesRef: { [symbol: string]: number[] } = {};
 
 function getTickHistory(symbol: string): number[] {
   return tickHistoryRef[symbol] || [];
@@ -277,6 +279,16 @@ function addTick(symbol: string, digit: number) {
   const singleDigit = digit % 10;
   tickHistoryRef[symbol].push(singleDigit);
   if (tickHistoryRef[symbol].length > 200) tickHistoryRef[symbol].shift();
+}
+
+function getTickQuotes(symbol: string): number[] {
+  return tickQuotesRef[symbol] || [];
+}
+
+function addTickQuote(symbol: string, quote: number) {
+  if (!tickQuotesRef[symbol]) tickQuotesRef[symbol] = [];
+  tickQuotesRef[symbol].push(quote);
+  if (tickQuotesRef[symbol].length > 200) tickQuotesRef[symbol].shift();
 }
 
 export default function TradingChart() {
@@ -382,6 +394,7 @@ export default function TradingChart() {
         // FIX: Use the universal extractor
         const digit = extractLastDigit(quote);
         addTick(symbol, digit);
+        addTickQuote(symbol, quote); // Store actual quote for last 26 digits
         setPrices(prev => [...prev, quote].slice(-5000));
         setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
       });
@@ -454,7 +467,14 @@ export default function TradingChart() {
   // FIX: Use the universal extractor for ALL digit operations
   const lastDigit = useMemo(() => extractLastDigit(currentPrice), [currentPrice]);
   const digits = useMemo(() => tfPrices.map(p => extractLastDigit(p)), [tfPrices]);
-  const last26 = useMemo(() => digits.slice(-26), [digits]);
+  
+  // FIXED: Get last 26 digits from actual tick quotes (not timeframe filtered)
+  const last26Ticks = useMemo(() => {
+    const quotes = getTickQuotes(symbol);
+    // Get last 26 quotes and extract digits from them
+    const lastQuotes = quotes.slice(-26);
+    return lastQuotes.map(q => extractLastDigit(q));
+  }, [symbol, prices]); // Re-run when prices update triggers re-render
   
   // FIX: analyzeDigits expects prices, not digits
   const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => analyzeDigits(tfPrices), [tfPrices]);
@@ -1248,12 +1268,12 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Last 26 Digits - FIXED: Always shows single digits */}
+          {/* Last 26 Digits - FIXED: Shows actual last 26 ticks from the market */}
           <div className="bg-card border border-border rounded-xl p-3">
             <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
             <div className="flex gap-1 flex-wrap justify-center">
-              {last26.map((d, i) => {
-                const isLast = i === last26.length - 1;
+              {last26Ticks.map((d, i) => {
+                const isLast = i === last26Ticks.length - 1;
                 // Ensure digit is single digit (0-9)
                 const displayDigit = Math.abs(d) % 10;
                 const isEven = displayDigit % 2 === 0;
@@ -1276,7 +1296,7 @@ export default function TradingChart() {
               })}
             </div>
             <div className="text-center text-[8px] text-muted-foreground mt-2">
-              Each box shows a single digit (0-9) | {last26.length} digits displayed
+              Each box shows a single digit (0-9) | {last26Ticks.length} digits from last {last26Ticks.length} ticks
             </div>
           </div>
 
