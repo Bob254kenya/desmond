@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { getLastDigit, analyzeDigits, calculateRSI, calculateMACD, calculateBollingerBands } from '@/services/analysis';
-import { copyTradingService } from '@/services/copy-trading-service';
-import { useLossRequirement } from '@/hooks/useLossRequirement';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -16,7 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
-  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff, Scan, RefreshCw, Anchor,
+  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff,
 } from 'lucide-react';
 
 /* ── Markets ── */
@@ -77,20 +75,6 @@ const CONTRACT_TYPES = [
   { value: 'DIGITOVER', label: 'Digits Over' },
   { value: 'DIGITUNDER', label: 'Digits Under' },
 ];
-
-/* ── SCANNER MARKETS ── */
-const SCANNER_MARKETS: { symbol: string; name: string }[] = [
-  { symbol: 'R_10', name: 'Vol 10' }, { symbol: 'R_25', name: 'Vol 25' },
-  { symbol: 'R_50', name: 'Vol 50' }, { symbol: 'R_75', name: 'Vol 75' },
-  { symbol: 'R_100', name: 'Vol 100' },
-  { symbol: '1HZ10V', name: 'V10 1s' }, { symbol: '1HZ25V', name: 'V25 1s' },
-  { symbol: '1HZ50V', name: 'V50 1s' }, { symbol: '1HZ75V', name: 'V75 1s' },
-  { symbol: '1HZ100V', name: 'V100 1s' },
-  { symbol: 'JD10', name: 'Jump 10' }, { symbol: 'JD25', name: 'Jump 25' },
-  { symbol: 'RDBEAR', name: 'Bear' }, { symbol: 'RDBULL', name: 'Bull' },
-];
-
-const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct);
 
 /* ── Candle builder ── */
 interface Candle {
@@ -261,41 +245,8 @@ function addTick(symbol: string, digit: number) {
   if (tickHistoryRef[symbol].length > 200) tickHistoryRef[symbol].shift();
 }
 
-/* ── Circular Tick Buffer for Scanner ── */
-class CircularTickBuffer {
-  private buffer: { digit: number; ts: number }[];
-  private head = 0;
-  private count = 0;
-  constructor(private capacity = 1000) {
-    this.buffer = new Array(capacity);
-  }
-  push(digit: number) {
-    this.buffer[this.head] = { digit, ts: performance.now() };
-    this.head = (this.head + 1) % this.capacity;
-    if (this.count < this.capacity) this.count++;
-  }
-  last(n: number): number[] {
-    const result: number[] = [];
-    const start = (this.head - Math.min(n, this.count) + this.capacity) % this.capacity;
-    for (let i = 0; i < Math.min(n, this.count); i++) {
-      result.push(this.buffer[(start + i) % this.capacity].digit);
-    }
-    return result;
-  }
-  get size() { return this.count; }
-}
-
-function waitForNextTick(symbol: string): Promise<{ quote: number }> {
-  return new Promise((resolve) => {
-    const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) { unsub(); resolve({ quote: data.tick.quote }); }
-    });
-  });
-}
-
 export default function TradingChart() {
-  const { isAuthorized, balance, activeAccount } = useAuth();
-  const { recordLoss } = useLossRequirement();
+  const { isAuthorized } = useAuth();
   const [showChart, setShowChart] = useState(false);
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
@@ -358,53 +309,6 @@ export default function TradingChart() {
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
 
-  // Scanner State
-  const [scannerActive, setScannerActive] = useState(false);
-  const [scannerMarket, setScannerMarket] = useState('R_100');
-  const [scannerPattern, setScannerPattern] = useState('');
-  const [scannerDigits, setScannerDigits] = useState<number[]>([]);
-  const scannerTickMapRef = useRef<Map<string, number[]>>(new Map());
-  const turboBuffersRef = useRef<Map<string, CircularTickBuffer>>(new Map());
-  const [turboLatency, setTurboLatency] = useState(0);
-  const [ticksCaptured, setTicksCaptured] = useState(0);
-  const [ticksMissed, setTicksMissed] = useState(0);
-  const lastTickTsRef = useRef(0);
-
-  // Scanner pattern validation
-  const cleanScannerPattern = scannerPattern.toUpperCase().replace(/[^EO]/g, '');
-  const scannerPatternValid = cleanScannerPattern.length >= 2;
-
-  // Check pattern match for scanner
-  const checkScannerPatternMatch = useCallback((): boolean => {
-    const digits = scannerTickMapRef.current.get(scannerMarket) || [];
-    if (digits.length < cleanScannerPattern.length) return false;
-    const recent = digits.slice(-cleanScannerPattern.length);
-    for (let i = 0; i < cleanScannerPattern.length; i++) {
-      const expected = cleanScannerPattern[i];
-      const actual = recent[i] % 2 === 0 ? 'E' : 'O';
-      if (expected !== actual) return false;
-    }
-    return true;
-  }, [scannerMarket, cleanScannerPattern]);
-
-  // Find matching market
-  const findMatchingMarket = useCallback((): string | null => {
-    if (!scannerActive || cleanScannerPattern.length < 2) return null;
-    for (const m of SCANNER_MARKETS) {
-      const digits = scannerTickMapRef.current.get(m.symbol) || [];
-      if (digits.length < cleanScannerPattern.length) continue;
-      const recent = digits.slice(-cleanScannerPattern.length);
-      let match = true;
-      for (let i = 0; i < cleanScannerPattern.length; i++) {
-        const expected = cleanScannerPattern[i];
-        const actual = recent[i] % 2 === 0 ? 'E' : 'O';
-        if (expected !== actual) { match = false; break; }
-      }
-      if (match) return m.symbol;
-    }
-    return null;
-  }, [scannerActive, cleanScannerPattern]);
-
   /* ── Load history + subscribe ── */
   useEffect(() => {
     let active = true;
@@ -448,49 +352,6 @@ export default function TradingChart() {
       derivApi.unsubscribeTicks(symbol as MarketSymbol).catch(() => {});
     };
   }, [symbol]);
-
-  // Scanner tick subscription
-  useEffect(() => {
-    if (!derivApi.isConnected) return;
-    let active = true;
-    const handler = (data: any) => {
-      if (!data.tick || !active) return;
-      const sym = data.tick.symbol as string;
-      const digit = getLastDigit(data.tick.quote);
-      const now = performance.now();
-
-      // Legacy tick map for scanner
-      const map = scannerTickMapRef.current;
-      const arr = map.get(sym) || [];
-      arr.push(digit);
-      if (arr.length > 200) arr.shift();
-      map.set(sym, arr);
-
-      // Update displayed digits for selected scanner market
-      if (sym === scannerMarket) {
-        setScannerDigits(prev => [...prev, digit].slice(-50));
-      }
-
-      // Turbo circular buffer
-      if (!turboBuffersRef.current.has(sym)) {
-        turboBuffersRef.current.set(sym, new CircularTickBuffer(1000));
-      }
-      const buf = turboBuffersRef.current.get(sym)!;
-      buf.push(digit);
-
-      // Turbo latency tracking
-      if (lastTickTsRef.current > 0) {
-        const lat = now - lastTickTsRef.current;
-        setTurboLatency(Math.round(lat));
-        if (lat > 50) setTicksMissed(prev => prev + 1);
-      }
-      lastTickTsRef.current = now;
-      setTicksCaptured(prev => prev + 1);
-    };
-    const unsub = derivApi.onMessage(handler);
-    SCANNER_MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol as MarketSymbol, () => {}).catch(() => {}); });
-    return () => { active = false; unsub(); };
-  }, [scannerMarket]);
 
   /* ── Derived data ── */
   const tfTicks = TF_TICKS[timeframe] || 60;
@@ -577,7 +438,7 @@ export default function TradingChart() {
         case '>=': return d >= comp;
         case '<=': return d <= comp;
         case '==': return d === comp;
-        case '!=': return d !== comp;
+        case '!=': return d !== comp;  // ← NOT EQUAL condition added
         default: return false;
       }
     });
@@ -591,18 +452,6 @@ export default function TradingChart() {
       return checkDigitCondition();
     }
   }, [strategyEnabled, strategyMode, checkPatternMatch, checkDigitCondition]);
-
-  // Check scanner condition for bot trading
-  const checkScannerCondition = useCallback((): boolean => {
-    if (!scannerActive) return true;
-    return checkScannerPatternMatch();
-  }, [scannerActive, checkScannerPatternMatch]);
-
-  // Get matching market for bot trading
-  const getMatchingMarket = useCallback((): string | null => {
-    if (!scannerActive) return null;
-    return findMatchingMarket();
-  }, [scannerActive, findMatchingMarket]);
 
   /* ── Canvas Chart ── */
   const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
@@ -961,7 +810,7 @@ export default function TradingChart() {
     finally { setIsTrading(false); }
   };
 
-  // ═══ AUTO BOT LOGIC with Strategy and Scanner ═══
+  // ═══ AUTO BOT LOGIC with Strategy ═══
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     setBotRunning(true); setBotPaused(false);
@@ -986,68 +835,30 @@ export default function TradingChart() {
         break;
       }
 
-      // Determine trade symbol based on scanner
-      let tradeSymbol = symbol;
-      let scannerMatch = null;
-      
-      if (scannerActive) {
-        scannerMatch = getMatchingMarket();
-        if (scannerMatch) {
-          tradeSymbol = scannerMatch;
-          if (voiceEnabled && trades % 3 === 0) speak(`Scanner found pattern on ${scannerMatch}`);
-        }
-      }
-
       // Check strategy condition before each trade
       if (strategyEnabled) {
         let conditionMet = false;
         while (botRunningRef.current && !conditionMet) {
           conditionMet = checkStrategyCondition();
           if (!conditionMet) {
-            await new Promise(r => setTimeout(r, turboMode ? 50 : 500));
+            await new Promise(r => setTimeout(r, 500));
           }
         }
         if (!botRunningRef.current) break;
       }
 
       const ct = botConfig.contractType;
-      const params: any = { 
-        contract_type: ct, 
-        symbol: tradeSymbol, 
-        duration: parseInt(botConfig.duration), 
-        duration_unit: botConfig.durationUnit, 
-        basis: 'stake', 
-        amount: stake 
-      };
+      const params: any = { contract_type: ct, symbol, duration: parseInt(botConfig.duration), duration_unit: botConfig.durationUnit, basis: 'stake', amount: stake };
       if (['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct)) params.barrier = botConfig.prediction;
 
       try {
-        // Turbo mode: skip waiting for next tick
-        if (!turboMode) {
-          await waitForNextTick(tradeSymbol);
-        }
-
         const { contractId } = await derivApi.buyContract(params);
-        
-        // Copy trade to followers
-        if (copyTradingService.enabled) {
-          copyTradingService.copyTrade({
-            ...params,
-            masterTradeId: contractId,
-          }).catch(err => console.error('Copy trading error:', err));
-        }
-        
-        const tr: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake, profit: 0, status: 'open', symbol: tradeSymbol };
+        const tr: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake, profit: 0, status: 'open', symbol };
         setTradeHistory(prev => [tr, ...prev].slice(0, 100));
         const result = await derivApi.waitForContractResult(contractId);
         trades++; pnl += result.profit;
         const resultDigit = getLastDigit(result.price || currentPrice);
         setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status, resultDigit } : t));
-
-        // Record loss for virtual trading requirement
-        if (result.status !== 'won' && activeAccount?.is_virtual) {
-          recordLoss(stake, tradeSymbol, 6000);
-        }
 
         if (result.status === 'won') {
           wins++; consLosses = 0; stake = baseStake;
@@ -1065,7 +876,7 @@ export default function TradingChart() {
     }
     setBotRunning(false); botRunningRef.current = false;
     setBotStats(prev => ({ ...prev, trades, wins, losses, pnl }));
-  }, [isAuthorized, botConfig, symbol, voiceEnabled, speak, strategyEnabled, checkStrategyCondition, currentPrice, scannerActive, getMatchingMarket, turboMode, activeAccount, recordLoss]);
+  }, [isAuthorized, botConfig, symbol, voiceEnabled, speak, strategyEnabled, checkStrategyCondition, currentPrice]);
 
   const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
   const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
@@ -1083,7 +894,7 @@ export default function TradingChart() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
-            <BarChart3 className="w-5 h-5 text-primary" /> RamzFX Speed Bot
+            <BarChart3 className="w-5 h-5 text-primary" /> Trading Chart
           </h1>
           <p className="text-xs text-muted-foreground">{marketName} • {timeframe} • {tfPrices.length} ticks</p>
         </div>
@@ -1391,11 +1202,11 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* ═══ AUTO BOT PANEL with Scanner & Strategy ═══ */}
+          {/* ═══ AUTO BOT PANEL with Strategy ═══ */}
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Zap className="w-3.5 h-3.5 text-primary" /> RamzFX Speed Bot
+                <Zap className="w-3.5 h-3.5 text-primary" /> Ramzfx Speed Bot 
               </h3>
               <div className="flex items-center gap-2">
                 <Button
@@ -1414,72 +1225,6 @@ export default function TradingChart() {
                   </motion.div>
                 )}
               </div>
-            </div>
-
-            {/* Scanner Section */}
-            <div className="border border-primary/30 rounded-lg p-2">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-1">
-                  <Scan className="w-3.5 h-3.5 text-primary" />
-                  <span className="text-[10px] font-semibold text-primary">Market Scanner</span>
-                </div>
-                <Switch checked={scannerActive} onCheckedChange={setScannerActive} disabled={botRunning} />
-              </div>
-              
-              {scannerActive && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[8px] text-muted-foreground">Scan Pattern (E=Even, O=Odd)</span>
-                    <Badge variant={scannerPatternValid ? 'default' : 'secondary'} className="text-[8px] h-4 px-1">
-                      {scannerPatternValid ? 'Valid' : 'Need 2+ chars'}
-                    </Badge>
-                  </div>
-                  <Textarea
-                    placeholder="e.g., EEEOE or OOEEO"
-                    value={scannerPattern}
-                    onChange={e => setScannerPattern(e.target.value.toUpperCase().replace(/[^EO]/g, ''))}
-                    disabled={botRunning}
-                    className="h-12 text-[10px] font-mono min-h-0"
-                  />
-                  
-                  {/* Scanner Digits Display */}
-                  <div className="bg-muted/30 rounded-lg p-2">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[8px] text-muted-foreground">Scanner Digits ({scannerMarket})</span>
-                      <Select value={scannerMarket} onValueChange={setScannerMarket} disabled={botRunning}>
-                        <SelectTrigger className="h-5 text-[8px] w-24"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {SCANNER_MARKETS.map(m => (
-                            <SelectItem key={m.symbol} value={m.symbol} className="text-[10px]">{m.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex gap-0.5 flex-wrap justify-center">
-                      {scannerDigits.slice(-12).map((d, i) => {
-                        const isEven = d % 2 === 0;
-                        return (
-                          <div key={i} className={`w-6 h-7 rounded text-center text-[10px] font-mono font-bold flex items-center justify-center ${
-                            isEven ? 'bg-[#3FB950]/20 text-[#3FB950]' : 'bg-[#D29922]/20 text-[#D29922]'
-                          }`}>
-                            {d}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {cleanScannerPattern.length >= 2 && (
-                      <div className={`mt-2 text-[9px] text-center font-mono ${checkScannerPatternMatch() ? 'text-profit' : 'text-muted-foreground'}`}>
-                        {checkScannerPatternMatch() ? '✅ Pattern matched on current market' : '⏳ Waiting for pattern...'}
-                      </div>
-                    )}
-                    {findMatchingMarket() && cleanScannerPattern.length >= 2 && (
-                      <div className="mt-1 text-[9px] text-center text-primary font-semibold">
-                        🎯 Pattern found on: {findMatchingMarket()}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
 
             <Select value={botConfig.contractType} onValueChange={v => setBotConfig(p => ({ ...p, contractType: v }))} disabled={botRunning}>
@@ -1618,24 +1363,6 @@ export default function TradingChart() {
                 </div>
               )}
             </div>
-
-            {/* Turbo Stats (when scanner active) */}
-            {scannerActive && (
-              <div className="grid grid-cols-3 gap-1 text-center bg-muted/30 rounded-lg p-1">
-                <div>
-                  <div className="text-[7px] text-muted-foreground">Latency</div>
-                  <div className="font-mono text-[9px] text-primary">{turboLatency}ms</div>
-                </div>
-                <div>
-                  <div className="text-[7px] text-muted-foreground">Captured</div>
-                  <div className="font-mono text-[9px] text-profit">{ticksCaptured}</div>
-                </div>
-                <div>
-                  <div className="text-[7px] text-muted-foreground">Missed</div>
-                  <div className="font-mono text-[9px] text-loss">{ticksMissed}</div>
-                </div>
-              </div>
-            )}
 
             <div className="grid grid-cols-3 gap-1.5">
               <div>
