@@ -251,7 +251,7 @@ interface TradeRecord {
   resultDigit?: number;
 }
 
-// Tick storage for pattern/digit strategy
+// Tick storage for pattern/digit strategy - FIXED: ensures single digits only
 const tickHistoryRef: { [symbol: string]: number[] } = {};
 
 function getTickHistory(symbol: string): number[] {
@@ -260,13 +260,15 @@ function getTickHistory(symbol: string): number[] {
 
 function addTick(symbol: string, digit: number) {
   if (!tickHistoryRef[symbol]) tickHistoryRef[symbol] = [];
-  tickHistoryRef[symbol].push(digit);
+  // Ensure we only store single digits (0-9)
+  const singleDigit = digit % 10;
+  tickHistoryRef[symbol].push(singleDigit);
   if (tickHistoryRef[symbol].length > 200) tickHistoryRef[symbol].shift();
 }
 
 export default function TradingChart() {
   const { isAuthorized } = useAuth();
-  const [showChart, setShowChart] = useState(false); // Changed to false (hidden by default)
+  const [showChart, setShowChart] = useState(false);
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
   const [timeframe, setTimeframe] = useState('1m');
@@ -329,7 +331,6 @@ export default function TradingChart() {
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
   
-  // Connection status (silent, not displayed)
   const connectionAttemptRef = useRef(0);
 
   // Auto-reconnect function with exponential backoff
@@ -435,9 +436,9 @@ export default function TradingChart() {
   const tfTimes = useMemo(() => times.slice(-tfTicks), [times, tfTicks]);
   const candles = useMemo(() => buildCandles(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
   const currentPrice = prices[prices.length - 1] || 0;
-  const lastDigit = getLastDigit(currentPrice);
-  const digits = useMemo(() => tfPrices.map(getLastDigit), [tfPrices]);
-  const last26 = useMemo(() => digits.slice(-26), [digits]);
+  const lastDigit = getLastDigit(currentPrice) % 10; // Ensure single digit
+  const digits = useMemo(() => tfPrices.map(p => getLastDigit(p) % 10), [tfPrices]); // Ensure single digits
+  const last26 = useMemo(() => digits.slice(-26), [digits]); // Now guaranteed to be single digits
   const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => analyzeDigits(tfPrices), [tfPrices]);
 
   // Strong support/resistance detection
@@ -449,7 +450,7 @@ export default function TradingChart() {
   const rsi = useMemo(() => calculateRSI(tfPrices, 14), [tfPrices]);
   const macd = useMemo(() => calcMACDFull(tfPrices), [tfPrices]);
 
-  // Digit stats
+  // Digit stats - using single digits
   const evenCount = useMemo(() => digits.filter(d => d % 2 === 0).length, [digits]);
   const oddCount = digits.length - evenCount;
   const evenPct = digits.length > 0 ? (evenCount / digits.length * 100) : 50;
@@ -536,7 +537,7 @@ export default function TradingChart() {
 
   // Chart drawing effect - only runs when showChart is true
   useEffect(() => {
-    if (!showChart) return; // Skip chart rendering when hidden
+    if (!showChart) return;
     
     const canvas = canvasRef.current;
     if (!canvas || candles.length < 2) return;
@@ -883,7 +884,7 @@ export default function TradingChart() {
       setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
       const result = await derivApi.waitForContractResult(contractId);
       
-      const resultDigit = getLastDigit(result.price || currentPrice);
+      const resultDigit = getLastDigit(result.price || currentPrice) % 10; // Ensure single digit
       const winningDigit = result.status === 'won' ? resultDigit : undefined;
       
       setTradeHistory(prev => prev.map(t => t.id === contractId ? { 
@@ -939,7 +940,7 @@ export default function TradingChart() {
       try {
         const { contractId } = await derivApi.buyContract(params);
         const result = await derivApi.waitForContractResult(contractId);
-        const resultDigit = getLastDigit(result.price || currentPrice);
+        const resultDigit = getLastDigit(result.price || currentPrice) % 10; // Ensure single digit
         
         const tr: TradeRecord = { 
           id: contractId, 
@@ -1227,7 +1228,7 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Last 26 Digits - Always Visible and Always Updating */}
+          {/* Last 26 Digits - Always Visible and Always Updating with Single Digits */}
           <div className="bg-card border border-border rounded-xl p-3">
             <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
             <div className="flex gap-1 flex-wrap justify-center">
@@ -1251,6 +1252,9 @@ export default function TradingChart() {
                   </motion.div>
                 );
               })}
+            </div>
+            <div className="text-center text-[8px] text-muted-foreground mt-2">
+              Each box shows a single digit (0-9) | {last26.length} digits displayed
             </div>
           </div>
 
