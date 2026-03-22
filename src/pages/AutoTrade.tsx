@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
 import { getLastDigit, analyzeDigits, calculateRSI, calculateMACD, calculateBollingerBands } from '@/services/analysis';
-import { copyTradingService } from '@/services/copy-trading-service';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -185,6 +184,9 @@ function detectStrongSupportResistance(prices: number[], lookback: number = 200,
   const levels: number[] = [];
   const threshold = (Math.max(...recentPrices) - Math.min(...recentPrices)) * 0.005;
   
+  // Find pivot points with multiple touches
+  const pivotPoints: { price: number; touches: number }[] = [];
+  
   for (let i = sensitivity; i < recentPrices.length - sensitivity; i++) {
     let isPivotHigh = true;
     let isPivotLow = true;
@@ -198,6 +200,7 @@ function detectStrongSupportResistance(prices: number[], lookback: number = 200,
     if (isPivotLow) levels.push(recentPrices[i]);
   }
   
+  // Cluster nearby levels and count touches
   const clustered: Map<number, number> = new Map();
   for (const level of levels) {
     let found = false;
@@ -223,6 +226,7 @@ function detectStrongSupportResistance(prices: number[], lookback: number = 200,
     }
   }
   
+  // Sort by touches (most significant first) and get strongest
   supports.sort((a, b) => b.touches - a.touches);
   resistances.sort((a, b) => b.touches - a.touches);
   
@@ -230,6 +234,14 @@ function detectStrongSupportResistance(prices: number[], lookback: number = 200,
     support: supports.length > 0 ? supports[0].price : 0,
     resistance: resistances.length > 0 ? resistances[0].price : 0
   };
+}
+
+function calcSR(prices: number[]) {
+  if (prices.length < 10) return { support: 0, resistance: 0 };
+  const sorted = [...prices].sort((a, b) => a - b);
+  const p5 = Math.floor(sorted.length * 0.05);
+  const p95 = Math.floor(sorted.length * 0.95);
+  return { support: sorted[p5], resistance: sorted[Math.min(p95, sorted.length - 1)] };
 }
 
 function calcMACDFull(prices: number[]) {
@@ -266,7 +278,7 @@ function addTick(symbol: string, digit: number) {
 }
 
 export default function TradingChart() {
-  const { isAuthorized, balance } = useAuth();
+  const { isAuthorized } = useAuth();
   const [showChart, setShowChart] = useState(true);
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
@@ -276,10 +288,6 @@ export default function TradingChart() {
   const [isLoading, setIsLoading] = useState(true);
   const subscribedRef = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  // Digit containers visibility
-  const [showEvenOddLabels, setShowEvenOddLabels] = useState(true);
-  const [showRiseFallLabels, setShowRiseFallLabels] = useState(true);
 
   // Zoom & pan state
   const [candleWidth, setCandleWidth] = useState(7);
@@ -299,9 +307,6 @@ export default function TradingChart() {
   const [tradeStake, setTradeStake] = useState('1.00');
   const [selectedDigit, setSelectedDigit] = useState<number | null>(null);
   const [isTrading, setIsTrading] = useState(false);
-
-  // Copy trading state
-  const [copyTradingEnabled, setCopyTradingEnabled] = useState(false);
 
   // Bot progress
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
@@ -584,6 +589,7 @@ export default function TradingChart() {
       if (u !== null) allPrices.push(u);
       if (l !== null) allPrices.push(l);
     }
+    // Add support/resistance levels to price range
     if (support > 0) allPrices.push(support);
     if (resistance > 0) allPrices.push(resistance);
     
@@ -665,6 +671,7 @@ export default function TradingChart() {
     drawLine(emaSeries, '#2F81F7', 1.5);
     drawLine(smaSeries, '#E6B422', 1.5);
 
+    // Draw strong support level (green, thick)
     if (support > 0) {
       ctx.setLineDash([8, 4]);
       ctx.strokeStyle = '#3FB950';
@@ -675,6 +682,7 @@ export default function TradingChart() {
       ctx.lineTo(chartW, supY); 
       ctx.stroke();
       
+      // Add label for support
       ctx.font = 'bold 9px JetBrains Mono, monospace';
       ctx.fillStyle = '#3FB950';
       ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
@@ -682,6 +690,7 @@ export default function TradingChart() {
       ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
     }
 
+    // Draw strong resistance level (red, thick)
     if (resistance > 0) {
       ctx.strokeStyle = '#F85149';
       ctx.lineWidth = 2.5;
@@ -691,6 +700,7 @@ export default function TradingChart() {
       ctx.lineTo(chartW, resY); 
       ctx.stroke();
       
+      // Add label for resistance
       ctx.font = 'bold 9px JetBrains Mono, monospace';
       ctx.fillStyle = '#F85149';
       ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
@@ -808,7 +818,7 @@ export default function TradingChart() {
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
 
-  // Trade execution with copy trading
+  // Trade execution
   const handleBuy = async (side: 'buy' | 'sell') => {
     if (!isAuthorized) { toast.error('Please login to your Deriv account first'); return; }
     if (isTrading) return;
@@ -819,19 +829,11 @@ export default function TradingChart() {
     try {
       toast.info(`⏳ Placing ${ct} trade... $${tradeStake}`);
       const { contractId } = await derivApi.buyContract(params);
-      
-      if (copyTradingEnabled && copyTradingService.enabled) {
-        copyTradingService.copyTrade({
-          ...params,
-          masterTradeId: contractId,
-        }).catch(err => console.error('Copy trading error:', err));
-        toast.info(`📡 Trade copied to followers`);
-      }
-      
       const newTrade: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake: parseFloat(tradeStake), profit: 0, status: 'open', symbol };
       setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
       const result = await derivApi.waitForContractResult(contractId);
       
+      // Get the winning/losing digit from the result
       const resultDigit = getLastDigit(result.price || currentPrice);
       const winningDigit = result.status === 'won' ? resultDigit : undefined;
       
@@ -848,7 +850,7 @@ export default function TradingChart() {
     finally { setIsTrading(false); }
   };
 
-  // AUTO BOT LOGIC with Strategy and copy trading
+  // AUTO BOT LOGIC with Strategy
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     setBotRunning(true); setBotPaused(false);
@@ -870,6 +872,7 @@ export default function TradingChart() {
         break;
       }
 
+      // Strategy check - wait for condition if enabled
       if (strategyEnabled) {
         let conditionMet = false;
         while (botRunningRef.current && !conditionMet) {
@@ -887,14 +890,6 @@ export default function TradingChart() {
 
       try {
         const { contractId } = await derivApi.buyContract(params);
-        
-        if (copyTradingEnabled && copyTradingService.enabled) {
-          copyTradingService.copyTrade({
-            ...params,
-            masterTradeId: contractId,
-          }).catch(err => console.error('Copy trading error:', err));
-        }
-        
         const result = await derivApi.waitForContractResult(contractId);
         const resultDigit = getLastDigit(result.price || currentPrice);
         
@@ -926,7 +921,7 @@ export default function TradingChart() {
     }
     setBotRunning(false); botRunningRef.current = false;
     setBotStats(prev => ({ ...prev, trades, wins, losses, pnl }));
-  }, [isAuthorized, botConfig, symbol, strategyEnabled, checkStrategyCondition, currentPrice, copyTradingEnabled]);
+  }, [isAuthorized, botConfig, symbol, strategyEnabled, checkStrategyCondition, currentPrice]);
 
   const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
   const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
@@ -945,36 +940,16 @@ export default function TradingChart() {
           <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-primary" /> Trading Chart
           </h1>
-          <p className="text-xs text-muted-foreground">Advanced Trading Platform with AI Signals & Copy Trading</p>
+          <p className="text-xs text-muted-foreground">Advanced Trading Platform with AI Signals</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setShowChart(!showChart)}
-            variant={showChart ? "destructive" : "default"}
-            className="gap-2"
-          >
-            {showChart ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            {showChart ? "Hide Chart" : "Show Chart"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Copy Trading Toggle */}
-      <div className="bg-card border border-border rounded-xl p-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-            <TrendingUp className="w-4 h-4 text-primary" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-foreground">Copy Trading</h3>
-            <p className="text-[10px] text-muted-foreground">Share your trades with followers automatically</p>
-          </div>
-        </div>
-        <Switch 
-          checked={copyTradingEnabled} 
-          onCheckedChange={setCopyTradingEnabled}
-          disabled={botRunning}
-        />
+        <Button
+          onClick={() => setShowChart(!showChart)}
+          variant={showChart ? "destructive" : "default"}
+          className="gap-2"
+        >
+          {showChart ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          {showChart ? "Hide Chart" : "Show Chart"}
+        </Button>
       </div>
 
       {/* Market Selector - Always Visible */}
@@ -1109,81 +1084,6 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Last 26 Digits with toggle buttons for E/O and R/F labels */}
-          <div className="bg-card border border-border rounded-xl p-3 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-foreground">Last 26 Digits</h3>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-[10px] gap-1"
-                  onClick={() => setShowEvenOddLabels(!showEvenOddLabels)}
-                >
-                  {showEvenOddLabels ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                  {showEvenOddLabels ? "Hide E/O" : "Show E/O"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-[10px] gap-1"
-                  onClick={() => setShowRiseFallLabels(!showRiseFallLabels)}
-                >
-                  {showRiseFallLabels ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                  {showRiseFallLabels ? "Hide R/F" : "Show R/F"}
-                </Button>
-              </div>
-            </div>
-            <div className="flex gap-1 flex-wrap justify-center">
-              {last26.map((d, i) => {
-                const isLast = i === last26.length - 1;
-                const isEven = d % 2 === 0;
-                const isOver = d >= 5;
-                const eoLabel = isEven ? 'E' : 'O';
-                const rfLabel = isOver ? 'R' : 'F';
-                return (
-                  <motion.div
-                    key={i}
-                    initial={isLast ? { scale: 0.8 } : {}}
-                    animate={isLast ? { scale: [1, 1.1, 1] } : {}}
-                    transition={isLast ? { duration: 1, repeat: Infinity } : {}}
-                    className={`w-10 h-12 rounded-lg flex flex-col items-center justify-center font-mono font-bold text-sm border-2 transition-all ${
-                      isLast ? 'ring-2 ring-primary' : ''
-                    } ${isEven
-                      ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
-                      : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
-                    }`}
-                  >
-                    <span className="text-base">{d}</span>
-                    <div className="flex gap-0.5 text-[8px] opacity-80">
-                      {showEvenOddLabels && <span>{eoLabel}</span>}
-                      {showEvenOddLabels && showRiseFallLabels && <span>·</span>}
-                      {showRiseFallLabels && <span>{rfLabel}</span>}
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </div>
-            <div className="flex justify-center gap-4 text-[9px] text-muted-foreground pt-1">
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-[#3FB950]"></div>
-                <span>Even (E)</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-[#D29922]"></div>
-                <span>Odd (O)</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-primary"></div>
-                <span>Rise (R) ≥5</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-[#F85149]"></div>
-                <span>Fall (F) ≤4</span>
-              </div>
-            </div>
-          </div>
-
           {/* Strategic Recommendations - Always Visible */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <div className="bg-card border border-profit/30 rounded-lg p-2">
@@ -1276,6 +1176,33 @@ export default function TradingChart() {
                 <div className="h-full bg-profit rounded-full" style={{ width: `${matchSignal.confidence}%` }} />
               </div>
               <div className="text-[8px] text-right text-muted-foreground mt-0.5">{matchSignal.confidence}%</div>
+            </div>
+          </div>
+
+          {/* Last 26 Digits */}
+          <div className="bg-card border border-border rounded-xl p-3">
+            <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
+            <div className="flex gap-1 flex-wrap justify-center">
+              {last26.map((d, i) => {
+                const isLast = i === last26.length - 1;
+                const isEven = d % 2 === 0;
+                return (
+                  <motion.div
+                    key={i}
+                    initial={isLast ? { scale: 0.8 } : {}}
+                    animate={isLast ? { scale: [1, 1.1, 1] } : {}}
+                    transition={isLast ? { duration: 1, repeat: Infinity } : {}}
+                    className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${
+                      isLast ? 'w-9 h-11 text-sm ring-2 ring-primary' : ''
+                    } ${isEven
+                      ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
+                      : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
+                    }`}
+                  >
+                    {d}
+                  </motion.div>
+                );
+              })}
             </div>
           </div>
 
