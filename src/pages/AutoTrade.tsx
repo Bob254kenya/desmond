@@ -262,6 +262,9 @@ interface TradeRecord {
   symbol: string;
   winningDigit?: number;
   resultDigit?: number;
+  market: string;
+  contractType: string;
+  digit: number;
 }
 
 // Tick storage for pattern/digit strategy
@@ -277,16 +280,113 @@ function addTick(symbol: string, digit: number) {
   if (tickHistoryRef[symbol].length > 200) tickHistoryRef[symbol].shift();
 }
 
+// ========================================
+// NEW FEATURE: Digit to Contract Symbol Mapping
+// ========================================
+function formatDigitByContract(digit: number, contractType: string): string {
+  switch (contractType) {
+    case 'CALL':
+      // Rise → "R"
+      return 'R';
+    case 'PUT':
+      // Fall → "F"
+      return 'F';
+    case 'DIGITOVER':
+      // Over → "O"
+      return 'O';
+    case 'DIGITUNDER':
+      // Under → "U"
+      return 'U';
+    case 'DIGITEVEN':
+      // Even → "E"
+      return 'E';
+    case 'DIGITODD':
+      // Odd → "O"
+      return 'O';
+    case 'DIGITMATCH':
+      // Matches → "M"
+      return 'M';
+    case 'DIGITDIFF':
+      // Differs → "D"
+      return 'D';
+    default:
+      return digit.toString();
+  }
+}
+
+// ========================================
+// AUTO RECONNECT SYSTEM
+// ========================================
+let reconnectTimer: NodeJS.Timeout | null = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY = 2000;
+const MAX_RECONNECT_DELAY = 10000;
+
+async function handleReconnect(
+  symbol: MarketSymbol,
+  onReconnect: () => void,
+  onSubscribe: (symbol: MarketSymbol, callback: (data: any) => void) => Promise<void>,
+  callback: (data: any) => void
+) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  
+  const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(1.5, reconnectAttempts), MAX_RECONNECT_DELAY);
+  reconnectAttempts++;
+  
+  console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts})`);
+  
+  reconnectTimer = setTimeout(async () => {
+    try {
+      await derivApi.connect();
+      if (derivApi.isConnected) {
+        console.log('Reconnected successfully');
+        reconnectAttempts = 0;
+        onReconnect();
+        await onSubscribe(symbol, callback);
+      } else {
+        handleReconnect(symbol, onReconnect, onSubscribe, callback);
+      }
+    } catch (err) {
+      console.error('Reconnect failed:', err);
+      handleReconnect(symbol, onReconnect, onSubscribe, callback);
+    }
+  }, delay);
+}
+
+// ========================================
+// TRADE RESULT LOGGING
+// ========================================
+function logTradeResult(
+  trade: TradeRecord,
+  digit: number,
+  contractType: string,
+  stake: number,
+  market: string,
+  result: "WIN" | "LOSS"
+): TradeRecord {
+  return {
+    ...trade,
+    digit,
+    contractType,
+    stake,
+    market,
+    result: result === "WIN" ? 'won' : 'lost'
+  };
+}
+
 export default function TradingChart() {
   const { isAuthorized } = useAuth();
-  const [showChart, setShowChart] = useState(true);
+  // Chart hidden by default
+  const [showChart, setShowChart] = useState(false);
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
   const [timeframe, setTimeframe] = useState('1m');
   const [prices, setPrices] = useState<number[]>([]);
   const [times, setTimes] = useState<number[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
+  // Connection error state removed from UI - now silent
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const subscribedRef = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -340,7 +440,7 @@ export default function TradingChart() {
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
 
-  /* ── Load history + subscribe with error handling ── */
+  /* ── Load history + subscribe with silent error handling ── */
   useEffect(() => {
     if (!showChart) return;
     
@@ -348,15 +448,11 @@ export default function TradingChart() {
     let unsubscribeFn: (() => void) | null = null;
     subscribedRef.current = false;
 
+    const subscribeToTicks = async (sym: MarketSymbol, onTick: (data: any) => void) => {
+      await derivApi.subscribeTicks(sym, onTick);
+    };
+
     const load = async () => {
-      // Check connection status
-      if (!derivApi.isConnected) {
-        setConnectionError('Not connected to Deriv API. Please check your connection.');
-        setIsLoading(false);
-        return;
-      }
-      
-      setConnectionError(null);
       setIsLoading(true);
       
       try {
@@ -387,12 +483,51 @@ export default function TradingChart() {
             });
           } catch (subError: any) {
             console.error('Subscription error:', subError);
-            setConnectionError(`Failed to subscribe to ticks: ${subError.message}`);
+            // Silent reconnect attempt - no UI error
+            handleReconnect(
+              symbol as MarketSymbol,
+              () => {
+                if (active) {
+                  setIsReconnecting(false);
+                }
+              },
+              subscribeToTicks,
+              (data: any) => {
+                if (!active || !data.tick) return;
+                const quote = data.tick.quote;
+                if (typeof quote === 'number' && !isNaN(quote)) {
+                  const digit = getLastDigit(quote);
+                  addTick(symbol, digit);
+                  setPrices(prev => [...prev, quote].slice(-5000));
+                  setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
+                }
+              }
+            );
           }
         }
       } catch (err: any) {
         console.error('History fetch error:', err);
-        setConnectionError(`Failed to fetch tick history: ${err.message}`);
+        // Silent reconnect attempt - no UI error
+        handleReconnect(
+          symbol as MarketSymbol,
+          () => {
+            if (active) {
+              setIsReconnecting(false);
+              load();
+            }
+          },
+          subscribeToTicks,
+          (data: any) => {
+            if (!active || !data.tick) return;
+            const quote = data.tick.quote;
+            if (typeof quote === 'number' && !isNaN(quote)) {
+              const digit = getLastDigit(quote);
+              addTick(symbol, digit);
+              setPrices(prev => [...prev, quote].slice(-5000));
+              setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
+            }
+          }
+        );
         setIsLoading(false);
       }
     };
@@ -402,6 +537,7 @@ export default function TradingChart() {
     return () => {
       active = false;
       if (unsubscribeFn) unsubscribeFn();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       derivApi.unsubscribeTicks(symbol as MarketSymbol).catch((err) => {
         console.warn('Error unsubscribing:', err);
       });
@@ -418,6 +554,13 @@ export default function TradingChart() {
   const digits = useMemo(() => tfPrices.map(getLastDigit), [tfPrices]);
   const last26 = useMemo(() => digits.slice(-26), [digits]);
   const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => analyzeDigits(tfPrices), [tfPrices]);
+
+  // ========================================
+  // NEW FEATURE: Mapped last 26 digits based on contract type
+  // ========================================
+  const mappedLast26 = useMemo(() => {
+    return last26.map(digit => formatDigitByContract(digit, contractType));
+  }, [last26, contractType]);
 
   // Strong support/resistance detection
   const { support, resistance } = useMemo(() => detectStrongSupportResistance(tfPrices, 200, 5), [tfPrices]);
@@ -479,7 +622,6 @@ export default function TradingChart() {
     return true;
   }, [symbol, cleanPattern]);
 
-  // FIXED: Corrected the !== condition
   const checkDigitCondition = useCallback((): boolean => {
     const ticks = getTickHistory(symbol);
     const win = parseInt(digitWindow) || 3;
@@ -493,7 +635,7 @@ export default function TradingChart() {
         case '>=': return d >= comp;
         case '<=': return d <= comp;
         case '==': return d === comp;
-        case '!==': return d !== comp; // ✅ FIXED: Now correctly checks inequality
+        case '!==': return d !== comp;
         default: return false;
       }
     });
@@ -619,7 +761,6 @@ export default function TradingChart() {
       if (u !== null) allPrices.push(u);
       if (l !== null) allPrices.push(l);
     }
-    // Add support/resistance levels to price range
     if (support > 0) allPrices.push(support);
     if (resistance > 0) allPrices.push(resistance);
     
@@ -701,7 +842,6 @@ export default function TradingChart() {
     drawLine(emaSeries, '#2F81F7', 1.5);
     drawLine(smaSeries, '#E6B422', 1.5);
 
-    // Draw strong support level (green, thick)
     if (support > 0) {
       ctx.setLineDash([8, 4]);
       ctx.strokeStyle = '#3FB950';
@@ -712,7 +852,6 @@ export default function TradingChart() {
       ctx.lineTo(chartW, supY); 
       ctx.stroke();
       
-      // Add label for support
       ctx.font = 'bold 9px JetBrains Mono, monospace';
       ctx.fillStyle = '#3FB950';
       ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
@@ -720,7 +859,6 @@ export default function TradingChart() {
       ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
     }
 
-    // Draw strong resistance level (red, thick)
     if (resistance > 0) {
       ctx.strokeStyle = '#F85149';
       ctx.lineWidth = 2.5;
@@ -730,7 +868,6 @@ export default function TradingChart() {
       ctx.lineTo(chartW, resY); 
       ctx.stroke();
       
-      // Add label for resistance
       ctx.font = 'bold 9px JetBrains Mono, monospace';
       ctx.fillStyle = '#F85149';
       ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
@@ -853,9 +990,9 @@ export default function TradingChart() {
     if (!isAuthorized) { toast.error('Please login to your Deriv account first'); return; }
     if (isTrading) return;
     
-    // Check connection before trading
     if (!derivApi.isConnected) {
-      toast.error('Not connected to Deriv API. Please check your connection.');
+      // Silent auto-reconnect will handle this - just show toast for user awareness
+      toast.error('Connection issue, reconnecting...');
       return;
     }
     
@@ -866,23 +1003,45 @@ export default function TradingChart() {
     try {
       toast.info(`⏳ Placing ${ct} trade... $${tradeStake}`);
       const { contractId } = await derivApi.buyContract(params);
-      const newTrade: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake: parseFloat(tradeStake), profit: 0, status: 'open', symbol };
+      const resultDigit = getLastDigit(currentPrice);
+      
+      // Get contract type display name
+      const contractDisplay = CONTRACT_TYPES.find(c => c.value === ct)?.label || ct;
+      
+      const newTrade: TradeRecord = { 
+        id: contractId, 
+        time: Date.now(), 
+        type: ct, 
+        stake: parseFloat(tradeStake), 
+        profit: 0, 
+        status: 'open', 
+        symbol,
+        market: symbol,
+        contractType: contractDisplay,
+        digit: resultDigit
+      };
       setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
       const result = await derivApi.waitForContractResult(contractId);
       
-      // Get the winning/losing digit from the result
-      const resultDigit = getLastDigit(result.price || currentPrice);
-      const winningDigit = result.status === 'won' ? resultDigit : undefined;
+      const finalDigit = getLastDigit(result.price || currentPrice);
+      const winningDigit = result.status === 'won' ? finalDigit : undefined;
       
-      setTradeHistory(prev => prev.map(t => t.id === contractId ? { 
-        ...t, 
-        profit: result.profit, 
-        status: result.status,
-        winningDigit,
-        resultDigit 
-      } : t));
-      if (result.status === 'won') { toast.success(`✅ WON +$${result.profit.toFixed(2)} | Digit: ${resultDigit}`); }
-      else { toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)} | Digit: ${resultDigit}`); }
+      // Enhanced trade result logging with all fields
+      const updatedTrade = logTradeResult(
+        { ...newTrade, profit: result.profit, status: result.status, winningDigit, resultDigit: finalDigit },
+        finalDigit,
+        contractDisplay,
+        parseFloat(tradeStake),
+        symbol,
+        result.status === 'won' ? "WIN" : "LOSS"
+      );
+      
+      setTradeHistory(prev => prev.map(t => t.id === contractId ? updatedTrade : t));
+      if (result.status === 'won') { 
+        toast.success(`✅ WON +$${result.profit.toFixed(2)} | Digit: ${finalDigit} | ${contractDisplay}`); 
+      } else { 
+        toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)} | Digit: ${finalDigit} | ${contractDisplay}`); 
+      }
     } catch (err: any) { 
       toast.error(`Trade failed: ${err.message}`);
       console.error('Trade error:', err);
@@ -894,7 +1053,7 @@ export default function TradingChart() {
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     if (!derivApi.isConnected) {
-      toast.error('Not connected to Deriv API. Please check your connection.');
+      toast.error('Connection issue, reconnecting...');
       return;
     }
     
@@ -909,6 +1068,8 @@ export default function TradingChart() {
     let stake = baseStake;
     let pnl = 0; let trades = 0; let wins = 0; let losses = 0; let consLosses = 0;
 
+    const contractDisplay = CONTRACT_TYPES.find(c => c.value === botConfig.contractType)?.label || botConfig.contractType;
+
     while (botRunningRef.current) {
       if (botPausedRef.current) { await new Promise(r => setTimeout(r, 500)); continue; }
       if (trades >= maxT || pnl <= -sl || pnl >= tp) {
@@ -917,20 +1078,17 @@ export default function TradingChart() {
         break;
       }
 
-      // Check connection before each trade
       if (!derivApi.isConnected) {
         toast.error('Connection lost. Bot stopping.');
         break;
       }
 
-      // Strategy check - wait for condition if enabled
       if (strategyEnabled) {
         let conditionMet = false;
         let waitCount = 0;
         while (botRunningRef.current && !conditionMet) {
           conditionMet = checkStrategyCondition();
           if (!conditionMet) {
-            // Show waiting message periodically
             if (waitCount % 20 === 0 && waitCount > 0) {
               toast.info(`⏳ Waiting for ${strategyMode === 'pattern' ? 'pattern' : 'digit condition'}...`);
             }
@@ -959,7 +1117,10 @@ export default function TradingChart() {
           status: result.status,
           symbol,
           winningDigit: result.status === 'won' ? resultDigit : undefined,
-          resultDigit
+          resultDigit,
+          market: symbol,
+          contractType: contractDisplay,
+          digit: resultDigit
         };
         setTradeHistory(prev => [tr, ...prev].slice(0, 100));
         trades++; pnl += result.profit;
@@ -972,7 +1133,6 @@ export default function TradingChart() {
         }
         setBotStats({ trades, wins, losses, pnl, currentStake: stake, consecutiveLosses: consLosses });
         
-        // Show status update periodically
         if (trades % 5 === 0) {
           toast.info(`🤖 Bot progress: ${trades} trades | P/L: ${pnl.toFixed(2)}`);
         }
@@ -998,24 +1158,6 @@ export default function TradingChart() {
 
   return (
     <div className="space-y-4 max-w-[1920px] mx-auto">
-      {/* Connection Status Alert */}
-      {connectionError && (
-        <div className="bg-loss/10 border border-loss/30 rounded-xl p-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-loss" />
-            <span className="text-xs text-loss">⚠️ {connectionError}</span>
-          </div>
-          <Button 
-            size="sm" 
-            variant="outline" 
-            className="h-6 text-[10px]"
-            onClick={() => window.location.reload()}
-          >
-            Retry Connection
-          </Button>
-        </div>
-      )}
-
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
@@ -1025,8 +1167,8 @@ export default function TradingChart() {
           <p className="text-xs text-muted-foreground">Ramzfx Advanced Trading Platform with AI Signals</p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge className={`text-[10px] ${derivApi.isConnected ? 'bg-profit text-profit-foreground' : 'bg-loss text-loss-foreground'}`}>
-            {derivApi.isConnected ? '● Connected' : '● Disconnected'}
+          <Badge className={`text-[10px] ${derivApi.isConnected ? 'bg-profit text-profit-foreground' : 'bg-warning text-warning-foreground'}`}>
+            {derivApi.isConnected ? '● Connected' : isReconnecting ? '⟳ Reconnecting' : '● Disconnected'}
           </Badge>
           <Button
             onClick={() => setShowChart(!showChart)}
@@ -1266,30 +1408,49 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Last 26 Digits */}
+          {/* Last 26 Digits - MAPPED BASED ON CONTRACT TYPE */}
           <div className="bg-card border border-border rounded-xl p-3">
-            <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
+            <h3 className="text-xs font-semibold text-foreground mb-2">
+              Last 26 Digits 
+              <span className="text-[9px] text-muted-foreground ml-2">
+                (Mapped for {CONTRACT_TYPES.find(c => c.value === contractType)?.label || contractType})
+              </span>
+            </h3>
             <div className="flex gap-1 flex-wrap justify-center">
-              {last26.map((d, i) => {
-                const isLast = i === last26.length - 1;
-                const isEven = d % 2 === 0;
+              {mappedLast26.map((mapped, i) => {
+                const isLast = i === mappedLast26.length - 1;
+                // Determine color based on mapped value for better UX
+                let bgColor = 'bg-primary/10';
+                let borderColor = 'border-primary';
+                let textColor = 'text-primary';
+                if (mapped === 'R') { bgColor = 'bg-profit/10'; borderColor = 'border-profit'; textColor = 'text-profit'; }
+                else if (mapped === 'F') { bgColor = 'bg-loss/10'; borderColor = 'border-loss'; textColor = 'text-loss'; }
+                else if (mapped === 'O') { bgColor = 'bg-warning/10'; borderColor = 'border-warning'; textColor = 'text-warning'; }
+                else if (mapped === 'U') { bgColor = 'bg-[#D29922]/10'; borderColor = 'border-[#D29922]'; textColor = 'text-[#D29922]'; }
+                else if (mapped === 'E') { bgColor = 'bg-[#3FB950]/10'; borderColor = 'border-[#3FB950]'; textColor = 'text-[#3FB950]'; }
+                else if (mapped === 'M') { bgColor = 'bg-profit/10'; borderColor = 'border-profit'; textColor = 'text-profit'; }
+                else if (mapped === 'D') { bgColor = 'bg-loss/10'; borderColor = 'border-loss'; textColor = 'text-loss'; }
+                
                 return (
                   <motion.div
                     key={i}
                     initial={isLast ? { scale: 0.8 } : {}}
                     animate={isLast ? { scale: [1, 1.1, 1] } : {}}
                     transition={isLast ? { duration: 1, repeat: Infinity } : {}}
-                    className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${
+                    className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${bgColor} ${borderColor} ${textColor} ${
                       isLast ? 'w-9 h-11 text-sm ring-2 ring-primary' : ''
-                    } ${isEven
-                      ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
-                      : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
                     }`}
                   >
-                    {d}
+                    {mapped}
                   </motion.div>
                 );
               })}
+            </div>
+            <div className="text-[8px] text-center text-muted-foreground mt-2">
+              Mapping: {contractType === 'CALL' ? 'R=Rise' : contractType === 'PUT' ? 'F=Fall' : 
+                         contractType === 'DIGITOVER' ? 'O=Over' : contractType === 'DIGITUNDER' ? 'U=Under' :
+                         contractType === 'DIGITEVEN' ? 'E=Even' : contractType === 'DIGITODD' ? 'O=Odd' :
+                         contractType === 'DIGITMATCH' ? 'M=Matches' : contractType === 'DIGITDIFF' ? 'D=Differs' : 'Raw Digits'}
             </div>
           </div>
 
@@ -1510,7 +1671,7 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Trade Progress */}
+          {/* Trade Results - ENHANCED with Digit, Contract, Stake, Market */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
@@ -1555,31 +1716,38 @@ export default function TradingChart() {
               </div>
             )}
 
+            {/* ENHANCED TRADE RESULTS TABLE with all fields */}
             {tradeHistory.length > 0 && (
               <div className="max-h-40 overflow-auto space-y-1">
-                {tradeHistory.slice(0, 10).map(t => (
-                  <div key={t.id} className={`flex items-center justify-between text-[9px] p-1.5 rounded-lg border ${
-                    t.status === 'open' ? 'border-primary/30 bg-primary/5' :
-                    t.status === 'won' ? 'border-profit/30 bg-profit/5' :
-                    'border-loss/30 bg-loss/5'
-                  }`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`font-bold ${t.status === 'won' ? 'text-profit' : t.status === 'lost' ? 'text-loss' : 'text-primary'}`}>
-                        {t.status === 'open' ? '⏳' : t.status === 'won' ? '✅' : '❌'}
-                      </span>
-                      <span className="font-mono text-muted-foreground">{t.type}</span>
-                      <span className="text-muted-foreground">${t.stake.toFixed(2)}</span>
-                      {t.resultDigit !== undefined && (
-                        <Badge variant="outline" className={`text-[8px] px-1 ${t.status === 'won' ? 'border-profit text-profit' : 'border-loss text-loss'}`}>
-                          {t.resultDigit}
-                        </Badge>
-                      )}
+                <div className="grid grid-cols-5 text-[8px] text-muted-foreground font-semibold px-1 pb-1 border-b border-border">
+                  <span>Digit</span>
+                  <span>Contract</span>
+                  <span>Stake</span>
+                  <span>Market</span>
+                  <span className="text-right">Result</span>
+                </div>
+                {tradeHistory.slice(0, 10).map(t => {
+                  const contractDisplay = CONTRACT_TYPES.find(c => c.value === t.type)?.label || t.type || 'Unknown';
+                  return (
+                    <div key={t.id} className={`flex items-center justify-between text-[9px] p-1.5 rounded-lg border ${
+                      t.status === 'open' ? 'border-primary/30 bg-primary/5' :
+                      t.status === 'won' ? 'border-profit/30 bg-profit/5' :
+                      'border-loss/30 bg-loss/5'
+                    }`}>
+                      <div className="grid grid-cols-5 gap-1 flex-1 items-center">
+                        <span className={`font-mono font-bold ${t.status === 'won' ? 'text-profit' : t.status === 'lost' ? 'text-loss' : 'text-primary'}`}>
+                          {t.resultDigit !== undefined ? t.resultDigit : t.digit || '?'}
+                        </span>
+                        <span className="text-[8px] truncate max-w-[60px]">{contractDisplay}</span>
+                        <span className="font-mono text-[8px]">${(t.stake || 0).toFixed(2)}</span>
+                        <span className="text-[8px] truncate max-w-[50px]">{t.market || t.symbol?.split('_')[0] || '??'}</span>
+                        <span className={`font-mono text-[8px] font-bold text-right ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                          {t.status === 'open' ? '⏳' : t.status === 'won' ? `+$${t.profit.toFixed(2)}` : `-$${Math.abs(t.profit).toFixed(2)}`}
+                        </span>
+                      </div>
                     </div>
-                    <span className={`font-mono font-bold ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                      {t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
