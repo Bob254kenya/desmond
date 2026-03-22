@@ -1,37 +1,25 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
-import { analyzeDigits, calculateRSI, calculateMACD, calculateBollingerBands } from '@/services/analysis';
+import { getLastDigit, analyzeDigits, calculateRSI, calculateMACD, calculateBollingerBands } from '@/services/analysis';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Progress } from '@/components/ui/progress';
 import { Switch } from '@/components/ui/switch';
+import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
-  Target, ShieldAlert, Gauge, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff,
+  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff,
 } from 'lucide-react';
-
-/* ── UNIVERSAL LAST DIGIT EXTRACTOR (FIXED) ── */
-// Mathematical extraction - ALWAYS returns single digit 0-9
-// Works for ALL volatility indices regardless of decimal places
-// NO string manipulation - pure math
-function extractLastDigit(quote: number): number {
-  // Multiply by 10 to shift first decimal to integer position
-  // Then use modulo 10 to get the last digit
-  // This works for ALL decimal formats without string manipulation
-  const digit = Math.floor(Math.abs(quote) * 10) % 10;
-  // Ensure result is always between 0 and 9
-  return Math.abs(digit);
-}
 
 /* ── Markets ── */
 const ALL_MARKETS = [
+  // Vol 1s
   { symbol: '1HZ10V', name: 'Volatility 10 (1s)', group: 'vol1s' },
   { symbol: '1HZ15V', name: 'Volatility 15 (1s)', group: 'vol1s' },
   { symbol: '1HZ25V', name: 'Volatility 25 (1s)', group: 'vol1s' },
@@ -39,58 +27,74 @@ const ALL_MARKETS = [
   { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: 'vol1s' },
   { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: 'vol1s' },
   { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: 'vol1s' },
+  // Vol
   { symbol: 'R_10', name: 'Volatility 10', group: 'vol' },
   { symbol: 'R_25', name: 'Volatility 25', group: 'vol' },
   { symbol: 'R_50', name: 'Volatility 50', group: 'vol' },
   { symbol: 'R_75', name: 'Volatility 75', group: 'vol' },
   { symbol: 'R_100', name: 'Volatility 100', group: 'vol' },
+  // Jump
   { symbol: 'JD10', name: 'Jump 10', group: 'jump' },
   { symbol: 'JD25', name: 'Jump 25', group: 'jump' },
   { symbol: 'JD50', name: 'Jump 50', group: 'jump' },
   { symbol: 'JD75', name: 'Jump 75', group: 'jump' },
   { symbol: 'JD100', name: 'Jump 100', group: 'jump' },
+  // Bear/Bull
   { symbol: 'RDBEAR', name: 'Bear Market', group: 'bear' },
   { symbol: 'RDBULL', name: 'Bull Market', group: 'bull' },
+  // Step
   { symbol: 'stpRNG', name: 'Step Index', group: 'step' },
+  // Range Break
   { symbol: 'RBRK100', name: 'Range Break 100', group: 'range' },
   { symbol: 'RBRK200', name: 'Range Break 200', group: 'range' },
 ];
 
 const GROUPS = [
-  { value: 'all', label: 'All' }, { value: 'vol1s', label: 'Vol 1s' },
-  { value: 'vol', label: 'Vol' }, { value: 'jump', label: 'Jump' },
-  { value: 'bear', label: 'Bear' }, { value: 'bull', label: 'Bull' },
-  { value: 'step', label: 'Step' }, { value: 'range', label: 'Range' },
+  { value: 'all', label: 'All' },
+  { value: 'vol1s', label: 'Vol 1s' },
+  { value: 'vol', label: 'Vol' },
+  { value: 'jump', label: 'Jump' },
+  { value: 'bear', label: 'Bear' },
+  { value: 'bull', label: 'Bull' },
+  { value: 'step', label: 'Step' },
+  { value: 'range', label: 'Range' },
 ];
 
-const TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '12h', '1d'];
-const TF_TICKS: Record<string, number> = {
-  '1m': 1000, '3m': 2000, '5m': 3000, '15m': 4000, '30m': 4500,
-  '1h': 5000, '4h': 5000, '12h': 5000, '1d': 5000,
+const TIMEFRAMES = ['1m','3m','5m','15m','30m','1h','4h','12h','1d'];
+const TF_TICKS: Record<string,number> = {
+  '1m':1000,'3m':2000,'5m':3000,'15m':4000,'30m':4500,'1h':5000,'4h':5000,'12h':5000,'1d':5000,
 };
 
 const CONTRACT_TYPES = [
-  { value: 'CALL', label: 'Rise' }, { value: 'PUT', label: 'Fall' },
-  { value: 'DIGITMATCH', label: 'Digits Match' }, { value: 'DIGITDIFF', label: 'Digits Differs' },
-  { value: 'DIGITEVEN', label: 'Digits Even' }, { value: 'DIGITODD', label: 'Digits Odd' },
-  { value: 'DIGITOVER', label: 'Digits Over' }, { value: 'DIGITUNDER', label: 'Digits Under' },
+  { value: 'CALL', label: 'Rise' },
+  { value: 'PUT', label: 'Fall' },
+  { value: 'DIGITMATCH', label: 'Digits Match' },
+  { value: 'DIGITDIFF', label: 'Digits Differs' },
+  { value: 'DIGITEVEN', label: 'Digits Even' },
+  { value: 'DIGITODD', label: 'Digits Odd' },
+  { value: 'DIGITOVER', label: 'Digits Over' },
+  { value: 'DIGITUNDER', label: 'Digits Under' },
 ];
 
 /* ── Candle builder ── */
-interface Candle { open: number; high: number; low: number; close: number; time: number; }
+interface Candle {
+  open: number; high: number; low: number; close: number; time: number;
+}
 
 function buildCandles(prices: number[], times: number[], tf: string): Candle[] {
   if (prices.length === 0) return [];
-  const seconds: Record<string, number> = {
-    '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '12h': 43200, '1d': 86400,
+  const seconds: Record<string,number> = {
+    '1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'12h':43200,'1d':86400,
   };
   const interval = seconds[tf] || 60;
   const candles: Candle[] = [];
   let current: Candle | null = null;
+
   for (let i = 0; i < prices.length; i++) {
     const p = prices[i];
-    const t = times[i] || Date.now() / 1000 + i;
+    const t = times[i] || Date.now()/1000 + i;
     const bucket = Math.floor(t / interval) * interval;
+
     if (!current || current.time !== bucket) {
       if (current) candles.push(current);
       current = { open: p, high: p, low: p, close: p, time: bucket };
@@ -104,14 +108,18 @@ function buildCandles(prices: number[], times: number[], tf: string): Candle[] {
   return candles;
 }
 
+/* ── EMA helper ── */
 function calcEMA(prices: number[], period: number): number {
   if (prices.length < period) return prices[prices.length - 1] || 0;
   const k = 2 / (period + 1);
   let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < prices.length; i++) ema = prices[i] * k + ema * (1 - k);
+  for (let i = period; i < prices.length; i++) {
+    ema = prices[i] * k + ema * (1 - k);
+  }
   return ema;
 }
 
+/* ── Per-candle indicator series ── */
 function calcEMASeries(prices: number[], period: number): (number | null)[] {
   const result: (number | null)[] = [];
   if (prices.length < period) return prices.map(() => null);
@@ -137,14 +145,18 @@ function calcSMASeries(prices: number[], period: number): (number | null)[] {
 }
 
 function calcBBSeries(prices: number[], period: number, mult: number = 2) {
-  const upper: (number | null)[] = [], middle: (number | null)[] = [], lower: (number | null)[] = [];
+  const upper: (number | null)[] = [];
+  const middle: (number | null)[] = [];
+  const lower: (number | null)[] = [];
   for (let i = 0; i < prices.length; i++) {
     if (i < period - 1) { upper.push(null); middle.push(null); lower.push(null); continue; }
     const slice = prices.slice(i - period + 1, i + 1);
     const ma = slice.reduce((a, b) => a + b, 0) / period;
     const variance = slice.reduce((s, p) => s + (p - ma) ** 2, 0) / period;
     const std = Math.sqrt(variance);
-    upper.push(ma + mult * std); middle.push(ma); lower.push(ma - mult * std);
+    upper.push(ma + mult * std);
+    middle.push(ma);
+    lower.push(ma - mult * std);
   }
   return { upper, middle, lower };
 }
@@ -158,7 +170,8 @@ function calcRSISeries(prices: number[], period: number = 14): (number | null)[]
     if (d > 0) gains += d; else losses -= d;
     result.push(null);
   }
-  let avgGain = gains / period, avgLoss = losses / period;
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
   const rsi0 = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   result[period] = rsi0;
   for (let i = period + 1; i < prices.length; i++) {
@@ -170,9 +183,10 @@ function calcRSISeries(prices: number[], period: number = 14): (number | null)[]
   return result;
 }
 
+/* ── Map candle index back to price-series index for indicators ── */
 function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string): number[] {
   const seconds: Record<string, number> = {
-    '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '12h': 43200, '1d': 86400,
+    '1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'12h':43200,'1d':86400,
   };
   const interval = seconds[tf] || 60;
   const indices: number[] = [];
@@ -189,61 +203,16 @@ function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string)
   return indices;
 }
 
-// Enhanced support/resistance detection for strong levels
-function detectStrongSupportResistance(prices: number[], lookback: number = 200, sensitivity: number = 5): { support: number; resistance: number } {
-  const recentPrices = prices.slice(-lookback);
-  if (recentPrices.length < 20) return { support: 0, resistance: 0 };
-  
-  const levels: number[] = [];
-  const threshold = (Math.max(...recentPrices) - Math.min(...recentPrices)) * 0.005;
-  
-  for (let i = sensitivity; i < recentPrices.length - sensitivity; i++) {
-    let isPivotHigh = true;
-    let isPivotLow = true;
-    
-    for (let j = 1; j <= sensitivity; j++) {
-      if (recentPrices[i] <= recentPrices[i - j] || recentPrices[i] <= recentPrices[i + j]) isPivotHigh = false;
-      if (recentPrices[i] >= recentPrices[i - j] || recentPrices[i] >= recentPrices[i + j]) isPivotLow = false;
-    }
-    
-    if (isPivotHigh) levels.push(recentPrices[i]);
-    if (isPivotLow) levels.push(recentPrices[i]);
-  }
-  
-  const clustered: Map<number, number> = new Map();
-  for (const level of levels) {
-    let found = false;
-    for (const [key, touches] of clustered.entries()) {
-      if (Math.abs(key - level) < threshold) {
-        clustered.set(key, touches + 1);
-        found = true;
-        break;
-      }
-    }
-    if (!found) clustered.set(level, 1);
-  }
-  
-  const currentPrice = recentPrices[recentPrices.length - 1];
-  let supports: { price: number; touches: number }[] = [];
-  let resistances: { price: number; touches: number }[] = [];
-  
-  for (const [price, touches] of clustered.entries()) {
-    if (price < currentPrice) {
-      supports.push({ price, touches });
-    } else if (price > currentPrice) {
-      resistances.push({ price, touches });
-    }
-  }
-  
-  supports.sort((a, b) => b.touches - a.touches);
-  resistances.sort((a, b) => b.touches - a.touches);
-  
-  return {
-    support: supports.length > 0 ? supports[0].price : 0,
-    resistance: resistances.length > 0 ? resistances[0].price : 0
-  };
+/* ── Support/Resistance ── */
+function calcSR(prices: number[]) {
+  if (prices.length < 10) return { support: 0, resistance: 0 };
+  const sorted = [...prices].sort((a, b) => a - b);
+  const p5 = Math.floor(sorted.length * 0.05);
+  const p95 = Math.floor(sorted.length * 0.95);
+  return { support: sorted[p5], resistance: sorted[Math.min(p95, sorted.length - 1)] };
 }
 
+/* ── MACD proper ── */
 function calcMACDFull(prices: number[]) {
   const ema12 = calcEMA(prices, 12);
   const ema26 = calcEMA(prices, 26);
@@ -260,14 +229,11 @@ interface TradeRecord {
   profit: number;
   status: 'won' | 'lost' | 'open';
   symbol: string;
-  winningDigit?: number;
   resultDigit?: number;
 }
 
-// Tick storage for pattern/digit strategy - FIXED: ensures single digits only
+// Tick storage for pattern/digit strategy
 const tickHistoryRef: { [symbol: string]: number[] } = {};
-// Store actual tick quotes for last 26 digits display
-const tickQuotesRef: { [symbol: string]: number[] } = {};
 
 function getTickHistory(symbol: string): number[] {
   return tickHistoryRef[symbol] || [];
@@ -275,25 +241,13 @@ function getTickHistory(symbol: string): number[] {
 
 function addTick(symbol: string, digit: number) {
   if (!tickHistoryRef[symbol]) tickHistoryRef[symbol] = [];
-  // Ensure we only store single digits (0-9)
-  const singleDigit = digit % 10;
-  tickHistoryRef[symbol].push(singleDigit);
+  tickHistoryRef[symbol].push(digit);
   if (tickHistoryRef[symbol].length > 200) tickHistoryRef[symbol].shift();
-}
-
-function getTickQuotes(symbol: string): number[] {
-  return tickQuotesRef[symbol] || [];
-}
-
-function addTickQuote(symbol: string, quote: number) {
-  if (!tickQuotesRef[symbol]) tickQuotesRef[symbol] = [];
-  tickQuotesRef[symbol].push(quote);
-  if (tickQuotesRef[symbol].length > 200) tickQuotesRef[symbol].shift();
 }
 
 export default function TradingChart() {
   const { isAuthorized } = useAuth();
-  const [showChart, setShowChart] = useState(false);
+  const [showChart, setShowChart] = useState(true);
   const [symbol, setSymbol] = useState('R_100');
   const [groupFilter, setGroupFilter] = useState('all');
   const [timeframe, setTimeframe] = useState('1m');
@@ -301,9 +255,6 @@ export default function TradingChart() {
   const [times, setTimes] = useState<number[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const subscribedRef = useRef(false);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
-  const isMountedRef = useRef(true);
-  const currentSymbolRef = useRef(symbol);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Zoom & pan state
@@ -327,6 +278,8 @@ export default function TradingChart() {
 
   // Bot progress
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const lastSpokenSignal = useRef('');
 
   // Strategy State
   const [strategyEnabled, setStrategyEnabled] = useState(false);
@@ -355,140 +308,73 @@ export default function TradingChart() {
   });
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
-  
-  const connectionAttemptRef = useRef(0);
 
-  // Auto-reconnect function with exponential backoff
-  const setupWebSocketConnection = useCallback(async (retryCount = 0) => {
-    if (!isMountedRef.current) return;
-    
-    try {
-      if (!derivApi.isConnected) {
-        await derivApi.connect();
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      if (!isMountedRef.current) return;
-      
-      const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 5000);
-      if (!isMountedRef.current) return;
-      
-      setPrices(hist.history.prices || []);
-      setTimes(hist.history.times || []);
-      setScrollOffset(0);
-      setIsLoading(false);
-      
-      if (subscribedRef.current) {
-        try {
-          await derivApi.unsubscribeTicks(currentSymbolRef.current as MarketSymbol);
-        } catch (e) {
-          // Silent fail
+  /* ── Load history + subscribe ── */
+  useEffect(() => {
+    let active = true;
+    subscribedRef.current = false;
+
+    const load = async () => {
+      if (!derivApi.isConnected) { setIsLoading(false); return; }
+      setIsLoading(true);
+      try {
+        const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 5000);
+        if (!active) return;
+        
+        // Initialize tick history with digits from historical data
+        const historicalDigits = (hist.history.prices || []).map(p => getLastDigit(p));
+        tickHistoryRef[symbol] = historicalDigits.slice(-200);
+        
+        setPrices(hist.history.prices || []);
+        setTimes(hist.history.times || []);
+        setScrollOffset(0);
+        setIsLoading(false);
+
+        if (!subscribedRef.current) {
+          subscribedRef.current = true;
+          await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
+            if (!active || !data.tick) return;
+            const quote = data.tick.quote;
+            const digit = getLastDigit(quote);
+            addTick(symbol, digit);
+            setPrices(prev => [...prev, quote].slice(-5000));
+            setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
+          });
         }
+      } catch (err) {
+        console.error(err);
+        setIsLoading(false);
       }
-      
-      subscribedRef.current = true;
-      await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
-        if (!isMountedRef.current || !data?.tick) return;
-        const quote = data.tick.quote;
-        // FIX: Use the universal extractor
-        const digit = extractLastDigit(quote);
-        addTick(symbol, digit);
-        addTickQuote(symbol, quote); // Store actual quote for last 26 digits
-        setPrices(prev => [...prev, quote].slice(-5000));
-        setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
-      });
-      
-      connectionAttemptRef.current = 0;
-      
-    } catch (err) {
-      console.debug('Connection issue, retrying...');
-      
-      const delay = Math.min(30000, Math.pow(2, Math.min(retryCount, 8)) * 1000);
-      
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      
-      reconnectTimeoutRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
-          setupWebSocketConnection(retryCount + 1);
-        }
-      }, delay);
-    }
+    };
+    load();
+    return () => {
+      active = false;
+      derivApi.unsubscribeTicks(symbol as MarketSymbol).catch(() => {});
+    };
   }, [symbol]);
 
-  // Monitor connection and reconnect if needed
-  useEffect(() => {
-    isMountedRef.current = true;
-    currentSymbolRef.current = symbol;
-    
-    let heartbeatInterval: NodeJS.Timeout;
-    
-    const initConnection = async () => {
-      await setupWebSocketConnection(0);
-      
-      heartbeatInterval = setInterval(() => {
-        if (isMountedRef.current && !derivApi.isConnected) {
-          setupWebSocketConnection(connectionAttemptRef.current);
-        }
-      }, 10000);
-    };
-    
-    initConnection();
-    
-    return () => {
-      isMountedRef.current = false;
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-      }
-      if (subscribedRef.current) {
-        derivApi.unsubscribeTicks(currentSymbolRef.current as MarketSymbol).catch(() => {});
-      }
-    };
-  }, [setupWebSocketConnection]);
-
-  // Update current symbol ref when symbol changes
-  useEffect(() => {
-    currentSymbolRef.current = symbol;
-    setupWebSocketConnection(0);
-  }, [symbol, setupWebSocketConnection]);
-
-  /* ── Derived data (always calculated regardless of chart visibility) ── */
+  /* ── Derived data ── */
   const tfTicks = TF_TICKS[timeframe] || 60;
   const tfPrices = useMemo(() => prices.slice(-tfTicks), [prices, tfTicks]);
   const tfTimes = useMemo(() => times.slice(-tfTicks), [times, tfTicks]);
   const candles = useMemo(() => buildCandles(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
   const currentPrice = prices[prices.length - 1] || 0;
-  
-  // FIX: Use the universal extractor for ALL digit operations
-  const lastDigit = useMemo(() => extractLastDigit(currentPrice), [currentPrice]);
-  const digits = useMemo(() => tfPrices.map(p => extractLastDigit(p)), [tfPrices]);
-  
-  // FIXED: Get last 26 digits from actual tick quotes (not timeframe filtered)
-  const last26Ticks = useMemo(() => {
-    const quotes = getTickQuotes(symbol);
-    // Get last 26 quotes and extract digits from them
-    const lastQuotes = quotes.slice(-26);
-    return lastQuotes.map(q => extractLastDigit(q));
-  }, [symbol, prices]); // Re-run when prices update triggers re-render
-  
-  // FIX: analyzeDigits expects prices, not digits
+  const lastDigit = getLastDigit(currentPrice);
+  const digits = useMemo(() => tfPrices.map(getLastDigit), [tfPrices]);
+  const last26 = useMemo(() => {
+    const tickHistory = getTickHistory(symbol);
+    return tickHistory.slice(-26);
+  }, [symbol, prices]);
   const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => analyzeDigits(tfPrices), [tfPrices]);
-
-  // Strong support/resistance detection
-  const { support, resistance } = useMemo(() => detectStrongSupportResistance(tfPrices, 200, 5), [tfPrices]);
 
   // Indicators
   const bb = useMemo(() => calculateBollingerBands(tfPrices, 20), [tfPrices]);
   const ema50 = useMemo(() => calcEMA(tfPrices, 50), [tfPrices]);
+  const { support, resistance } = useMemo(() => calcSR(tfPrices), [tfPrices]);
   const rsi = useMemo(() => calculateRSI(tfPrices, 14), [tfPrices]);
   const macd = useMemo(() => calcMACDFull(tfPrices), [tfPrices]);
 
-  // Digit stats - using single digits
+  // Digit stats
   const evenCount = useMemo(() => digits.filter(d => d % 2 === 0).length, [digits]);
   const oddCount = digits.length - evenCount;
   const evenPct = digits.length > 0 ? (evenCount / digits.length * 100) : 50;
@@ -566,14 +452,78 @@ export default function TradingChart() {
     }
   }, [strategyEnabled, strategyMode, checkPatternMatch, checkDigitCondition]);
 
-  /* ── Canvas Chart (only runs when chart is visible) ── */
+  /* ── Canvas Chart ── */
   const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
   const emaSeries = useMemo(() => calcEMASeries(tfPrices, 50), [tfPrices]);
   const smaSeries = useMemo(() => calcSMASeries(tfPrices, 20), [tfPrices]);
   const bbSeries = useMemo(() => calcBBSeries(tfPrices, 20, 2), [tfPrices]);
   const rsiSeries = useMemo(() => calcRSISeries(tfPrices, 14), [tfPrices]);
 
-  // Chart drawing effect - only runs when showChart is true
+  // Canvas mouse handlers for zoom & pan
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !showChart) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        setCandleWidth(prev => Math.max(2, Math.min(20, prev - Math.sign(e.deltaY))));
+      } else {
+        const delta = Math.sign(e.deltaY) * Math.max(3, Math.floor(candles.length * 0.03));
+        setScrollOffset(prev => Math.max(0, Math.min(candles.length - 10, prev + delta)));
+      }
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      const canvasRect = canvas.getBoundingClientRect();
+      const pAxisX = canvasRect.width - 70;
+      const localX = e.clientX - canvasRect.left;
+      if (localX >= pAxisX) {
+        isPriceAxisDragging.current = true;
+        priceAxisStartY.current = e.clientY;
+        priceAxisStartWidth.current = candleWidth;
+        canvas.style.cursor = 'ns-resize';
+      } else {
+        isDragging.current = true;
+        dragStartX.current = e.clientX;
+        dragStartOffset.current = scrollOffset;
+        canvas.style.cursor = 'grabbing';
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (isPriceAxisDragging.current) {
+        const dy = priceAxisStartY.current - e.clientY;
+        const newWidth = Math.max(2, Math.min(24, priceAxisStartWidth.current + Math.round(dy / 8)));
+        setCandleWidth(newWidth);
+        return;
+      }
+      if (!isDragging.current) return;
+      const dx = dragStartX.current - e.clientX;
+      const candlesPerPx = 1 / (candleWidth + 1);
+      const delta = Math.round(dx * candlesPerPx);
+      setScrollOffset(Math.max(0, Math.min(candles.length - 10, dragStartOffset.current + delta)));
+    };
+
+    const onMouseUp = () => {
+      isDragging.current = false;
+      isPriceAxisDragging.current = false;
+      canvas.style.cursor = 'crosshair';
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [candles.length, scrollOffset, candleWidth, showChart]);
+
   useEffect(() => {
     if (!showChart) return;
     
@@ -616,9 +566,6 @@ export default function TradingChart() {
       if (u !== null) allPrices.push(u);
       if (l !== null) allPrices.push(l);
     }
-    if (support > 0) allPrices.push(support);
-    if (resistance > 0) allPrices.push(resistance);
-    
     const rawMin = Math.min(...allPrices);
     const rawMax = Math.max(...allPrices);
     const priceRange = rawMax - rawMin;
@@ -670,8 +617,8 @@ export default function TradingChart() {
     };
 
     ctx.fillStyle = 'rgba(188, 140, 255, 0.06)';
-    const bbUpperPoints: { x: number; y: number }[] = [];
-    const bbLowerPoints: { x: number; y: number }[] = [];
+    const bbUpperPoints: {x: number, y: number}[] = [];
+    const bbLowerPoints: {x: number, y: number}[] = [];
     for (let i = 0; i < visibleCandles.length; i++) {
       const idx = visibleEndIndices[i];
       if (idx === undefined) continue;
@@ -697,39 +644,26 @@ export default function TradingChart() {
     drawLine(emaSeries, '#2F81F7', 1.5);
     drawLine(smaSeries, '#E6B422', 1.5);
 
-    if (support > 0) {
-      ctx.setLineDash([8, 4]);
-      ctx.strokeStyle = '#3FB950';
-      ctx.lineWidth = 2.5;
-      const supY = toY(support);
-      ctx.beginPath(); 
-      ctx.moveTo(0, supY); 
-      ctx.lineTo(chartW, supY); 
-      ctx.stroke();
-      
-      ctx.font = 'bold 9px JetBrains Mono, monospace';
-      ctx.fillStyle = '#3FB950';
-      ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
-      ctx.fillStyle = '#0D1117';
-      ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
-    }
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = '#3FB950';
+    ctx.lineWidth = 1.5;
+    const supY = toY(support);
+    ctx.beginPath(); ctx.moveTo(0, supY); ctx.lineTo(chartW, supY); ctx.stroke();
 
-    if (resistance > 0) {
-      ctx.strokeStyle = '#F85149';
-      ctx.lineWidth = 2.5;
-      const resY = toY(resistance);
-      ctx.beginPath(); 
-      ctx.moveTo(0, resY); 
-      ctx.lineTo(chartW, resY); 
-      ctx.stroke();
-      
-      ctx.font = 'bold 9px JetBrains Mono, monospace';
-      ctx.fillStyle = '#F85149';
-      ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
-      ctx.fillStyle = '#0D1117';
-      ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
-    }
+    ctx.strokeStyle = '#F85149';
+    const resY = toY(resistance);
+    ctx.beginPath(); ctx.moveTo(0, resY); ctx.lineTo(chartW, resY); ctx.stroke();
     ctx.setLineDash([]);
+
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillStyle = '#3FB950';
+    ctx.fillRect(chartW, supY - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.fillText(`S ${support.toFixed(4)}`, chartW + 2, supY + 3);
+    ctx.fillStyle = '#F85149';
+    ctx.fillRect(chartW, resY - 7, priceAxisW, 14);
+    ctx.fillStyle = '#0D1117';
+    ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
 
     for (let i = 0; i < visibleCandles.length; i++) {
       const c = visibleCandles[i];
@@ -837,75 +771,21 @@ export default function TradingChart() {
 
   }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, smaSeries, bbSeries, rsiSeries, rsi, candleWidth, scrollOffset, showChart]);
 
-  // Mouse event handlers for chart (only attach when chart is visible)
-  useEffect(() => {
-    if (!showChart) return;
-    
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      if (e.ctrlKey || e.metaKey) {
-        setCandleWidth(prev => Math.max(2, Math.min(20, prev - Math.sign(e.deltaY))));
-      } else {
-        const delta = Math.sign(e.deltaY) * Math.max(3, Math.floor(candles.length * 0.03));
-        setScrollOffset(prev => Math.max(0, Math.min(candles.length - 10, prev + delta)));
-      }
-    };
-
-    const onMouseDown = (e: MouseEvent) => {
-      const canvasRect = canvas.getBoundingClientRect();
-      const pAxisX = canvasRect.width - 70;
-      const localX = e.clientX - canvasRect.left;
-      if (localX >= pAxisX) {
-        isPriceAxisDragging.current = true;
-        priceAxisStartY.current = e.clientY;
-        priceAxisStartWidth.current = candleWidth;
-        canvas.style.cursor = 'ns-resize';
-      } else {
-        isDragging.current = true;
-        dragStartX.current = e.clientX;
-        dragStartOffset.current = scrollOffset;
-        canvas.style.cursor = 'grabbing';
-      }
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (isPriceAxisDragging.current) {
-        const dy = priceAxisStartY.current - e.clientY;
-        const newWidth = Math.max(2, Math.min(24, priceAxisStartWidth.current + Math.round(dy / 8)));
-        setCandleWidth(newWidth);
-        return;
-      }
-      if (!isDragging.current) return;
-      const dx = dragStartX.current - e.clientX;
-      const candlesPerPx = 1 / (candleWidth + 1);
-      const delta = Math.round(dx * candlesPerPx);
-      setScrollOffset(Math.max(0, Math.min(candles.length - 10, dragStartOffset.current + delta)));
-    };
-
-    const onMouseUp = () => {
-      isDragging.current = false;
-      isPriceAxisDragging.current = false;
-      canvas.style.cursor = 'crosshair';
-    };
-
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    canvas.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-
-    return () => {
-      canvas.removeEventListener('wheel', onWheel);
-      canvas.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-  }, [candles.length, scrollOffset, candleWidth, showChart]);
-
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
+
+  // Voice AI announcements
+  const speak = useCallback((text: string) => {
+    if (!voiceEnabled || !window.speechSynthesis) return;
+    if (lastSpokenSignal.current === text) return;
+    lastSpokenSignal.current = text;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.1;
+    utterance.pitch = 1;
+    utterance.volume = 0.8;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [voiceEnabled]);
 
   // Trade execution
   const handleBuy = async (side: 'buy' | 'sell') => {
@@ -921,25 +801,15 @@ export default function TradingChart() {
       const newTrade: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake: parseFloat(tradeStake), profit: 0, status: 'open', symbol };
       setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
       const result = await derivApi.waitForContractResult(contractId);
-      
-      // FIX: Use the universal extractor
-      const resultDigit = extractLastDigit(result.price || currentPrice);
-      const winningDigit = result.status === 'won' ? resultDigit : undefined;
-      
-      setTradeHistory(prev => prev.map(t => t.id === contractId ? { 
-        ...t, 
-        profit: result.profit, 
-        status: result.status,
-        winningDigit,
-        resultDigit 
-      } : t));
-      if (result.status === 'won') { toast.success(`✅ WON +$${result.profit.toFixed(2)} | Digit: ${resultDigit}`); }
-      else { toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)} | Digit: ${resultDigit}`); }
+      const resultDigit = getLastDigit(result.price || currentPrice);
+      setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status, resultDigit } : t));
+      if (result.status === 'won') { toast.success(`✅ WON +$${result.profit.toFixed(2)} | Digit: ${resultDigit}`); if (voiceEnabled) speak(`Trade won. Profit ${result.profit.toFixed(2)} dollars`); }
+      else { toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)} | Digit: ${resultDigit}`); if (voiceEnabled) speak(`Trade lost. Loss ${Math.abs(result.profit).toFixed(2)} dollars`); }
     } catch (err: any) { toast.error(`Trade failed: ${err.message}`); }
     finally { setIsTrading(false); }
   };
 
-  // AUTO BOT LOGIC with Strategy
+  // ═══ AUTO BOT LOGIC with Strategy ═══
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     setBotRunning(true); setBotPaused(false);
@@ -953,14 +823,18 @@ export default function TradingChart() {
     let stake = baseStake;
     let pnl = 0; let trades = 0; let wins = 0; let losses = 0; let consLosses = 0;
 
+    if (voiceEnabled) speak('Auto trading bot started');
+
     while (botRunningRef.current) {
       if (botPausedRef.current) { await new Promise(r => setTimeout(r, 500)); continue; }
       if (trades >= maxT || pnl <= -sl || pnl >= tp) {
         const reason = trades >= maxT ? 'Max trades reached' : pnl <= -sl ? 'Stop loss hit' : 'Take profit reached';
         toast.info(`🤖 Bot stopped: ${reason}`);
+        if (voiceEnabled) speak(`Bot stopped. ${reason}. Total profit ${pnl.toFixed(2)} dollars`);
         break;
       }
 
+      // Check strategy condition before each trade
       if (strategyEnabled) {
         let conditionMet = false;
         while (botRunningRef.current && !conditionMet) {
@@ -978,29 +852,20 @@ export default function TradingChart() {
 
       try {
         const { contractId } = await derivApi.buyContract(params);
-        const result = await derivApi.waitForContractResult(contractId);
-        // FIX: Use the universal extractor
-        const resultDigit = extractLastDigit(result.price || currentPrice);
-        
-        const tr: TradeRecord = { 
-          id: contractId, 
-          time: Date.now(), 
-          type: ct, 
-          stake, 
-          profit: result.profit, 
-          status: result.status,
-          symbol,
-          winningDigit: result.status === 'won' ? resultDigit : undefined,
-          resultDigit
-        };
+        const tr: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake, profit: 0, status: 'open', symbol };
         setTradeHistory(prev => [tr, ...prev].slice(0, 100));
+        const result = await derivApi.waitForContractResult(contractId);
         trades++; pnl += result.profit;
+        const resultDigit = getLastDigit(result.price || currentPrice);
+        setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status, resultDigit } : t));
 
         if (result.status === 'won') {
           wins++; consLosses = 0; stake = baseStake;
+          if (voiceEnabled && trades % 5 === 0) speak(`Trade ${trades} won. Total profit ${pnl.toFixed(2)}`);
         } else {
           losses++; consLosses++;
           stake = mart ? Math.round(stake * mult * 100) / 100 : baseStake;
+          if (voiceEnabled) speak(`Loss ${consLosses}. ${mart ? `Martingale stake ${stake.toFixed(2)}` : ''}`);
         }
         setBotStats({ trades, wins, losses, pnl, currentStake: stake, consecutiveLosses: consLosses });
       } catch (err: any) {
@@ -1010,11 +875,12 @@ export default function TradingChart() {
     }
     setBotRunning(false); botRunningRef.current = false;
     setBotStats(prev => ({ ...prev, trades, wins, losses, pnl }));
-  }, [isAuthorized, botConfig, symbol, strategyEnabled, checkStrategyCondition, currentPrice]);
+  }, [isAuthorized, botConfig, symbol, voiceEnabled, speak, strategyEnabled, checkStrategyCondition, currentPrice]);
 
   const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
   const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
 
+  // Bot stats
   const totalTrades = tradeHistory.filter(t => t.status !== 'open').length;
   const wins = tradeHistory.filter(t => t.status === 'won').length;
   const losses = tradeHistory.filter(t => t.status === 'lost').length;
@@ -1029,19 +895,25 @@ export default function TradingChart() {
           <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-primary" /> Trading Chart
           </h1>
-          <p className="text-xs text-muted-foreground"> Ramzfx Advanced Trading Platform with AI Signals</p>
+          <p className="text-xs text-muted-foreground">{marketName} • {timeframe} • {tfPrices.length} ticks</p>
         </div>
-        <Button
-          onClick={() => setShowChart(!showChart)}
-          variant={showChart ? "destructive" : "default"}
-          className="gap-2"
-        >
-          {showChart ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          {showChart ? "Hide Chart" : "Show Chart"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => setShowChart(!showChart)}
+            variant="outline"
+            size="sm"
+            className="gap-1"
+          >
+            {showChart ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            {showChart ? "Hide Chart" : "Show Chart"}
+          </Button>
+          <Badge className="font-mono text-sm" variant="outline">
+            {currentPrice.toFixed(4)}
+          </Badge>
+        </div>
       </div>
 
-      {/* Market Selector - Always Visible */}
+      {/* Market Selector */}
       <div className="bg-card border border-border rounded-xl p-3">
         <div className="flex flex-wrap gap-1 mb-2">
           {GROUPS.map(g => (
@@ -1063,7 +935,7 @@ export default function TradingChart() {
         </div>
       </div>
 
-      {/* Timeframe - Always Visible */}
+      {/* Timeframe */}
       <div className="flex flex-wrap gap-1">
         {TIMEFRAMES.map(tf => (
           <Button key={tf} size="sm" variant={timeframe === tf ? 'default' : 'outline'}
@@ -1075,7 +947,7 @@ export default function TradingChart() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-        {/* LEFT: Chart + Info */}
+        {/* ═══ LEFT: Chart + Info ═══ */}
         <div className="xl:col-span-8 space-y-3">
           {/* Candlestick Chart - Hideable */}
           <AnimatePresence mode="wait">
@@ -1094,13 +966,13 @@ export default function TradingChart() {
             )}
           </AnimatePresence>
 
-          {/* Price Info Panel - Always Visible */}
+          {/* Price Info Panel */}
           <div className="grid grid-cols-3 md:grid-cols-7 gap-2">
             {[
               { label: 'Price', value: currentPrice.toFixed(4), color: 'text-foreground' },
               { label: 'Last Digit', value: String(lastDigit), color: 'text-primary' },
-              { label: 'Strong Support', value: support > 0 ? support.toFixed(2) : 'N/A', color: 'text-[#3FB950]' },
-              { label: 'Strong Resistance', value: resistance > 0 ? resistance.toFixed(2) : 'N/A', color: 'text-[#F85149]' },
+              { label: 'Support', value: support.toFixed(2), color: 'text-[#3FB950]' },
+              { label: 'Resistance', value: resistance.toFixed(2), color: 'text-[#F85149]' },
               { label: 'BB Upper', value: bb.upper.toFixed(2), color: 'text-[#BC8CFF]' },
               { label: 'BB Middle', value: bb.middle.toFixed(2), color: 'text-[#BC8CFF]' },
               { label: 'BB Lower', value: bb.lower.toFixed(2), color: 'text-[#BC8CFF]' },
@@ -1112,7 +984,7 @@ export default function TradingChart() {
             ))}
           </div>
 
-          {/* Digit Analysis - Always Visible */}
+          {/* Digit Analysis */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-3">
             <h3 className="text-xs font-semibold text-foreground">Digit Analysis</h3>
 
@@ -1162,10 +1034,10 @@ export default function TradingChart() {
                       <div className={`h-full rounded-full ${isHot ? 'bg-loss' : isWarm ? 'bg-warning' : 'bg-primary'}`} style={{ width: `${Math.min(100, pct * 5)}%` }} />
                     </div>
                     {isBestMatch && (
-                      <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match Digit</Badge>
+                      <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match</Badge>
                     )}
                     {isBestDiffer && (
-                      <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Differ</Badge>
+                      <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Avoid</Badge>
                     )}
                   </button>
                 );
@@ -1173,7 +1045,7 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Strategic Recommendations - Always Visible */}
+          {/* Strategic Recommendations */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <div className="bg-card border border-profit/30 rounded-lg p-2">
               <div className="text-[9px] text-muted-foreground">Best Match</div>
@@ -1202,10 +1074,41 @@ export default function TradingChart() {
           </div>
         </div>
 
-        {/* RIGHT: Signals + Trade + Tech - Always Visible */}
+        {/* ═══ RIGHT: Signals + Trade + Tech ═══ */}
         <div className="xl:col-span-4 space-y-3">
+          {/* Voice AI Toggle */}
+          <div className="bg-card border border-primary/30 rounded-xl p-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5 text-primary" /> AI Voice Signals
+              </h3>
+              <Button
+                size="sm"
+                variant={voiceEnabled ? 'default' : 'outline'}
+                className="h-7 text-[10px] gap-1"
+                onClick={() => {
+                  setVoiceEnabled(!voiceEnabled);
+                  if (!voiceEnabled) {
+                    const u = new SpeechSynthesisUtterance('Voice signals enabled');
+                    u.rate = 1.1;
+                    window.speechSynthesis?.speak(u);
+                  } else {
+                    window.speechSynthesis?.cancel();
+                  }
+                }}
+              >
+                {voiceEnabled ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+                {voiceEnabled ? 'ON' : 'OFF'}
+              </Button>
+            </div>
+            {voiceEnabled && (
+              <p className="text-[9px] text-muted-foreground mt-1">🔊 AI will announce trade results</p>
+            )}
+          </div>
+
           {/* Trading Signals */}
           <div className="grid grid-cols-2 gap-2">
+            {/* Rise/Fall */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 {riseSignal.direction === 'Rise' ? <TrendingUp className="w-3.5 h-3.5 text-profit" /> : <TrendingDown className="w-3.5 h-3.5 text-loss" />}
@@ -1222,6 +1125,7 @@ export default function TradingChart() {
               <div className="text-[8px] text-right text-muted-foreground mt-0.5">{riseSignal.confidence}%</div>
             </div>
 
+            {/* Even/Odd */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <Activity className="w-3.5 h-3.5 text-primary" />
@@ -1238,6 +1142,7 @@ export default function TradingChart() {
               <div className="text-[8px] text-right text-muted-foreground mt-0.5">{eoSignal.confidence}%</div>
             </div>
 
+            {/* Over/Under */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <ArrowUp className="w-3.5 h-3.5 text-primary" />
@@ -1254,6 +1159,7 @@ export default function TradingChart() {
               <div className="text-[8px] text-right text-muted-foreground mt-0.5">{ouSignal.confidence}%</div>
             </div>
 
+            {/* Match */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <Target className="w-3.5 h-3.5 text-profit" />
@@ -1268,15 +1174,13 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Last 26 Digits - FIXED: Shows actual last 26 ticks from the market */}
+          {/* Last 26 Digits */}
           <div className="bg-card border border-border rounded-xl p-3">
             <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
             <div className="flex gap-1 flex-wrap justify-center">
-              {last26Ticks.map((d, i) => {
-                const isLast = i === last26Ticks.length - 1;
-                // Ensure digit is single digit (0-9)
-                const displayDigit = Math.abs(d) % 10;
-                const isEven = displayDigit % 2 === 0;
+              {last26.map((d, i) => {
+                const isLast = i === last26.length - 1;
+                const isEven = d % 2 === 0;
                 return (
                   <motion.div
                     key={i}
@@ -1290,21 +1194,18 @@ export default function TradingChart() {
                       : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
                     }`}
                   >
-                    {displayDigit}
+                    {d}
                   </motion.div>
                 );
               })}
             </div>
-            <div className="text-center text-[8px] text-muted-foreground mt-2">
-              Each box shows a single digit (0-9) | {last26Ticks.length} digits from last {last26Ticks.length} ticks
-            </div>
           </div>
 
-          {/* AUTO BOT PANEL */}
+          {/* ═══ AUTO BOT PANEL with Strategy ═══ */}
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Zap className="w-3.5 h-3.5 text-primary" /> Speed Bot
+                <Zap className="w-3.5 h-3.5 text-primary" /> Auto Trading Bot
               </h3>
               <div className="flex items-center gap-2">
                 <Button
@@ -1330,7 +1231,7 @@ export default function TradingChart() {
               <SelectContent>{CONTRACT_TYPES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
             </Select>
 
-            {['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(botConfig.contractType) && (
+            {['DIGITMATCH','DIGITDIFF','DIGITOVER','DIGITUNDER'].includes(botConfig.contractType) && (
               <div>
                 <label className="text-[9px] text-muted-foreground">Prediction (0-9)</label>
                 <div className="grid grid-cols-5 gap-1">
@@ -1431,13 +1332,13 @@ export default function TradingChart() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-3 gap-1">
-                     <div>
+                      <div>
                         <label className="text-[8px] text-muted-foreground">If last </label>
                         <Input type="number" min="1" max="50" value={digitWindow}
                           onChange={e => setDigitWindow(e.target.value)} disabled={botRunning}
                           className="h-7 text-[10px]" />
                       </div>
-                       <div>
+                      <div>
                         <label className="text-[8px] text-muted-foreground">ticks are </label>
                         <Select value={digitCondition} onValueChange={setDigitCondition} disabled={botRunning}>
                           <SelectTrigger className="h-7 text-[10px]"><SelectValue /></SelectTrigger>
@@ -1480,6 +1381,7 @@ export default function TradingChart() {
               </div>
             </div>
 
+            {/* Bot live stats */}
             {botRunning && (
               <div className="grid grid-cols-3 gap-1 text-center">
                 <div className="bg-muted/30 rounded p-1">
@@ -1499,6 +1401,7 @@ export default function TradingChart() {
               </div>
             )}
 
+            {/* Start/Pause/Stop buttons */}
             <div className="flex gap-2">
               {!botRunning ? (
                 <Button onClick={startBot} disabled={!isAuthorized} className="flex-1 h-10 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
@@ -1517,11 +1420,11 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* Trade Progress */}
+          {/* Bot Progress */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Results
+                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
               </h3>
               {tradeHistory.length > 0 && (
                 <Button variant="ghost" size="sm" className="h-6 text-[9px] text-muted-foreground hover:text-loss"
@@ -1562,6 +1465,7 @@ export default function TradingChart() {
               </div>
             )}
 
+            {/* Trade History */}
             {tradeHistory.length > 0 && (
               <div className="max-h-40 overflow-auto space-y-1">
                 {tradeHistory.slice(0, 10).map(t => (
