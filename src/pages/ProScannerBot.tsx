@@ -71,6 +71,7 @@ interface EnhancedLogEntry {
   pnl: number;
   balance: number;
   switchInfo: string;
+  contractId?: string;
 }
 
 interface TradeSummary {
@@ -113,7 +114,10 @@ class CircularTickBuffer {
 function waitForNextTick(symbol: string): Promise<{ quote: number }> {
   return new Promise((resolve) => {
     const unsub = derivApi.onMessage((data: any) => {
-      if (data.tick && data.tick.symbol === symbol) { unsub(); resolve({ quote: data.tick.quote }); }
+      if (data.tick && data.tick.symbol === symbol) { 
+        unsub(); 
+        resolve({ quote: data.tick.quote }); 
+      }
     });
   });
 }
@@ -483,14 +487,267 @@ export default function ProScannerBot() {
     return filtered;
   }, [logEntries, filterContract, filterMarket, filterResult, sortField, sortDirection]);
 
+  /* ═══════════════ EXECUTE REAL TRADE - FIXED WITH ENHANCED LOGGING ═══════════════ */
+  const executeRealTrade = useCallback(async (
+    cfg: { contract: string; barrier: string; symbol: string },
+    tradeSymbol: string,
+    cStake: number,
+    mStep: number,
+    mkt: 1 | 2,
+    localBalance: number,
+    localPnl: number,
+    baseStake: number,
+  ) => {
+    const logId = ++logIdRef.current;
+    const now = new Date();
+    const entryTime = now.toLocaleTimeString();
+    
+    // Calculate signal strength and digit frequency before trade
+    const recentDigits = tickMapRef.current.get(tradeSymbol) || [];
+    const barrier = needsBarrier(cfg.contract) ? parseInt(cfg.barrier) : undefined;
+    const signalStrength = calculateSignalStrength(recentDigits, cfg.contract, barrier);
+    const digitFrequency = getDigitFrequency(recentDigits);
+    
+    setTotalStaked(prev => prev + cStake);
+    setCurrentStakeState(cStake);
+
+    addLog(logId, {
+      time: entryTime, exitTime: null, market: mkt === 1 ? 'M1' : 'M2', symbol: tradeSymbol,
+      contract: cfg.contract, contractDisplay: CONTRACT_DISPLAY_NAMES[cfg.contract] || cfg.contract,
+      stake: cStake, martingaleStep: mStep,
+      entryPrice: null, exitPrice: null, entryDigit: null,
+      exitDigit: '...', tickCount: 0, signalStrength, digitFrequency,
+      result: 'Pending', pnl: 0, balance: localBalance,
+      switchInfo: '',
+    });
+
+    let inRecovery = mkt === 2;
+
+    try {
+      // Wait for next tick if not in turbo mode
+      if (!turboMode) {
+        await waitForNextTick(tradeSymbol as MarketSymbol);
+      }
+
+      const buyParams: any = {
+        contract_type: cfg.contract, 
+        symbol: tradeSymbol,
+        duration: 1, 
+        duration_unit: 't', 
+        basis: 'stake', 
+        amount: cStake,
+      };
+      
+      if (needsBarrier(cfg.contract)) {
+        buyParams.barrier = cfg.barrier;
+      }
+
+      // 1. Buy Contract
+      const buyResponse = await derivApi.buyContract(buyParams);
+      const contractId = buyResponse.contractId;
+      
+      // Update log with contract ID
+      updateLog(logId, { contractId });
+      
+      if (copyTradingService.enabled) {
+        copyTradingService.copyTrade({
+          ...buyParams,
+          masterTradeId: contractId,
+        }).catch(err => console.error('Copy trading error:', err));
+      }
+      
+      // 2. Subscribe to proposal_open_contract for real-time updates
+      await derivApi.send({
+        proposal_open_contract: 1,
+        contract_id: contractId,
+        subscribe: 1
+      });
+
+      // 3. Wait for contract completion with proper entry/exit tracking
+      const contractResult = await new Promise<any>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          unsub();
+          reject(new Error('Contract timeout'));
+        }, 60000); // 60 second timeout
+        
+        const unsub = derivApi.onMessage((data: any) => {
+          if (data.msg_type === 'proposal_open_contract') {
+            const poc = data.proposal_open_contract;
+            if (poc.contract_id !== contractId) return;
+
+            // Update entry spot as soon as we get it
+            if (poc.entry_tick && !poc.is_expired) {
+              const entryDigit = getLastDigit(poc.entry_tick);
+              updateLog(logId, { 
+                entryPrice: poc.entry_tick,
+                entryDigit: entryDigit,
+              });
+            }
+
+            // Update tick count as it progresses
+            if (poc.tick_count) {
+              updateLog(logId, { tickCount: poc.tick_count });
+            }
+
+            // Contract is expired - get final result
+            if (poc.is_expired === 1) {
+              clearTimeout(timeout);
+              unsub();
+              // Forget the subscription
+              derivApi.send({ forget: poc.id }).catch(() => {});
+              resolve(poc);
+            }
+          }
+        });
+      });
+
+      // 4. Process contract result
+      const won = contractResult.status === 'won';
+      const pnl = contractResult.profit || (won ? cStake * 0.9 : -cStake); // Fallback calculation
+      localPnl += pnl;
+      localBalance += pnl;
+
+      // Extract final data
+      const entryPrice = contractResult.entry_tick ?? null;
+      const exitPrice = contractResult.exit_tick ?? null;
+      const entryDigit = entryPrice ? getLastDigit(entryPrice) : null;
+      const exitDigit = exitPrice ? String(getLastDigit(exitPrice)) : '-';
+      const tickCount = contractResult.tick_count || 0;
+      const exitTime = new Date().toLocaleTimeString();
+
+      let switchInfo = '';
+      let newInRecovery = inRecovery;
+      
+      if (won) {
+        setWins(prev => prev + 1);
+        if (inRecovery) {
+          switchInfo = '✓ Recovery WIN → Back to M1';
+          newInRecovery = false;
+        } else {
+          switchInfo = '→ Continue M1';
+          newInRecovery = false;
+        }
+        mStep = 0;
+        cStake = baseStake;
+      } else {
+        setLosses(prev => prev + 1);
+        
+        // Record loss for loss requirement tracking
+        if (activeAccount?.is_virtual) {
+          recordLoss(cStake, tradeSymbol, 6000);
+        }
+        
+        if (!inRecovery && m2Enabled) {
+          newInRecovery = true;
+          switchInfo = '✗ Loss → Switch to M2';
+        } else {
+          switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1';
+          newInRecovery = inRecovery;
+        }
+        
+        // Martingale logic
+        if (martingaleOn) {
+          const maxS = parseInt(martingaleMaxSteps) || 5;
+          if (mStep < maxS) {
+            cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
+            mStep++;
+          } else {
+            mStep = 0;
+            cStake = baseStake;
+          }
+        }
+      }
+
+      setNetProfit(prev => prev + pnl);
+      setMartingaleStepState(mStep);
+      setCurrentStakeState(cStake);
+
+      // Final log update with all trade data
+      updateLog(logId, { 
+        entryPrice, 
+        exitPrice, 
+        entryDigit,
+        exitDigit, 
+        tickCount,
+        exitTime,
+        result: won ? 'Win' : 'Loss', 
+        pnl, 
+        balance: localBalance, 
+        switchInfo 
+      });
+
+      // Log trade completion
+      console.log(`Trade ${contractId}: ${won ? 'WIN' : 'LOSS'} | Stake: $${cStake} | P/L: $${pnl.toFixed(2)} | ${switchInfo}`);
+      
+      // Check take profit / stop loss conditions
+      let shouldBreak = false;
+      if (localPnl >= parseFloat(takeProfit)) {
+        toast.success(`🎯 Take Profit! +$${localPnl.toFixed(2)}`);
+        shouldBreak = true;
+      }
+      if (localPnl <= -parseFloat(stopLoss)) {
+        toast.error(`🛑 Stop Loss! $${localPnl.toFixed(2)}`);
+        shouldBreak = true;
+      }
+      if (localBalance < cStake) {
+        toast.error('Insufficient balance');
+        shouldBreak = true;
+      }
+
+      return { 
+        localPnl, 
+        localBalance, 
+        cStake, 
+        mStep, 
+        inRecovery: newInRecovery, 
+        shouldBreak 
+      };
+      
+    } catch (err: any) {
+      console.error('Trade execution error:', err);
+      updateLog(logId, { 
+        result: 'Loss', 
+        pnl: 0, 
+        exitDigit: '-', 
+        exitTime: new Date().toLocaleTimeString(), 
+        switchInfo: `Error: ${err.message || 'Unknown error'}` 
+      });
+      
+      if (!turboMode) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      
+      return { 
+        localPnl, 
+        localBalance, 
+        cStake, 
+        mStep, 
+        inRecovery, 
+        shouldBreak: false 
+      };
+    }
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
+
   /* ═══════════════ MAIN BOT LOOP ═══════════════ */
   const startBot = useCallback(async () => {
     if (!isAuthorized || isRunning) return;
     const baseStake = parseFloat(stake);
-    if (baseStake < 0.35) { toast.error('Min stake $0.35'); return; }
-    if (!m1Enabled && !m2Enabled) { toast.error('Enable at least one market'); return; }
-    if (strategyM1Enabled && m1StrategyMode === 'pattern' && !m1PatternValid) { toast.error('Invalid M1 pattern (min 2 E/O)'); return; }
-    if (strategyEnabled && m2StrategyMode === 'pattern' && !m2PatternValid) { toast.error('Invalid M2 pattern (min 2 E/O)'); return; }
+    if (baseStake < 0.35) { 
+      toast.error('Min stake $0.35'); 
+      return; 
+    }
+    if (!m1Enabled && !m2Enabled) { 
+      toast.error('Enable at least one market'); 
+      return; 
+    }
+    if (strategyM1Enabled && m1StrategyMode === 'pattern' && !m1PatternValid) { 
+      toast.error('Invalid M1 pattern (min 2 E/O)'); 
+      return; 
+    }
+    if (strategyEnabled && m2StrategyMode === 'pattern' && !m2PatternValid) { 
+      toast.error('Invalid M2 pattern (min 2 E/O)'); 
+      return; 
+    }
 
     setIsRunning(true);
     runningRef.current = true;
@@ -498,7 +755,10 @@ export default function ProScannerBot() {
     setBotStatus('trading_m1');
     setCurrentStakeState(baseStake);
     setMartingaleStepState(0);
-    setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
+    setVhFakeWins(0); 
+    setVhFakeLosses(0); 
+    setVhConsecLosses(0); 
+    setVhStatus('idle');
 
     let cStake = baseStake;
     let mStep = 0;
@@ -512,12 +772,22 @@ export default function ProScannerBot() {
       symbol: market === 1 ? m1Symbol : m2Symbol,
     });
 
+    toast.success('Bot started successfully!');
+
     while (runningRef.current) {
       const mkt: 1 | 2 = inRecovery ? 2 : 1;
       setCurrentMarket(mkt);
 
-      if (mkt === 1 && !m1Enabled) { if (m2Enabled) { inRecovery = true; continue; } else break; }
-      if (mkt === 2 && !m2Enabled) { inRecovery = false; continue; }
+      if (mkt === 1 && !m1Enabled) { 
+        if (m2Enabled) { 
+          inRecovery = true; 
+          continue; 
+        } else break; 
+      }
+      if (mkt === 2 && !m2Enabled) { 
+        inRecovery = false; 
+        continue; 
+      }
 
       let tradeSymbol: string;
       const cfg = getConfig(mkt);
@@ -534,9 +804,15 @@ export default function ProScannerBot() {
         while (runningRef.current && !matched) {
           if (scannerActive) {
             const found = findScannerMatchForMarket(2);
-            if (found) { matched = true; matchedSymbol = found; }
+            if (found) { 
+              matched = true; 
+              matchedSymbol = found; 
+            }
           } else {
-            if (checkStrategyForMarket(cfg.symbol, 2)) { matched = true; matchedSymbol = cfg.symbol; }
+            if (checkStrategyForMarket(cfg.symbol, 2)) { 
+              matched = true; 
+              matchedSymbol = cfg.symbol; 
+            }
           }
           if (!matched) {
             await new Promise<void>(r => {
@@ -557,7 +833,9 @@ export default function ProScannerBot() {
 
         let matched = false;
         while (runningRef.current && !matched) {
-          if (checkStrategyForMarket(cfg.symbol, 1)) { matched = true; }
+          if (checkStrategyForMarket(cfg.symbol, 1)) { 
+            matched = true; 
+          }
           if (!matched) {
             await new Promise<void>(r => {
               if (turboMode) requestAnimationFrame(() => r());
@@ -643,7 +921,10 @@ export default function ProScannerBot() {
           mStep = result.mStep;
           inRecovery = result.inRecovery;
 
-          if (result.shouldBreak) { runningRef.current = false; break; }
+          if (result.shouldBreak) { 
+            runningRef.current = false; 
+            break; 
+          }
         }
 
         setVhStatus('idle');
@@ -671,192 +952,20 @@ export default function ProScannerBot() {
     setIsRunning(false);
     runningRef.current = false;
     setBotStatus('idle');
+    toast.info('Bot stopped');
+    
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthorized, isRunning, balance, stake, m1Enabled, m2Enabled, m1Contract, m2Contract,
     m1Barrier, m2Barrier, m1Symbol, m2Symbol, martingaleOn, martingaleMultiplier, martingaleMaxSteps,
     takeProfit, stopLoss, strategyEnabled, strategyM1Enabled, m1StrategyMode, m2StrategyMode, m1PatternValid, m2PatternValid,
     scannerActive, findScannerMatchForMarket, checkStrategyForMarket, addLog, updateLog, turboMode,
-    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount]);
-
-  /* ── Execute a single real trade (FIXED) ── */
-  const executeRealTrade = useCallback(async (
-    cfg: { contract: string; barrier: string; symbol: string },
-    tradeSymbol: string,
-    cStake: number,
-    mStep: number,
-    mkt: 1 | 2,
-    localBalance: number,
-    localPnl: number,
-    baseStake: number,
-  ) => {
-    const logId = ++logIdRef.current;
-    const now = new Date();
-    const entryTime = now.toLocaleTimeString();
-    
-    // Calculate signal strength and digit frequency before trade
-    const recentDigits = tickMapRef.current.get(tradeSymbol) || [];
-    const barrier = needsBarrier(cfg.contract) ? parseInt(cfg.barrier) : undefined;
-    const signalStrength = calculateSignalStrength(recentDigits, cfg.contract, barrier);
-    const digitFrequency = getDigitFrequency(recentDigits);
-    
-    setTotalStaked(prev => prev + cStake);
-    setCurrentStakeState(cStake);
-
-    addLog(logId, {
-      time: entryTime, exitTime: null, market: mkt === 1 ? 'M1' : 'M2', symbol: tradeSymbol,
-      contract: cfg.contract, contractDisplay: CONTRACT_DISPLAY_NAMES[cfg.contract] || cfg.contract,
-      stake: cStake, martingaleStep: mStep,
-      entryPrice: null, exitPrice: null, entryDigit: null,
-      exitDigit: '...', tickCount: 0, signalStrength, digitFrequency,
-      result: 'Pending', pnl: 0, balance: localBalance,
-      switchInfo: '',
-    });
-
-    let inRecovery = mkt === 2;
-
-    try {
-      if (!turboMode) {
-        await waitForNextTick(tradeSymbol as MarketSymbol);
-      }
-
-      const buyParams: any = {
-        contract_type: cfg.contract, symbol: tradeSymbol,
-        duration: 1, duration_unit: 't', basis: 'stake', amount: cStake,
-      };
-      if (needsBarrier(cfg.contract)) buyParams.barrier = cfg.barrier;
-
-      // 1. Buy Contract
-      const { contractId } = await derivApi.buyContract(buyParams);
-      
-      if (copyTradingService.enabled) {
-        copyTradingService.copyTrade({
-          ...buyParams,
-          masterTradeId: contractId,
-        }).catch(err => console.error('Copy trading error:', err));
-      }
-      
-      // 2. STRICT FIX: Subscribe to proposal_open_contract
-      await derivApi.send({
-        proposal_open_contract: 1,
-        contract_id: contractId,
-        subscribe: 1
-      });
-
-      const contractResult = await new Promise<any>((resolve) => {
-        const unsub = derivApi.onMessage((data: any) => {
-          if (data.msg_type === 'proposal_open_contract') {
-            const poc = data.proposal_open_contract;
-            if (poc.contract_id !== contractId) return;
-
-            // 3. UPDATE ENTRY SPOT (Immediate UI update)
-            if (poc.entry_tick) {
-              updateLog(logId, { 
-                entryPrice: poc.entry_tick,
-                entryDigit: getLastDigit(poc.entry_tick),
-                exitDigit: '...'
-              });
-            }
-
-            // 4. EXIT SPOT FIX
-            // ONLY resolve when contract is EXPIRED.
-            if (poc.is_expired === 1) {
-              unsub();
-              derivApi.send({ forget: poc.id }).catch(() => {});
-              resolve(poc);
-            }
-          }
-        });
-      });
-
-      const won = contractResult.status === 'won';
-      const pnl = contractResult.profit;
-      localPnl += pnl;
-      localBalance += pnl;
-
-      // 5. Extract Final Data
-      const entryPrice = contractResult.entry_tick ?? null;
-      const exitPrice = contractResult.exit_tick ?? null;
-      const exitDigit = exitPrice ? String(getLastDigit(exitPrice)) : '-';
-      const tickCount = contractResult.tick_count || 0;
-      const exitTime = new Date().toLocaleTimeString();
-
-      let switchInfo = '';
-      if (won) {
-        setWins(prev => prev + 1);
-        if (inRecovery) {
-          switchInfo = '✓ Recovery WIN → Back to M1';
-          inRecovery = false;
-        } else {
-          switchInfo = '→ Continue M1';
-        }
-        mStep = 0;
-        cStake = baseStake;
-      } else {
-        setLosses(prev => prev + 1);
-        if (activeAccount?.is_virtual) {
-          recordLoss(cStake, tradeSymbol, 6000);
-        }
-        if (!inRecovery && m2Enabled) {
-          inRecovery = true;
-          switchInfo = '✗ Loss → Switch to M2';
-        } else {
-          switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1';
-        }
-        if (martingaleOn) {
-          const maxS = parseInt(martingaleMaxSteps) || 5;
-          if (mStep < maxS) {
-            cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
-            mStep++;
-          } else {
-            mStep = 0;
-            cStake = baseStake;
-          }
-        }
-      }
-
-      setNetProfit(prev => prev + pnl);
-      setMartingaleStepState(mStep);
-      setCurrentStakeState(cStake);
-
-      updateLog(logId, { 
-        entryPrice, 
-        exitPrice, 
-        entryDigit: entryPrice ? getLastDigit(entryPrice) : null,
-        exitDigit, 
-        tickCount,
-        exitTime,
-        result: won ? 'Win' : 'Loss', 
-        pnl, 
-        balance: localBalance, 
-        switchInfo 
-      });
-
-      let shouldBreak = false;
-      if (localPnl >= parseFloat(takeProfit)) {
-        toast.success(`🎯 Take Profit! +$${localPnl.toFixed(2)}`);
-        shouldBreak = true;
-      }
-      if (localPnl <= -parseFloat(stopLoss)) {
-        toast.error(`🛑 Stop Loss! $${localPnl.toFixed(2)}`);
-        shouldBreak = true;
-      }
-      if (localBalance < cStake) {
-        toast.error('Insufficient balance');
-        shouldBreak = true;
-      }
-
-      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
-    } catch (err: any) {
-      updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', exitTime: new Date().toLocaleTimeString(), switchInfo: `Error: ${err.message}` });
-      if (!turboMode) await new Promise(r => setTimeout(r, 2000));
-      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
-    }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
+    m1HookEnabled, m2HookEnabled, m1VirtualLossCount, m2VirtualLossCount, m1RealCount, m2RealCount, executeRealTrade]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
     setIsRunning(false);
     setBotStatus('idle');
+    toast.info('Stopping bot...');
   }, []);
 
   /* ── Status helpers ── */
