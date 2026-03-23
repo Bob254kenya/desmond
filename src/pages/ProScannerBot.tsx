@@ -55,6 +55,21 @@ interface LogEntry {
   switchInfo: string;
 }
 
+interface ActiveContract {
+  logId: number;
+  market: 'M1' | 'M2';
+  symbol: string;
+  contract: string;
+  stake: number;
+  martingaleStep: number;
+  entryPrice: number;
+  entryTime: string;
+  inRecovery: boolean;
+  cStake: number;
+  mStep: number;
+  baseStake: number;
+}
+
 /* ── Circular Tick Buffer ── */
 class CircularTickBuffer {
   private buffer: { digit: number; ts: number }[];
@@ -201,9 +216,94 @@ export default function ProScannerBot() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const logIdRef = useRef(0);
 
+  /* ── Active contracts tracking ── */
+  const activeContractsRef = useRef<Map<number, ActiveContract>>(new Map());
+  const pendingUpdatesRef = useRef<Map<number, { exitPrice: number; exitDigit: string; won: boolean; pnl: number }>>(new Map());
+
   /* ── Tick data (legacy for pattern matching) ── */
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
   const [tickCounts, setTickCounts] = useState<Record<string, number>>({});
+
+  /* ── Listen for proposal_open_contract updates (CRITICAL FIX) ── */
+  useEffect(() => {
+    if (!derivApi.isConnected) return;
+    
+    const handleContractUpdate = (data: any) => {
+      // Check if this is a proposal_open_contract message
+      if (data.msg_type === 'proposal_open_contract') {
+        const contract = data.proposal_open_contract;
+        const contractId = contract.contract_id;
+        
+        // Check if we're tracking this contract
+        if (activeContractsRef.current.has(contractId)) {
+          const trade = activeContractsRef.current.get(contractId)!;
+          
+          // ONLY update when contract is expired (is_expired = 1)
+          if (contract.is_expired === 1) {
+            // Get the exit_tick (FINAL price) - THIS IS THE CORRECT PROPERTY
+            const exitSpot = contract.exit_tick;
+            
+            if (exitSpot !== undefined && exitSpot !== null) {
+              const exitDigit = String(getLastDigit(exitSpot));
+              const won = contract.profit > 0;
+              const pnl = won ? contract.payout - trade.entryPrice : -trade.entryPrice;
+              
+              // Store the update
+              pendingUpdatesRef.current.set(trade.logId, {
+                exitPrice: exitSpot,
+                exitDigit: exitDigit,
+                won: won,
+                pnl: pnl
+              });
+              
+              // Trigger a re-render to show the update
+              setLogEntries(prev => prev.map(log => {
+                if (log.id === trade.logId) {
+                  return {
+                    ...log,
+                    exitPrice: exitSpot,
+                    exitDigit: exitDigit,
+                    result: won ? 'Win' : 'Loss',
+                    pnl: pnl
+                  };
+                }
+                return log;
+              }));
+              
+              // Update global stats
+              if (won) {
+                setWins(prev => prev + 1);
+              } else {
+                setLosses(prev => prev + 1);
+              }
+              setNetProfit(prev => prev + pnl);
+              
+              // Log the update for debugging
+              console.log(`✅ Contract ${contractId} expired: ${won ? 'WIN' : 'LOSS'} | Exit: ${exitSpot} | Digit: ${exitDigit} | P/L: ${pnl}`);
+              
+              // Remove from active contracts
+              activeContractsRef.current.delete(contractId);
+              
+              // Clear pending update after 1 second
+              setTimeout(() => {
+                pendingUpdatesRef.current.delete(trade.logId);
+              }, 1000);
+            } else {
+              console.warn(`⚠️ Contract ${contractId} expired but no exit_tick found`);
+            }
+          } else {
+            // Contract not expired yet - optional: log progress
+            if (contract.current_spot !== undefined) {
+              // console.log(`⏳ Contract ${contractId} in progress - Current: ${contract.current_spot}`);
+            }
+          }
+        }
+      }
+    };
+    
+    const unsub = derivApi.onMessage(handleContractUpdate);
+    return () => unsub();
+  }, []);
 
   /* Subscribe to all scanner markets */
   useEffect(() => {
@@ -320,6 +420,8 @@ export default function ProScannerBot() {
     setMartingaleStepState(0);
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
     setTicksCaptured(0); setTicksMissed(0);
+    activeContractsRef.current.clear();
+    pendingUpdatesRef.current.clear();
   }, []);
 
   /* ═══════════════ MAIN BOT LOOP ═══════════════ */
@@ -441,7 +543,6 @@ export default function ProScannerBot() {
           if (!runningRef.current) break;
 
           if (vResult.won) {
-            // Win resets the consecutive loss counter
             consecLosses = 0;
             setVhConsecLosses(0);
             setVhFakeWins(prev => prev + 1);
@@ -466,11 +567,9 @@ export default function ProScannerBot() {
 
         if (!runningRef.current) break;
 
-        // Required consecutive losses reached → hook confirmed
         setVhStatus('confirmed');
         toast.success(`🎣 Hook confirmed! ${requiredLosses} consecutive losses detected → Executing ${realCount} real trade(s)`);
 
-        /* Execute real trades batch */
         for (let ri = 0; ri < realCount && runningRef.current; ri++) {
           const result = await executeRealTrade(
             cfg, tradeSymbol, cStake, mStep, mkt, localBalance, localPnl, baseStake
@@ -485,7 +584,6 @@ export default function ProScannerBot() {
           if (result.shouldBreak) { runningRef.current = false; break; }
         }
 
-        // Reset after real trades
         setVhStatus('idle');
         setVhConsecLosses(0);
         if (!runningRef.current) break;
@@ -505,7 +603,6 @@ export default function ProScannerBot() {
 
       if (result.shouldBreak) break;
 
-      // Turbo: no delay between trades; normal: small delay
       if (!turboMode) await new Promise(r => setTimeout(r, 400));
     }
 
@@ -535,13 +632,12 @@ export default function ProScannerBot() {
     setTotalStaked(prev => prev + cStake);
     setCurrentStakeState(cStake);
 
-    // Get entry price before buying
+    // Get entry price
     let entryPrice = 0;
     if (!turboMode) {
       const tick = await waitForNextTick(tradeSymbol as MarketSymbol);
       entryPrice = tick.quote;
     } else {
-      // For turbo mode, get the latest tick from buffer
       const lastTick = tickMapRef.current.get(tradeSymbol)?.slice(-1)[0];
       entryPrice = lastTick || 0;
     }
@@ -557,7 +653,7 @@ export default function ProScannerBot() {
     let inRecovery = mkt === 2;
 
     try {
-      // Turbo: skip waiting for next tick, trade immediately
+      // Turbo: skip waiting for next tick
       if (!turboMode) {
         await waitForNextTick(tradeSymbol as MarketSymbol);
       }
@@ -570,6 +666,22 @@ export default function ProScannerBot() {
 
       const { contractId } = await derivApi.buyContract(buyParams);
       
+      // Store the contract for tracking via proposal_open_contract
+      activeContractsRef.current.set(contractId, {
+        logId,
+        market: mkt === 1 ? 'M1' : 'M2',
+        symbol: tradeSymbol,
+        contract: cfg.contract,
+        stake: cStake,
+        martingaleStep: mStep,
+        entryPrice,
+        entryTime: now,
+        inRecovery,
+        cStake,
+        mStep,
+        baseStake,
+      });
+      
       // Copy trade to followers
       if (copyTradingService.enabled) {
         copyTradingService.copyTrade({
@@ -578,89 +690,131 @@ export default function ProScannerBot() {
         }).catch(err => console.error('Copy trading error:', err));
       }
       
-      const result = await derivApi.waitForContractResult(contractId);
-      const won = result.status === 'won';
-      const pnl = result.profit;
-      localPnl += pnl;
-      localBalance += pnl;
-
-      const exitPrice = result.sellPrice || 0;
-      const exitDigit = String(getLastDigit(exitPrice));
-
-      let switchInfo = '';
-      if (won) {
-        setWins(prev => prev + 1);
-        if (inRecovery) {
-          switchInfo = '✓ Recovery WIN → Back to M1';
-          inRecovery = false;
-        } else {
-          switchInfo = '→ Continue M1';
-        }
-        mStep = 0;
-        cStake = baseStake;
-      } else {
-        setLosses(prev => prev + 1);
-        // Record loss for virtual trading requirement (duration ~1 tick ≈ 5s+)
-        if (activeAccount?.is_virtual) {
-          recordLoss(cStake, tradeSymbol, 6000);
-        }
-        if (!inRecovery && m2Enabled) {
-          inRecovery = true;
-          switchInfo = '✗ Loss → Switch to M2';
-        } else {
-          switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1';
-        }
-        if (martingaleOn) {
-          const maxS = parseInt(martingaleMaxSteps) || 5;
-          if (mStep < maxS) {
-            cStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
-            mStep++;
-          } else {
-            mStep = 0;
-            cStake = baseStake;
+      // Wait for contract to complete (this will be handled by the proposal_open_contract listener)
+      // Instead of waiting synchronously, we'll let the listener update the log
+      
+      // For now, we need to wait for the contract to complete to continue the bot loop
+      // We'll poll until the contract is removed from activeContractsRef
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (!activeContractsRef.current.has(contractId)) {
+            clearInterval(checkInterval);
+            resolve();
           }
-        }
-      }
-
-      setNetProfit(prev => prev + pnl);
-      setMartingaleStepState(mStep);
-      setCurrentStakeState(cStake);
-
-      updateLog(logId, { 
-        exitDigit, 
-        exitPrice,
-        result: won ? 'Win' : 'Loss', 
-        pnl, 
-        balance: localBalance, 
-        switchInfo 
+        }, 100);
+        
+        // Timeout after 30 seconds
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          console.warn(`⚠️ Contract ${contractId} timeout after 30 seconds`);
+          resolve();
+        }, 30000);
       });
-
-      let shouldBreak = false;
-      if (localPnl >= parseFloat(takeProfit)) {
-        toast.success(`🎯 Take Profit! +$${localPnl.toFixed(2)}`);
-        shouldBreak = true;
+      
+      // Now update local state based on the final result from the log
+      const finalLog = logEntries.find(log => log.id === logId);
+      if (finalLog && finalLog.result !== 'Pending') {
+        const won = finalLog.result === 'Win';
+        const pnl = finalLog.pnl;
+        localPnl += pnl;
+        localBalance += pnl;
+        
+        let switchInfo = '';
+        if (won) {
+          setWins(prev => prev + 1);
+          if (inRecovery) {
+            switchInfo = '✓ Recovery WIN → Back to M1';
+            inRecovery = false;
+          } else {
+            switchInfo = '→ Continue M1';
+          }
+          // Reset martingale on win
+          const newCStake = baseStake;
+          const newMStep = 0;
+          
+          setMartingaleStepState(newMStep);
+          setCurrentStakeState(newCStake);
+          
+          let shouldBreak = false;
+          if (localPnl >= parseFloat(takeProfit)) {
+            toast.success(`🎯 Take Profit! +$${localPnl.toFixed(2)}`);
+            shouldBreak = true;
+          }
+          if (localPnl <= -parseFloat(stopLoss)) {
+            toast.error(`🛑 Stop Loss! $${localPnl.toFixed(2)}`);
+            shouldBreak = true;
+          }
+          if (localBalance < newCStake) {
+            toast.error('Insufficient balance');
+            shouldBreak = true;
+          }
+          
+          return { localPnl, localBalance, cStake: newCStake, mStep: newMStep, inRecovery, shouldBreak };
+        } else {
+          setLosses(prev => prev + 1);
+          // Record loss for virtual trading requirement
+          if (activeAccount?.is_virtual) {
+            recordLoss(cStake, tradeSymbol, 6000);
+          }
+          if (!inRecovery && m2Enabled) {
+            inRecovery = true;
+            switchInfo = '✗ Loss → Switch to M2';
+          } else {
+            switchInfo = inRecovery ? '→ Stay M2' : '→ Continue M1';
+          }
+          
+          let newCStake = cStake;
+          let newMStep = mStep;
+          if (martingaleOn) {
+            const maxS = parseInt(martingaleMaxSteps) || 5;
+            if (mStep < maxS) {
+              newCStake = parseFloat((cStake * (parseFloat(martingaleMultiplier) || 2)).toFixed(2));
+              newMStep++;
+            } else {
+              newCStake = baseStake;
+              newMStep = 0;
+            }
+          } else {
+            newCStake = baseStake;
+            newMStep = 0;
+          }
+          
+          setMartingaleStepState(newMStep);
+          setCurrentStakeState(newCStake);
+          
+          let shouldBreak = false;
+          if (localPnl >= parseFloat(takeProfit)) {
+            toast.success(`🎯 Take Profit! +$${localPnl.toFixed(2)}`);
+            shouldBreak = true;
+          }
+          if (localPnl <= -parseFloat(stopLoss)) {
+            toast.error(`🛑 Stop Loss! $${localPnl.toFixed(2)}`);
+            shouldBreak = true;
+          }
+          if (localBalance < newCStake) {
+            toast.error('Insufficient balance');
+            shouldBreak = true;
+          }
+          
+          return { localPnl, localBalance, cStake: newCStake, mStep: newMStep, inRecovery, shouldBreak };
+        }
+      } else {
+        // Fallback if log wasn't updated (should not happen)
+        console.error(`⚠️ Contract ${contractId} completed but log ${logId} not updated`);
+        return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
       }
-      if (localPnl <= -parseFloat(stopLoss)) {
-        toast.error(`🛑 Stop Loss! $${localPnl.toFixed(2)}`);
-        shouldBreak = true;
-      }
-      if (localBalance < cStake) {
-        toast.error('Insufficient balance');
-        shouldBreak = true;
-      }
-
-      return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
     } catch (err: any) {
       updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', exitPrice: 0, switchInfo: `Error: ${err.message}` });
       if (!turboMode) await new Promise(r => setTimeout(r, 2000));
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
     }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss, logEntries]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
     setIsRunning(false);
     setBotStatus('idle');
+    activeContractsRef.current.clear();
   }, []);
 
   /* ── Status helpers ── */
@@ -733,12 +887,11 @@ export default function ProScannerBot() {
     if ((cfg as any).botName) setBotName((cfg as any).botName);
   }, []);
 
-  // Auto-load config from navigation state (Free Bots page)
+  // Auto-load config from navigation state
   useEffect(() => {
     const state = location.state as { loadConfig?: BotConfig } | null;
     if (state?.loadConfig) {
       handleLoadConfig(state.loadConfig);
-      // Clear state to prevent re-loading on re-render
       window.history.replaceState({}, '');
     }
   }, [location.state, handleLoadConfig]);
@@ -748,7 +901,7 @@ export default function ProScannerBot() {
 
   return (
     <div className="space-y-2 max-w-7xl mx-auto">
-      {/* ── Compact Header ── */}
+      {/* Header */}
       <div className="flex items-center justify-between gap-2 bg-card border border-border rounded-xl px-3 py-2">
         <h1 className="text-base font-bold text-foreground flex items-center gap-2">
           <Scan className="w-4 h-4 text-primary" /> Pro Scanner Bot
@@ -768,7 +921,7 @@ export default function ProScannerBot() {
         </div>
       </div>
 
-      {/* ── Scanner + Turbo + Stats Compact Row ── */}
+      {/* Scanner + Turbo + Stats Row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
         {/* Scanner */}
         <div className="bg-card border border-border rounded-xl p-2.5">
@@ -828,7 +981,7 @@ export default function ProScannerBot() {
           </div>
         </div>
 
-        {/* Live Stats */}
+        {/* Stats */}
         <div className="bg-card border border-border rounded-xl p-2.5">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-semibold text-foreground">Stats</span>
@@ -851,11 +1004,11 @@ export default function ProScannerBot() {
         </div>
       </div>
 
-      {/* ── Main 2-Column Layout ── */}
+      {/* Main 2-Column Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
-        {/* ═══ LEFT: Config Column ═══ */}
+        {/* LEFT: Config Column */}
         <div className="lg:col-span-4 space-y-2">
-          {/* Market 1 + Market 2 side by side on md */}
+          {/* Market 1 + Market 2 */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-2">
             {/* Market 1 */}
             <div className="bg-card border-2 border-profit/30 rounded-xl p-2.5 space-y-1.5">
@@ -1201,7 +1354,6 @@ export default function ProScannerBot() {
                         if (!cfg.version || !cfg.m1 || !cfg.m2 || !cfg.risk) {
                           toast.error('Invalid config file format'); return;
                         }
-                        // M1
                         if (cfg.m1.enabled !== undefined) setM1Enabled(cfg.m1.enabled);
                         if (cfg.m1.symbol) setM1Symbol(cfg.m1.symbol);
                         if (cfg.m1.contract) setM1Contract(cfg.m1.contract);
@@ -1209,7 +1361,6 @@ export default function ProScannerBot() {
                         if (cfg.m1.hookEnabled !== undefined) setM1HookEnabled(cfg.m1.hookEnabled);
                         if (cfg.m1.virtualLossCount) setM1VirtualLossCount(cfg.m1.virtualLossCount);
                         if (cfg.m1.realCount) setM1RealCount(cfg.m1.realCount);
-                        // M2
                         if (cfg.m2.enabled !== undefined) setM2Enabled(cfg.m2.enabled);
                         if (cfg.m2.symbol) setM2Symbol(cfg.m2.symbol);
                         if (cfg.m2.contract) setM2Contract(cfg.m2.contract);
@@ -1217,14 +1368,12 @@ export default function ProScannerBot() {
                         if (cfg.m2.hookEnabled !== undefined) setM2HookEnabled(cfg.m2.hookEnabled);
                         if (cfg.m2.virtualLossCount) setM2VirtualLossCount(cfg.m2.virtualLossCount);
                         if (cfg.m2.realCount) setM2RealCount(cfg.m2.realCount);
-                        // Risk
                         if (cfg.risk.stake) setStake(cfg.risk.stake);
                         if (cfg.risk.martingaleOn !== undefined) setMartingaleOn(cfg.risk.martingaleOn);
                         if (cfg.risk.martingaleMultiplier) setMartingaleMultiplier(cfg.risk.martingaleMultiplier);
                         if (cfg.risk.martingaleMaxSteps) setMartingaleMaxSteps(cfg.risk.martingaleMaxSteps);
                         if (cfg.risk.takeProfit) setTakeProfit(cfg.risk.takeProfit);
                         if (cfg.risk.stopLoss) setStopLoss(cfg.risk.stopLoss);
-                        // Strategy
                         if (cfg.strategy) {
                           if (cfg.strategy.m1Enabled !== undefined) setStrategyM1Enabled(cfg.strategy.m1Enabled);
                           if (cfg.strategy.m2Enabled !== undefined) setStrategyEnabled(cfg.strategy.m2Enabled);
@@ -1239,7 +1388,6 @@ export default function ProScannerBot() {
                           if (cfg.strategy.m2DigitCompare) setM2DigitCompare(cfg.strategy.m2DigitCompare);
                           if (cfg.strategy.m2DigitWindow) setM2DigitWindow(cfg.strategy.m2DigitWindow);
                         }
-                        // Scanner & Turbo
                         if (cfg.scanner?.active !== undefined) setScannerActive(cfg.scanner.active);
                         if (cfg.turbo?.enabled !== undefined) setTurboMode(cfg.turbo.enabled);
                         if (cfg.botName) setBotName(cfg.botName);
@@ -1259,7 +1407,7 @@ export default function ProScannerBot() {
           </div>
         </div>
 
-        {/* ═══ RIGHT: Digit Stream + Activity Log ═══ */}
+        {/* RIGHT: Digit Stream + Activity Log */}
         <div className="lg:col-span-8 space-y-2">
           {/* Digit Stream */}
           <div className="bg-card border border-border rounded-xl p-2.5">
@@ -1398,10 +1546,13 @@ export default function ProScannerBot() {
                       <td className="p-1 font-mono text-right text-[9px]">
                         {e.entryPrice > 0 ? e.entryPrice.toFixed(2) : '-'}
                       </td>
-                      <td className="p-1 font-mono text-right text-[9px]">
-                        {e.exitPrice > 0 ? e.exitPrice.toFixed(2) : '-'}
+                      <td className="p-1 font-mono text-right text-[9px] font-bold">
+                        {e.exitPrice > 0 ? e.exitPrice.toFixed(2) : 
+                          (e.result !== 'Pending' && e.result !== 'V-Win' && e.result !== 'V-Loss' ? 'ERROR' : '...')}
                       </td>
-                      <td className="p-1 text-center font-mono">{e.exitDigit}</td>
+                      <td className="p-1 text-center font-mono font-bold">
+                        {e.exitDigit !== '...' ? e.exitDigit : '-'}
+                      </td>
                       <td className="p-1 text-center">
                         <span className={`px-1 py-0.5 rounded-full text-[8px] font-bold ${
                           e.result === 'Win' || e.result === 'V-Win' ? 'bg-profit/20 text-profit' :
