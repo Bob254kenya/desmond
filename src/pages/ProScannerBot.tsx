@@ -1,6 +1,3 @@
-Here is the complete, fixed code for `ProScannerBot`. The critical fix for the Entry/Exit spot issue is implemented within the `executeRealTrade` function (lines 340–430), replacing the generic result waiter with a strict `proposal_open_contract` subscription to ensure accurate pricing.
-
-```tsx
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { derivApi, type MarketSymbol } from '@/services/deriv-api';
@@ -18,6 +15,7 @@ import { toast } from 'sonner';
 import {
   Play, StopCircle, Trash2, Scan,
   Home, RefreshCw, Shield, Zap, Eye, Anchor, Download, Upload,
+  Filter, ArrowUpDown, TrendingUp, BarChart3
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
@@ -37,25 +35,54 @@ const CONTRACT_TYPES = [
   'DIGITEVEN', 'DIGITODD', 'DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER',
 ] as const;
 
+const CONTRACT_DISPLAY_NAMES: Record<string, string> = {
+  'DIGITEVEN': 'Even',
+  'DIGITODD': 'Odd',
+  'DIGITMATCH': 'Match',
+  'DIGITDIFF': 'Diff',
+  'DIGITOVER': 'Over',
+  'DIGITUNDER': 'Under',
+  'CALL': 'Rise',
+  'PUT': 'Fall',
+};
+
 const needsBarrier = (ct: string) => ['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct);
 
 type BotStatus = 'idle' | 'trading_m1' | 'recovery' | 'waiting_pattern' | 'pattern_matched' | 'virtual_hook';
 
-interface LogEntry {
+interface EnhancedLogEntry {
   id: number;
   time: string;
+  exitTime: string | null;
   market: 'M1' | 'M2' | 'VH';
   symbol: string;
   contract: string;
+  contractDisplay: string;
   stake: number;
   martingaleStep: number;
   entryPrice: number | null;
   exitPrice: number | null;
+  entryDigit: number | null;
   exitDigit: string;
+  tickCount: number;
+  signalStrength: number;
+  digitFrequency: number[];
   result: 'Win' | 'Loss' | 'Pending' | 'V-Win' | 'V-Loss';
   pnl: number;
   balance: number;
   switchInfo: string;
+}
+
+interface TradeSummary {
+  totalStake: number;
+  totalPayout: number;
+  totalProfitLoss: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  contractsWon: Record<string, number>;
+  contractsLost: Record<string, number>;
 }
 
 /* ── Circular Tick Buffer ── */
@@ -115,6 +142,58 @@ function simulateVirtualContract(
       }
     });
   });
+}
+
+/* ── Calculate signal strength based on recent digit patterns ── */
+function calculateSignalStrength(digits: number[], contractType: string, barrier?: number): number {
+  if (digits.length < 5) return 0.5;
+  
+  const recentDigits = digits.slice(-10);
+  let matches = 0;
+  
+  switch (contractType) {
+    case 'DIGITEVEN':
+      matches = recentDigits.filter(d => d % 2 === 0).length;
+      return matches / recentDigits.length;
+    case 'DIGITODD':
+      matches = recentDigits.filter(d => d % 2 !== 0).length;
+      return matches / recentDigits.length;
+    case 'DIGITOVER':
+      if (barrier !== undefined) {
+        matches = recentDigits.filter(d => d > barrier).length;
+        return matches / recentDigits.length;
+      }
+      return 0.5;
+    case 'DIGITUNDER':
+      if (barrier !== undefined) {
+        matches = recentDigits.filter(d => d < barrier).length;
+        return matches / recentDigits.length;
+      }
+      return 0.5;
+    case 'DIGITMATCH':
+      if (barrier !== undefined) {
+        matches = recentDigits.filter(d => d === barrier).length;
+        return matches / recentDigits.length;
+      }
+      return 0.5;
+    case 'DIGITDIFF':
+      if (barrier !== undefined) {
+        matches = recentDigits.filter(d => d !== barrier).length;
+        return matches / recentDigits.length;
+      }
+      return 0.5;
+    default:
+      return 0.5;
+  }
+}
+
+/* ── Get digit frequency distribution ── */
+function getDigitFrequency(digits: number[]): number[] {
+  const freq = new Array(10).fill(0);
+  digits.slice(-20).forEach(d => {
+    if (d >= 0 && d <= 9) freq[d]++;
+  });
+  return freq;
 }
 
 export default function ProScannerBot() {
@@ -199,8 +278,15 @@ export default function ProScannerBot() {
   const [netProfit, setNetProfit] = useState(0);
   const [currentStake, setCurrentStakeState] = useState(0);
   const [martingaleStep, setMartingaleStepState] = useState(0);
-  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [logEntries, setLogEntries] = useState<EnhancedLogEntry[]>([]);
   const logIdRef = useRef(0);
+  
+  /* ── Table filtering and sorting ── */
+  const [filterContract, setFilterContract] = useState<string>('all');
+  const [filterMarket, setFilterMarket] = useState<string>('all');
+  const [filterResult, setFilterResult] = useState<string>('all');
+  const [sortField, setSortField] = useState<keyof EnhancedLogEntry>('time');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   /* ── Tick data (legacy for pattern matching) ── */
   const tickMapRef = useRef<Map<string, number[]>>(new Map());
@@ -305,12 +391,12 @@ export default function ProScannerBot() {
   }, [checkStrategyForMarket]);
 
   /* ── Add log entry ── */
-  const addLog = useCallback((id: number, entry: Omit<LogEntry, 'id'>) => {
-    setLogEntries(prev => [{ ...entry, id }, ...prev].slice(0, 100));
+  const addLog = useCallback((id: number, entry: Omit<EnhancedLogEntry, 'id'>) => {
+    setLogEntries(prev => [{ ...entry, id }, ...prev].slice(0, 500));
   }, []);
 
   /* ── Update pending log ── */
-  const updateLog = useCallback((id: number, updates: Partial<LogEntry>) => {
+  const updateLog = useCallback((id: number, updates: Partial<EnhancedLogEntry>) => {
     setLogEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
   }, []);
 
@@ -322,6 +408,80 @@ export default function ProScannerBot() {
     setVhFakeWins(0); setVhFakeLosses(0); setVhConsecLosses(0); setVhStatus('idle');
     setTicksCaptured(0); setTicksMissed(0);
   }, []);
+
+  /* ── Calculate trade summary ── */
+  const tradeSummary = useMemo((): TradeSummary => {
+    const realTrades = logEntries.filter(e => e.result === 'Win' || e.result === 'Loss');
+    const totalStake = realTrades.reduce((sum, t) => sum + t.stake, 0);
+    const totalProfitLoss = realTrades.reduce((sum, t) => sum + t.pnl, 0);
+    const wins = realTrades.filter(t => t.result === 'Win').length;
+    const losses = realTrades.filter(t => t.result === 'Loss').length;
+    const totalTrades = wins + losses;
+    
+    const contractsWon: Record<string, number> = {};
+    const contractsLost: Record<string, number> = {};
+    
+    realTrades.forEach(trade => {
+      const contractKey = trade.contractDisplay;
+      if (trade.result === 'Win') {
+        contractsWon[contractKey] = (contractsWon[contractKey] || 0) + 1;
+      } else {
+        contractsLost[contractKey] = (contractsLost[contractKey] || 0) + 1;
+      }
+    });
+    
+    return {
+      totalStake,
+      totalPayout: totalStake + totalProfitLoss,
+      totalProfitLoss,
+      totalTrades,
+      wins,
+      losses,
+      winRate: totalTrades > 0 ? (wins / totalTrades) * 100 : 0,
+      contractsWon,
+      contractsLost,
+    };
+  }, [logEntries]);
+
+  /* ── Filter and sort logs ── */
+  const filteredAndSortedLogs = useMemo(() => {
+    let filtered = [...logEntries];
+    
+    // Apply filters
+    if (filterContract !== 'all') {
+      filtered = filtered.filter(log => log.contractDisplay === filterContract);
+    }
+    if (filterMarket !== 'all') {
+      filtered = filtered.filter(log => log.symbol === filterMarket);
+    }
+    if (filterResult !== 'all') {
+      filtered = filtered.filter(log => log.result === filterResult);
+    }
+    
+    // Apply sorting
+    filtered.sort((a, b) => {
+      let aVal = a[sortField];
+      let bVal = b[sortField];
+      
+      if (sortField === 'time' || sortField === 'exitTime') {
+        aVal = aVal || '';
+        bVal = bVal || '';
+      }
+      
+      if (aVal === null || aVal === undefined) return sortDirection === 'asc' ? -1 : 1;
+      if (bVal === null || bVal === undefined) return sortDirection === 'asc' ? 1 : -1;
+      
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+      }
+      
+      const aStr = String(aVal);
+      const bStr = String(bVal);
+      return sortDirection === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+    });
+    
+    return filtered;
+  }, [logEntries, filterContract, filterMarket, filterResult, sortField, sortDirection]);
 
   /* ═══════════════ MAIN BOT LOOP ═══════════════ */
   const startBot = useCallback(async () => {
@@ -430,10 +590,12 @@ export default function ProScannerBot() {
           const vLogId = ++logIdRef.current;
           const vNow = new Date().toLocaleTimeString();
           addLog(vLogId, {
-            time: vNow, market: 'VH', symbol: tradeSymbol,
-            contract: cfg.contract, stake: 0, martingaleStep: 0,
-            entryPrice: null, exitPrice: null,
-            exitDigit: '...', result: 'Pending', pnl: 0, balance: localBalance,
+            time: vNow, exitTime: null, market: 'VH', symbol: tradeSymbol,
+            contract: cfg.contract, contractDisplay: CONTRACT_DISPLAY_NAMES[cfg.contract] || cfg.contract,
+            stake: 0, martingaleStep: 0,
+            entryPrice: null, exitPrice: null, entryDigit: null,
+            exitDigit: '...', tickCount: 0, signalStrength: 0, digitFrequency: [],
+            result: 'Pending', pnl: 0, balance: localBalance,
             switchInfo: `Virtual #${virtualTradeNum} (losses: ${consecLosses}/${requiredLosses})`,
           });
 
@@ -448,6 +610,7 @@ export default function ProScannerBot() {
               exitPrice: vResult.quote,
               exitDigit: String(vResult.digit), 
               result: 'V-Win', 
+              exitTime: new Date().toLocaleTimeString(),
               switchInfo: `Virtual WIN → Losses reset (0/${requiredLosses})` 
             });
           } else {
@@ -458,6 +621,7 @@ export default function ProScannerBot() {
               exitPrice: vResult.quote,
               exitDigit: String(vResult.digit), 
               result: 'V-Loss', 
+              exitTime: new Date().toLocaleTimeString(),
               switchInfo: `Virtual LOSS (${consecLosses}/${requiredLosses})` 
             });
           }
@@ -526,15 +690,25 @@ export default function ProScannerBot() {
     baseStake: number,
   ) => {
     const logId = ++logIdRef.current;
-    const now = new Date().toLocaleTimeString();
+    const now = new Date();
+    const entryTime = now.toLocaleTimeString();
+    
+    // Calculate signal strength and digit frequency before trade
+    const recentDigits = tickMapRef.current.get(tradeSymbol) || [];
+    const barrier = needsBarrier(cfg.contract) ? parseInt(cfg.barrier) : undefined;
+    const signalStrength = calculateSignalStrength(recentDigits, cfg.contract, barrier);
+    const digitFrequency = getDigitFrequency(recentDigits);
+    
     setTotalStaked(prev => prev + cStake);
     setCurrentStakeState(cStake);
 
     addLog(logId, {
-      time: now, market: mkt === 1 ? 'M1' : 'M2', symbol: tradeSymbol,
-      contract: cfg.contract, stake: cStake, martingaleStep: mStep,
-      entryPrice: null, exitPrice: null,
-      exitDigit: '...', result: 'Pending', pnl: 0, balance: localBalance,
+      time: entryTime, exitTime: null, market: mkt === 1 ? 'M1' : 'M2', symbol: tradeSymbol,
+      contract: cfg.contract, contractDisplay: CONTRACT_DISPLAY_NAMES[cfg.contract] || cfg.contract,
+      stake: cStake, martingaleStep: mStep,
+      entryPrice: null, exitPrice: null, entryDigit: null,
+      exitDigit: '...', tickCount: 0, signalStrength, digitFrequency,
+      result: 'Pending', pnl: 0, balance: localBalance,
       switchInfo: '',
     });
 
@@ -578,6 +752,7 @@ export default function ProScannerBot() {
             if (poc.entry_tick) {
               updateLog(logId, { 
                 entryPrice: poc.entry_tick,
+                entryDigit: getLastDigit(poc.entry_tick),
                 exitDigit: '...'
               });
             }
@@ -602,6 +777,8 @@ export default function ProScannerBot() {
       const entryPrice = contractResult.entry_tick ?? null;
       const exitPrice = contractResult.exit_tick ?? null;
       const exitDigit = exitPrice ? String(getLastDigit(exitPrice)) : '-';
+      const tickCount = contractResult.tick_count || 0;
+      const exitTime = new Date().toLocaleTimeString();
 
       let switchInfo = '';
       if (won) {
@@ -644,7 +821,10 @@ export default function ProScannerBot() {
       updateLog(logId, { 
         entryPrice, 
         exitPrice, 
+        entryDigit: entryPrice ? getLastDigit(entryPrice) : null,
         exitDigit, 
+        tickCount,
+        exitTime,
         result: won ? 'Win' : 'Loss', 
         pnl, 
         balance: localBalance, 
@@ -667,11 +847,11 @@ export default function ProScannerBot() {
 
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak };
     } catch (err: any) {
-      updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', switchInfo: `Error: ${err.message}` });
+      updateLog(logId, { result: 'Loss', pnl: 0, exitDigit: '-', exitTime: new Date().toLocaleTimeString(), switchInfo: `Error: ${err.message}` });
       if (!turboMode) await new Promise(r => setTimeout(r, 2000));
       return { localPnl, localBalance, cStake, mStep, inRecovery, shouldBreak: false };
     }
-  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode]);
+  }, [addLog, updateLog, m2Enabled, martingaleOn, martingaleMultiplier, martingaleMaxSteps, takeProfit, stopLoss, turboMode, activeAccount, recordLoss]);
 
   const stopBot = useCallback(() => {
     runningRef.current = false;
@@ -759,6 +939,12 @@ export default function ProScannerBot() {
 
   const activeSymbol = currentMarket === 1 ? m1Symbol : m2Symbol;
   const activeDigits = (tickMapRef.current.get(activeSymbol) || []).slice(-8);
+
+  // Get unique markets for filter
+  const uniqueMarkets = useMemo(() => {
+    const markets = new Set(logEntries.map(e => e.symbol));
+    return Array.from(markets);
+  }, [logEntries]);
 
   return (
     <div className="space-y-2 max-w-7xl mx-auto">
@@ -1054,7 +1240,7 @@ export default function ProScannerBot() {
           )}
         </div>
 
-        {/* Right Column: Activity Log */}
+        {/* Right Column: Enhanced Activity Log */}
         <div className="lg:col-span-8 space-y-2">
           {/* Digit Stream */}
           <div className="bg-card border border-border rounded-xl p-2.5">
@@ -1081,55 +1267,121 @@ export default function ProScannerBot() {
             </div>
           </div>
 
-          {/* Trade Summary */}
-          <div className="grid grid-cols-5 gap-1.5">
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Trades</div>
-              <div className="font-mono text-xs font-bold text-foreground">{wins + losses}</div>
+          {/* Trade Summary Section */}
+          <div className="bg-card border border-border rounded-xl p-3">
+            <div className="flex items-center gap-2 mb-3">
+              <BarChart3 className="w-4 h-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">Trade Summary</h3>
             </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Wins</div>
-              <div className="font-mono text-xs font-bold text-profit">{wins}</div>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Losses</div>
-              <div className="font-mono text-xs font-bold text-loss">{losses}</div>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Profit/Loss</div>
-              <div className={`font-mono text-xs font-bold ${netProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {netProfit >= 0 ? '+' : ''}{netProfit.toFixed(2)}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-muted/30 rounded-lg p-2">
+                <div className="text-[10px] text-muted-foreground">Total Stake</div>
+                <div className="text-sm font-bold text-foreground">${tradeSummary.totalStake.toFixed(2)}</div>
+              </div>
+              <div className="bg-muted/30 rounded-lg p-2">
+                <div className="text-[10px] text-muted-foreground">Total Payout</div>
+                <div className="text-sm font-bold text-foreground">${tradeSummary.totalPayout.toFixed(2)}</div>
+              </div>
+              <div className="bg-muted/30 rounded-lg p-2">
+                <div className="text-[10px] text-muted-foreground">Total P/L</div>
+                <div className={`text-sm font-bold ${tradeSummary.totalProfitLoss >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  ${tradeSummary.totalProfitLoss.toFixed(2)}
+                </div>
+              </div>
+              <div className="bg-muted/30 rounded-lg p-2">
+                <div className="text-[10px] text-muted-foreground">Total Trades</div>
+                <div className="text-sm font-bold text-foreground">{tradeSummary.totalTrades}</div>
+              </div>
+              <div className="bg-muted/30 rounded-lg p-2">
+                <div className="text-[10px] text-muted-foreground">Win Rate</div>
+                <div className="text-sm font-bold text-profit">{tradeSummary.winRate.toFixed(1)}%</div>
+              </div>
+              <div className="bg-muted/30 rounded-lg p-2">
+                <div className="text-[10px] text-muted-foreground">Wins/Losses</div>
+                <div className="text-sm font-bold">
+                  <span className="text-profit">{tradeSummary.wins}</span>
+                  <span className="text-muted-foreground mx-1">/</span>
+                  <span className="text-loss">{tradeSummary.losses}</span>
+                </div>
               </div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-2 text-center">
-              <div className="text-[8px] text-muted-foreground">Total Staked</div>
-              <div className="font-mono text-xs font-bold text-primary">${totalStaked.toFixed(2)}</div>
+            
+            {/* Contract Performance */}
+            {Object.keys(tradeSummary.contractsWon).length > 0 && (
+              <div className="mt-3 pt-2 border-t border-border/50">
+                <div className="text-[10px] text-muted-foreground mb-2">Contract Performance</div>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(tradeSummary.contractsWon).map(([contract, won]) => {
+                    const lost = tradeSummary.contractsLost[contract] || 0;
+                    const total = won + lost;
+                    const rate = total > 0 ? (won / total) * 100 : 0;
+                    return (
+                      <Badge key={contract} variant="outline" className="text-[10px]">
+                        {contract}: {won}/{lost} ({rate.toFixed(0)}%)
+                      </Badge>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Filter Controls */}
+          <div className="bg-card border border-border rounded-xl p-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Filter className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-[10px] text-muted-foreground">Filters:</span>
+              <Select value={filterContract} onValueChange={setFilterContract}>
+                <SelectTrigger className="h-6 text-[10px] w-[100px]">
+                  <SelectValue placeholder="Contract" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Contracts</SelectItem>
+                  {Object.values(CONTRACT_DISPLAY_NAMES).map(name => (
+                    <SelectItem key={name} value={name}>{name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filterMarket} onValueChange={setFilterMarket}>
+                <SelectTrigger className="h-6 text-[10px] w-[100px]">
+                  <SelectValue placeholder="Market" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Markets</SelectItem>
+                  {uniqueMarkets.map(market => (
+                    <SelectItem key={market} value={market}>{market}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filterResult} onValueChange={setFilterResult}>
+                <SelectTrigger className="h-6 text-[10px] w-[100px]">
+                  <SelectValue placeholder="Result" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Results</SelectItem>
+                  <SelectItem value="Win">Win</SelectItem>
+                  <SelectItem value="Loss">Loss</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setFilterContract('all');
+                  setFilterMarket('all');
+                  setFilterResult('all');
+                }}
+                className="h-6 text-[10px]"
+              >
+                Clear Filters
+              </Button>
             </div>
           </div>
 
-          {/* Controls */}
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              onClick={startBot}
-              disabled={isRunning || !isAuthorized || balance < parseFloat(stake)}
-              className="h-14 text-base font-bold bg-profit hover:bg-profit/90 text-profit-foreground rounded-xl"
-            >
-              <Play className="w-5 h-5 mr-2" /> START M1
-            </Button>
-            <Button
-              onClick={stopBot}
-              disabled={!isRunning}
-              variant="destructive"
-              className="h-14 text-base font-bold rounded-xl"
-            >
-              <StopCircle className="w-5 h-5 mr-2" /> STOP
-            </Button>
-          </div>
-
-          {/* Activity Log Table */}
+          {/* Enhanced Activity Log Table */}
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="px-2.5 py-2 border-b border-border flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold text-foreground">Activity Log</h3>
+              <h3 className="text-xs font-semibold text-foreground">Enhanced Activity Log</h3>
               <div className="flex items-center gap-1.5">
                 {!isRunning ? (
                   <Button onClick={startBot} disabled={!isAuthorized || balance < parseFloat(stake)}
@@ -1146,62 +1398,127 @@ export default function ProScannerBot() {
                 </Button>
               </div>
             </div>
-            <div className="max-h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
+            <div className="max-h-[calc(100vh-580px)] min-h-[400px] overflow-auto">
               <table className="w-full text-[10px]">
-                <thead className="text-[9px] text-muted-foreground bg-muted/30 sticky top-0">
+                <thead className="text-[9px] text-muted-foreground bg-muted/30 sticky top-0 z-10">
                   <tr>
-                    <th className="text-left p-1.5">Time</th>
+                    <th className="text-left p-1.5 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'time') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('time'); setSortDirection('desc'); }
+                    }}>
+                      Entry Time <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
+                    <th className="text-left p-1.5 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'exitTime') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('exitTime'); setSortDirection('desc'); }
+                    }}>
+                      Exit Time <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
                     <th className="text-left p-1">Mkt</th>
                     <th className="text-left p-1">Symbol</th>
-                    <th className="text-left p-1">Type</th>
-                    <th className="text-right p-1">Stake</th>
-                    <th className="text-right p-1">Entry</th>
-                    <th className="text-right p-1">Exit</th>
-                    <th className="text-center p-1">Digit</th>
+                    <th className="text-left p-1">Contract</th>
+                    <th className="text-right p-1 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'entryPrice') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('entryPrice'); setSortDirection('desc'); }
+                    }}>
+                      Entry <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
+                    <th className="text-right p-1 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'exitPrice') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('exitPrice'); setSortDirection('desc'); }
+                    }}>
+                      Exit <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
+                    <th className="text-center p-1">Last Digit</th>
+                    <th className="text-right p-1 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'stake') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('stake'); setSortDirection('desc'); }
+                    }}>
+                      Stake <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
+                    <th className="text-right p-1 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'pnl') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('pnl'); setSortDirection('desc'); }
+                    }}>
+                      P/L <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
                     <th className="text-center p-1">Result</th>
-                    <th className="text-right p-1">P/L</th>
-                    <th className="text-right p-1">Bal</th>
+                    <th className="text-right p-1 cursor-pointer hover:bg-muted/50" onClick={() => {
+                      if (sortField === 'tickCount') setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                      else { setSortField('tickCount'); setSortDirection('desc'); }
+                    }}>
+                      Ticks <ArrowUpDown className="inline w-3 h-3 ml-1" />
+                    </th>
+                    <th className="text-center p-1">Signal</th>
+                    <th className="text-left p-1">Digit Freq</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {logEntries.length === 0 ? (
-                    <tr><td colSpan={11} className="text-center text-muted-foreground py-8">No trades yet</td></tr>
-                  ) : logEntries.map(e => (
+                  {filteredAndSortedLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={14} className="text-center text-muted-foreground py-8">
+                        {logEntries.length === 0 ? 'No trades yet' : 'No matches for selected filters'}
+                      </td>
+                    </tr>
+                  ) : filteredAndSortedLogs.map(e => (
                     <tr key={e.id} className={`border-t border-border/30 hover:bg-muted/20 ${
                       e.market === 'M1' ? 'border-l-2 border-l-profit' :
                       e.market === 'VH' ? 'border-l-2 border-l-primary' :
                       'border-l-2 border-l-purple-500'
                     }`}>
                       <td className="p-1 font-mono text-[9px]">{e.time}</td>
+                      <td className="p-1 font-mono text-[9px]">{e.exitTime || '-'}</td>
                       <td className={`p-1 font-bold ${
                         e.market === 'M1' ? 'text-profit' :
                         e.market === 'VH' ? 'text-primary' :
                         'text-purple-400'
                       }`}>{e.market}</td>
                       <td className="p-1 font-mono text-[9px]">{e.symbol}</td>
-                      <td className="p-1 text-[9px]">{e.contract.replace('DIGIT', '')}</td>
-                      <td className="p-1 font-mono text-right text-[9px]">
-                        {e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}
-                        {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-warning ml-0.5">M{e.martingaleStep}</span>}
-                      </td>
+                      <td className="p-1 text-[9px] font-medium">{e.contractDisplay}</td>
                       <td className="p-1 font-mono text-right text-[9px]">
                         {e.entryPrice ? e.entryPrice.toFixed(2) : '-'}
                       </td>
                       <td className="p-1 font-mono text-right text-[9px]">
                         {e.exitPrice ? e.exitPrice.toFixed(2) : '-'}
                       </td>
-                      <td className="p-1 text-center font-mono">{e.exitDigit}</td>
-                      <td className="p-1 text-center">
-                        <span className={`px-1 py-0.5 rounded-full text-[8px] font-bold ${
-                          e.result === 'Win' || e.result === 'V-Win' ? 'bg-profit/20 text-profit' :
-                          e.result === 'Loss' || e.result === 'V-Loss' ? 'bg-loss/20 text-loss' :
-                          'bg-warning/20 text-warning animate-pulse'
-                        }`}>{e.result === 'Pending' ? '...' : e.result}</span>
+                      <td className="p-1 text-center font-mono text-sm font-bold">
+                        {e.exitDigit !== '...' && e.exitDigit !== '-' ? (
+                          <span className={parseInt(e.exitDigit) >= 5 ? 'text-loss' : 'text-profit'}>
+                            {e.exitDigit}
+                          </span>
+                        ) : '-'}
+                      </td>
+                      <td className="p-1 font-mono text-right text-[9px]">
+                        {e.market === 'VH' ? 'FAKE' : `$${e.stake.toFixed(2)}`}
+                        {e.martingaleStep > 0 && e.market !== 'VH' && <span className="text-warning ml-0.5">M{e.martingaleStep}</span>}
                       </td>
                       <td className={`p-1 font-mono text-right text-[9px] ${e.pnl > 0 ? 'text-profit' : e.pnl < 0 ? 'text-loss' : ''}`}>
                         {e.result === 'Pending' ? '...' : e.market === 'VH' ? '-' : `${e.pnl > 0 ? '+' : ''}${e.pnl.toFixed(2)}`}
                       </td>
-                      <td className="p-1 font-mono text-right text-[9px]">{e.market === 'VH' ? '-' : `$${e.balance.toFixed(2)}`}</td>
+                      <td className="p-1 text-center">
+                        <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                          e.result === 'Win' ? 'bg-profit/20 text-profit' :
+                          e.result === 'Loss' ? 'bg-loss/20 text-loss' :
+                          e.result === 'V-Win' ? 'bg-primary/20 text-primary' :
+                          e.result === 'V-Loss' ? 'bg-warning/20 text-warning' :
+                          'bg-warning/20 text-warning animate-pulse'
+                        }`}>
+                          {e.result === 'Pending' ? '...' : e.result === 'V-Win' ? 'V-WIN' : e.result === 'V-Loss' ? 'V-LOSS' : e.result.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="p-1 font-mono text-right text-[9px]">{e.tickCount > 0 ? e.tickCount : '-'}</td>
+                      <td className="p-1 text-center">
+                        <div className="w-12 bg-muted rounded-full h-1.5 mx-auto">
+                          <div 
+                            className={`h-1.5 rounded-full ${e.signalStrength >= 0.7 ? 'bg-profit' : e.signalStrength >= 0.4 ? 'bg-warning' : 'bg-loss'}`}
+                            style={{ width: `${e.signalStrength * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-[8px]">{Math.round(e.signalStrength * 100)}%</span>
+                      </td>
+                      <td className="p-1 text-[8px] font-mono">
+                        {e.digitFrequency.length > 0 ? e.digitFrequency.map((f, i) => f > 0 ? `${i}:${f}` : '').filter(Boolean).slice(0, 3).join(', ') : '-'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1213,4 +1530,3 @@ export default function ProScannerBot() {
     </div>
   );
 }
-```
