@@ -18,16 +18,31 @@ import {
 } from 'lucide-react';
 import ConfigPreview, { type BotConfig } from '@/components/bot-config/ConfigPreview';
 
-/* ───── CONSTANTS ───── */
 const SCANNER_MARKETS: { symbol: string; name: string }[] = [
-  { symbol: 'R_10', name: 'Vol 10' }, { symbol: 'R_25', name: 'Vol 25' },
-  { symbol: 'R_50', name: 'Vol 50' }, { symbol: 'R_75', name: 'Vol 75' },
+  // Volatility indices
+  { symbol: 'R_10', name: 'Vol 10' },
+  { symbol: 'R_25', name: 'Vol 25' },
+  { symbol: 'R_50', name: 'Vol 50' },
+  { symbol: 'R_75', name: 'Vol 75' },
   { symbol: 'R_100', name: 'Vol 100' },
-  { symbol: '1HZ10V', name: 'V10 1s' }, { symbol: '1HZ25V', name: 'V25 1s' },
-  { symbol: '1HZ50V', name: 'V50 1s' }, { symbol: '1HZ75V', name: 'V75 1s' },
+  
+  // 1-second volatility indices
+  { symbol: '1HZ10V', name: 'V10 1s' },
+  { symbol: '1HZ15V', name: 'V15 1s' },
+  { symbol: '1HZ25V', name: 'V25 1s' },
+  { symbol: '1HZ30V', name: 'V30 1s' },
+  { symbol: '1HZ50V', name: 'V50 1s' },
+  { symbol: '1HZ75V', name: 'V75 1s' },
+  { symbol: '1HZ90V', name: 'V90 1s' },
   { symbol: '1HZ100V', name: 'V100 1s' },
-  { symbol: 'JD10', name: 'Jump 10' }, { symbol: 'JD25', name: 'Jump 25' },
-  { symbol: 'RDBEAR', name: 'Bear' }, { symbol: 'RDBULL', name: 'Bull' },
+  
+  // Jump indices
+  { symbol: 'JD10', name: 'Jump 10' },
+  { symbol: 'JD25', name: 'Jump 25' },
+  
+  // Directional indices
+  { symbol: 'RDBEAR', name: 'Bear' },
+  { symbol: 'RDBULL', name: 'Bull' },
 ];
 
 const CONTRACT_TYPES = [
