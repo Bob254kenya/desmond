@@ -21,7 +21,7 @@ import ThemeToggle from './ThemeToggle';
 
 const navItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
-  { title: 'Chart', url: '/chart', icon: Activity },
+  { title: 'Signal Centre', url: '/chart', icon: Activity },
   { title: 'Ramz Analysistool', url: '/markets', icon: BarChart3 },
   { title: 'Free Bots', url: '/smart-bot', icon: Zap },
   { title: 'Advanced Tool $ Speed Bot', url: '/auto-trade', icon: Bot },
