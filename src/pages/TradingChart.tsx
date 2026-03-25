@@ -75,7 +75,7 @@ const ALL_MARKETS = [
 // Signal Types
 type SignalCategory = 'over_under' | 'rise_fall' | 'even_odd' | 'digit_match';
 type SignalType = 
-  | 'over_4' | 'under_5' | 'over_0' | 'under_9' | 'reversal_over' | 'reversal_under'
+  | 'over_4' | 'under_5'
   | 'rise' | 'fall'
   | 'even' | 'odd'
   | 'digit_match' | 'digit_diff' | 'digit_over' | 'digit_under';
@@ -313,7 +313,7 @@ const checkReversalConditions = (digitFreq: ReturnType<typeof analyzeDigitFreque
   return { overboughtDigit, oversoldDigit, overboughtPct, oversoldPct };
 };
 
-// Generate Over/Under Signals (5 signals)
+// Generate Over/Under Signals (ONLY OVER 4 and UNDER 5)
 const generateOverUnderSignals = (
   market: typeof ALL_MARKETS[0],
   ticks: number[]
@@ -324,9 +324,8 @@ const generateOverUnderSignals = (
   const zoneAnalysis = analyzeZoneDistribution(ticks);
   const lastTicksAnalysis = analyzeLastTicks(ticks);
   const digitFreq = analyzeDigitFrequency(ticks);
-  const reversalConditions = checkReversalConditions(digitFreq);
   
-  // Signal 1: OVER 4
+  // Signal 1: OVER 4 ONLY
   if (zoneAnalysis.upperCount > zoneAnalysis.lowerCount && zoneAnalysis.difference >= 60 && lastTicksAnalysis.over4Pct > 50) {
     let strength: SignalStrength = 'moderate';
     let confidence = 65;
@@ -360,7 +359,7 @@ const generateOverUnderSignals = (
     });
   }
   
-  // Signal 2: UNDER 5
+  // Signal 2: UNDER 5 ONLY
   if (zoneAnalysis.lowerCount > zoneAnalysis.upperCount && zoneAnalysis.difference >= 60 && lastTicksAnalysis.under5Pct > 50) {
     let strength: SignalStrength = 'moderate';
     let confidence = 65;
@@ -394,87 +393,9 @@ const generateOverUnderSignals = (
     });
   }
   
-  // Signal 3: OVER 0 (Reversal)
-  if (reversalConditions.oversoldDigit === 0 && reversalConditions.oversoldPct < 5) {
-    signals.push({
-      market,
-      category: 'over_under',
-      type: 'reversal_over',
-      strength: 'strong',
-      entryPrice: 'OVER 0',
-      confidence: 85,
-      timeframe: '1m',
-      conditionMet: `Digit 0 appears only ${reversalConditions.oversoldPct.toFixed(1)}% (oversold). Market reversal → BUY OVER 0`,
-      stats: {
-        lowerCount: zoneAnalysis.lowerCount,
-        upperCount: zoneAnalysis.upperCount,
-        difference: zoneAnalysis.difference,
-        last20Pct: lastTicksAnalysis.over4Pct,
-        weakDigits: [0],
-        strongDigits: [digitFreq.mostFrequent.digit],
-        dominantDigit: digitFreq.mostFrequent.digit,
-        weakestDigit: 0,
-      },
-      reversalInfo: { overboughtDigit: reversalConditions.overboughtDigit || 0, oversoldDigit: 0 },
-    });
-  }
-  
-  // Signal 4: UNDER 9 (Reversal)
-  if (reversalConditions.overboughtDigit === 9 && reversalConditions.overboughtPct > 15) {
-    signals.push({
-      market,
-      category: 'over_under',
-      type: 'reversal_under',
-      strength: 'strong',
-      entryPrice: 'UNDER 9',
-      confidence: 85,
-      timeframe: '1m',
-      conditionMet: `Digit 9 appears ${reversalConditions.overboughtPct.toFixed(1)}% (overbought). Market reversal → BUY UNDER 9`,
-      stats: {
-        lowerCount: zoneAnalysis.lowerCount,
-        upperCount: zoneAnalysis.upperCount,
-        difference: zoneAnalysis.difference,
-        last20Pct: lastTicksAnalysis.under5Pct,
-        weakDigits: [9],
-        strongDigits: [digitFreq.leastFrequent.digit],
-        dominantDigit: digitFreq.mostFrequent.digit,
-        weakestDigit: digitFreq.leastFrequent.digit,
-      },
-      reversalInfo: { overboughtDigit: 9, oversoldDigit: reversalConditions.oversoldDigit || 0 },
-    });
-  }
-  
-  // Signal 5: DIGIT MATCH (Most frequent digit)
-  if (digitFreq.mostFrequent.percentage > 12) {
-    let strength: SignalStrength = 'moderate';
-    let confidence = 70;
-    if (digitFreq.mostFrequent.percentage > 18) {
-      strength = 'strong';
-      confidence = 85;
-    }
-    
-    signals.push({
-      market,
-      category: 'over_under',
-      type: 'digit_match',
-      strength,
-      entryPrice: `MATCH ${digitFreq.mostFrequent.digit}`,
-      confidence,
-      timeframe: '1m',
-      conditionMet: `Digit ${digitFreq.mostFrequent.digit} appears ${digitFreq.mostFrequent.percentage.toFixed(1)}% (most frequent). Strong match bias.`,
-      stats: {
-        lowerCount: zoneAnalysis.lowerCount,
-        upperCount: zoneAnalysis.upperCount,
-        difference: zoneAnalysis.difference,
-        last20Pct: lastTicksAnalysis.over4Pct,
-        dominantDigit: digitFreq.mostFrequent.digit,
-        weakestDigit: digitFreq.leastFrequent.digit,
-        digitFrequency: digitFreq.frequencies,
-        matchDigit: digitFreq.mostFrequent.digit,
-        matchPct: digitFreq.mostFrequent.percentage,
-      },
-    });
-  }
+  // REMOVED: Signal 3: OVER 0 (Reversal)
+  // REMOVED: Signal 4: UNDER 9 (Reversal)
+  // REMOVED: Signal 5: DIGIT MATCH (Moved to separate function)
   
   return signals;
 };
@@ -750,7 +671,7 @@ export default function SignalPage() {
       const sortedSignals = allSignals.sort((a, b) => b.confidence - a.confidence);
       
       // Group signals by category with limits
-      const overUnderSignals = sortedSignals.filter(s => s.category === 'over_under').slice(0, 5);
+      const overUnderSignals = sortedSignals.filter(s => s.category === 'over_under').slice(0, 2); // Changed from 5 to 2
       const riseFallSignals = sortedSignals.filter(s => s.category === 'rise_fall').slice(0, 2);
       const evenOddSignals = sortedSignals.filter(s => s.category === 'even_odd').slice(0, 4);
       const digitMatchSignals = sortedSignals.filter(s => s.category === 'digit_match').slice(0, 3);
@@ -896,10 +817,8 @@ export default function SignalPage() {
     const getSignalIcon = () => {
       switch (signal.type) {
         case 'over_4':
-        case 'reversal_over':
           return <ArrowUp className="w-5 h-5" />;
         case 'under_5':
-        case 'reversal_under':
           return <ArrowDown className="w-5 h-5" />;
         case 'rise':
           return <TrendingUp className="w-5 h-5" />;
@@ -917,8 +836,8 @@ export default function SignalPage() {
     };
 
     const getSignalColor = () => {
-      if (signal.type === 'over_4' || signal.type === 'reversal_over') return 'from-emerald-500 to-green-600';
-      if (signal.type === 'under_5' || signal.type === 'reversal_under') return 'from-rose-500 to-red-600';
+      if (signal.type === 'over_4') return 'from-emerald-500 to-green-600';
+      if (signal.type === 'under_5') return 'from-rose-500 to-red-600';
       if (signal.type === 'rise') return 'from-emerald-500 to-green-600';
       if (signal.type === 'fall') return 'from-rose-500 to-red-600';
       if (signal.type === 'even') return 'from-sky-500 to-blue-600';
@@ -1052,7 +971,7 @@ export default function SignalPage() {
                   Multi-Strategy Signal Scanner
                 </h1>
                 <p className="text-[11px] text-muted-foreground">
-                  5 Over/Under • 2 Rise/Fall • 4 Even/Odd • 3 Digit Match
+                  2 Over/Under • 2 Rise/Fall • 4 Even/Odd • 3 Digit Match
                 </p>
               </div>
             </div>
@@ -1142,7 +1061,7 @@ export default function SignalPage() {
             </div>
             <div className="bg-card/50 rounded-lg border border-border/50 p-2 text-center">
               <div className="text-[9px] text-emerald-400">Over/Under</div>
-              <div className="text-lg font-bold">{getSignalStats.overUnder}/5</div>
+              <div className="text-lg font-bold">{getSignalStats.overUnder}/2</div>
             </div>
             <div className="bg-card/50 rounded-lg border border-border/50 p-2 text-center">
               <div className="text-[9px] text-blue-400">Rise/Fall</div>
@@ -1280,10 +1199,10 @@ export default function SignalPage() {
           </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[10px]">
             <div>
-              <div className="font-medium text-emerald-400 mb-1">📊 Over/Under (5)</div>
+              <div className="font-medium text-emerald-400 mb-1">📊 Over/Under (2)</div>
               <div className="text-muted-foreground">• Zone imbalance ≥60 ticks</div>
               <div className="text-muted-foreground">• Last 20 ticks confirmation</div>
-              <div className="text-muted-foreground">• Reversal on extreme digits</div>
+              <div className="text-muted-foreground">• OVER 4 or UNDER 5 only</div>
             </div>
             <div>
               <div className="font-medium text-blue-400 mb-1">📈 Rise/Fall (2)</div>
@@ -1305,7 +1224,7 @@ export default function SignalPage() {
             </div>
           </div>
           <div className="mt-2 pt-2 border-t border-border/50 text-[9px] text-muted-foreground text-center">
-            🎯 Auto-scans every 30s | Max signals: 5 OU + 2 RF + 4 EO + 3 DM = 14 total
+            🎯 Auto-scans every 30s | Max signals: 2 OU + 2 RF + 4 EO + 3 DM = 11 total
           </div>
         </div>
       </div>
