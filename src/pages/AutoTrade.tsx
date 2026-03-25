@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
-  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff,
+  Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff, RefreshCw,
 } from 'lucide-react';
 
 /* ── Markets ── */
@@ -295,6 +295,7 @@ export default function TradingChart() {
   const botRunningRef = useRef(false);
   const botPausedRef = useRef(false);
   const [botConfig, setBotConfig] = useState({
+    botSymbol: 'R_100', // New: Bot market selection
     stake: '1.00',
     contractType: 'CALL',
     prediction: '5',
@@ -308,6 +309,18 @@ export default function TradingChart() {
   });
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
+  
+  // Recovery Mode State
+  const [recoveryEnabled, setRecoveryEnabled] = useState(false);
+  const [recoveryConfig, setRecoveryConfig] = useState({
+    recoveryStake: '2.00',
+    recoveryMultiplier: '2.0',
+    maxRecoveryAttempts: '5',
+    recoveryTarget: '10.00',
+  });
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [recoveryAttempts, setRecoveryAttempts] = useState(0);
+  const [recoveryOriginalStake, setRecoveryOriginalStake] = useState(0);
 
   /* ── Load history + subscribe ── */
   useEffect(() => {
@@ -414,7 +427,7 @@ export default function TradingChart() {
   const patternValid = cleanPattern.length >= 2;
 
   const checkPatternMatch = useCallback((): boolean => {
-    const ticks = getTickHistory(symbol);
+    const ticks = getTickHistory(botConfig.botSymbol);
     if (ticks.length < cleanPattern.length) return false;
     const recent = ticks.slice(-cleanPattern.length);
     for (let i = 0; i < cleanPattern.length; i++) {
@@ -423,10 +436,10 @@ export default function TradingChart() {
       if (expected !== actual) return false;
     }
     return true;
-  }, [symbol, cleanPattern]);
+  }, [botConfig.botSymbol, cleanPattern]);
 
   const checkDigitCondition = useCallback((): boolean => {
-    const ticks = getTickHistory(symbol);
+    const ticks = getTickHistory(botConfig.botSymbol);
     const win = parseInt(digitWindow) || 3;
     const comp = parseInt(digitCompare);
     if (ticks.length < win) return false;
@@ -438,11 +451,11 @@ export default function TradingChart() {
         case '>=': return d >= comp;
         case '<=': return d <= comp;
         case '==': return d === comp;
-        case '!=': return d !== comp;  // ← NOT EQUAL condition added
+        case '!=': return d !== comp;
         default: return false;
       }
     });
-  }, [symbol, digitCondition, digitCompare, digitWindow]);
+  }, [botConfig.botSymbol, digitCondition, digitCompare, digitWindow]);
 
   const checkStrategyCondition = useCallback((): boolean => {
     if (!strategyEnabled) return true;
@@ -810,7 +823,7 @@ export default function TradingChart() {
     finally { setIsTrading(false); }
   };
 
-  // ═══ AUTO BOT LOGIC with Strategy ═══
+  // ═══ AUTO BOT LOGIC with Strategy and Recovery ═══
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     setBotRunning(true); setBotPaused(false);
@@ -848,25 +861,73 @@ export default function TradingChart() {
       }
 
       const ct = botConfig.contractType;
-      const params: any = { contract_type: ct, symbol, duration: parseInt(botConfig.duration), duration_unit: botConfig.durationUnit, basis: 'stake', amount: stake };
+      const params: any = { contract_type: ct, symbol: botConfig.botSymbol, duration: parseInt(botConfig.duration), duration_unit: botConfig.durationUnit, basis: 'stake', amount: stake };
       if (['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct)) params.barrier = botConfig.prediction;
 
       try {
         const { contractId } = await derivApi.buyContract(params);
-        const tr: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake, profit: 0, status: 'open', symbol };
+        const tr: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake, profit: 0, status: 'open', symbol: botConfig.botSymbol };
         setTradeHistory(prev => [tr, ...prev].slice(0, 100));
         const result = await derivApi.waitForContractResult(contractId);
         trades++; pnl += result.profit;
-        const resultDigit = getLastDigit(result.price || currentPrice);
+        const resultDigit = getLastDigit(result.price || 0);
         setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status, resultDigit } : t));
 
         if (result.status === 'won') {
-          wins++; consLosses = 0; stake = baseStake;
+          wins++; consLosses = 0;
+          
+          // Reset recovery mode if we win
+          if (recoveryMode) {
+            setRecoveryMode(false);
+            setRecoveryAttempts(0);
+            toast.success('🎉 Recovery successful! Back to normal trading.');
+            if (voiceEnabled) speak('Recovery successful. Back to normal trading.');
+          }
+          
+          stake = baseStake;
           if (voiceEnabled && trades % 5 === 0) speak(`Trade ${trades} won. Total profit ${pnl.toFixed(2)}`);
         } else {
           losses++; consLosses++;
-          stake = mart ? Math.round(stake * mult * 100) / 100 : baseStake;
-          if (voiceEnabled) speak(`Loss ${consLosses}. ${mart ? `Martingale stake ${stake.toFixed(2)}` : ''}`);
+          
+          // Recovery Mode Logic
+          if (recoveryEnabled && !recoveryMode && result.status === 'lost') {
+            // Enter recovery mode on first loss
+            setRecoveryMode(true);
+            setRecoveryAttempts(1);
+            setRecoveryOriginalStake(baseStake);
+            const recoveryStakeAmount = parseFloat(recoveryConfig.recoveryStake) || baseStake * 2;
+            stake = recoveryStakeAmount;
+            toast.warning(`🔄 Entering Recovery Mode! Next stake: $${stake.toFixed(2)}`);
+            if (voiceEnabled) speak(`Entering recovery mode. Next stake ${stake.toFixed(2)} dollars`);
+          } else if (recoveryEnabled && recoveryMode) {
+            // Already in recovery mode, continue recovery
+            const maxAttempts = parseInt(recoveryConfig.maxRecoveryAttempts) || 5;
+            const recoveryMultiplier = parseFloat(recoveryConfig.recoveryMultiplier) || 2;
+            
+            if (recoveryAttempts >= maxAttempts) {
+              // Max recovery attempts reached, reset
+              setRecoveryMode(false);
+              setRecoveryAttempts(0);
+              stake = baseStake;
+              toast.error(`❌ Max recovery attempts (${maxAttempts}) reached. Resetting to normal stake.`);
+              if (voiceEnabled) speak(`Max recovery attempts reached. Resetting stake.`);
+            } else {
+              // Continue recovery with multiplier
+              const newAttempts = recoveryAttempts + 1;
+              setRecoveryAttempts(newAttempts);
+              const newStake = stake * recoveryMultiplier;
+              stake = Math.min(newStake, parseFloat(recoveryConfig.recoveryStake) * Math.pow(recoveryMultiplier, maxAttempts));
+              toast.warning(`🔄 Recovery Attempt ${newAttempts}/${maxAttempts} - New stake: $${stake.toFixed(2)}`);
+              if (voiceEnabled) speak(`Recovery attempt ${newAttempts}. Stake ${stake.toFixed(2)} dollars`);
+            }
+          } else if (mart) {
+            // Normal martingale if recovery is off
+            stake = Math.round(stake * mult * 100) / 100;
+          } else {
+            stake = baseStake;
+          }
+          
+          if (voiceEnabled && !recoveryMode) speak(`Loss ${consLosses}. ${mart ? `Martingale stake ${stake.toFixed(2)}` : ''}`);
         }
         setBotStats({ trades, wins, losses, pnl, currentStake: stake, consecutiveLosses: consLosses });
       } catch (err: any) {
@@ -876,10 +937,18 @@ export default function TradingChart() {
     }
     setBotRunning(false); botRunningRef.current = false;
     setBotStats(prev => ({ ...prev, trades, wins, losses, pnl }));
-  }, [isAuthorized, botConfig, symbol, voiceEnabled, speak, strategyEnabled, checkStrategyCondition, currentPrice]);
+    setRecoveryMode(false);
+    setRecoveryAttempts(0);
+  }, [isAuthorized, botConfig, voiceEnabled, speak, strategyEnabled, checkStrategyCondition, recoveryEnabled, recoveryConfig]);
 
-  const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
+  const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); setRecoveryMode(false); setRecoveryAttempts(0); }, []);
   const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
+
+  // Update chart symbol when bot symbol changes
+  const handleBotSymbolChange = useCallback((newSymbol: string) => {
+    setBotConfig(prev => ({ ...prev, botSymbol: newSymbol }));
+    setSymbol(newSymbol); // Auto update chart symbol
+  }, []);
 
   // Bot stats
   const totalTrades = tradeHistory.filter(t => t.status !== 'open').length;
@@ -1202,7 +1271,7 @@ export default function TradingChart() {
             </div>
           </div>
 
-          {/* ═══ AUTO BOT PANEL with Strategy ═══ */}
+          {/* ═══ AUTO BOT PANEL with Strategy and Recovery ═══ */}
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
@@ -1225,6 +1294,24 @@ export default function TradingChart() {
                   </motion.div>
                 )}
               </div>
+            </div>
+
+            {/* Market Selector for Bot */}
+            <div>
+              <label className="text-[9px] text-muted-foreground">Market</label>
+              <Select value={botConfig.botSymbol} onValueChange={handleBotSymbolChange} disabled={botRunning}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {ALL_MARKETS.map(m => (
+                    <SelectItem key={m.symbol} value={m.symbol}>
+                      {m.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[8px] text-muted-foreground mt-0.5">Chart auto-syncs with selected market</p>
             </div>
 
             <Select value={botConfig.contractType} onValueChange={v => setBotConfig(p => ({ ...p, contractType: v }))} disabled={botRunning}>
@@ -1282,6 +1369,50 @@ export default function TradingChart() {
                   <div className={`w-4 h-4 rounded-full bg-background shadow absolute top-0.5 transition-transform ${botConfig.martingale ? 'translate-x-4' : 'translate-x-0.5'}`} />
                 </button>
               </div>
+            </div>
+
+            {/* Recovery Mode Toggle */}
+            <div className="border-t border-border pt-2 mt-1">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-[10px] font-semibold text-[#F85149] flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3" /> Recovery Mode
+                </label>
+                <Switch checked={recoveryEnabled} onCheckedChange={setRecoveryEnabled} disabled={botRunning} />
+              </div>
+
+              {recoveryEnabled && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">Recovery Stake</label>
+                      <Input type="number" min="0.35" step="0.01" value={recoveryConfig.recoveryStake}
+                        onChange={e => setRecoveryConfig(p => ({ ...p, recoveryStake: e.target.value }))} disabled={botRunning}
+                        className="h-7 text-xs" />
+                    </div>
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">Multiplier</label>
+                      <Input type="number" min="1.1" step="0.1" value={recoveryConfig.recoveryMultiplier}
+                        onChange={e => setRecoveryConfig(p => ({ ...p, recoveryMultiplier: e.target.value }))} disabled={botRunning}
+                        className="h-7 text-xs" />
+                    </div>
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">Max Attempts</label>
+                      <Input type="number" min="1" max="20" value={recoveryConfig.maxRecoveryAttempts}
+                        onChange={e => setRecoveryConfig(p => ({ ...p, maxRecoveryAttempts: e.target.value }))} disabled={botRunning}
+                        className="h-7 text-xs" />
+                    </div>
+                    <div>
+                      <label className="text-[8px] text-muted-foreground">Target Profit</label>
+                      <Input type="number" min="1" value={recoveryConfig.recoveryTarget}
+                        onChange={e => setRecoveryConfig(p => ({ ...p, recoveryTarget: e.target.value }))} disabled={botRunning}
+                        className="h-7 text-xs" />
+                    </div>
+                  </div>
+                  <div className="text-[8px] text-muted-foreground text-center py-1 bg-loss/5 rounded">
+                    {recoveryMode ? `🔄 RECOVERY ACTIVE | Attempt ${recoveryAttempts}/${recoveryConfig.maxRecoveryAttempts}` : '⚡ Will activate after a loss'}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Strategy Section */}
@@ -1533,4 +1664,4 @@ export default function TradingChart() {
       </div>
     </div>
   );
-} 
+   }
