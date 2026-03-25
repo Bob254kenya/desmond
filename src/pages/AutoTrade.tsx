@@ -256,6 +256,8 @@ export default function TradingChart() {
   const [isLoading, setIsLoading] = useState(true);
   const subscribedRef = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const subscriptionRef = useRef<any>(null);
+  const reconnectAttempts = useRef(0);
 
   // Zoom & pan state
   const [candleWidth, setCandleWidth] = useState(7);
@@ -295,7 +297,7 @@ export default function TradingChart() {
   const botRunningRef = useRef(false);
   const botPausedRef = useRef(false);
   const [botConfig, setBotConfig] = useState({
-    botSymbol: 'R_100', // Bot market selection
+    botSymbol: 'R_100',
     stake: '1.00',
     contractType: 'CALL',
     prediction: '5',
@@ -310,15 +312,47 @@ export default function TradingChart() {
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
 
-  /* ── Load history + subscribe ── */
+  /* ── FIXED: Load history + subscribe with proper cleanup and real-time updates ── */
   useEffect(() => {
     let active = true;
-    subscribedRef.current = false;
+    let timeoutId: NodeJS.Timeout;
+    
+    // Cleanup function for subscription
+    const cleanup = async () => {
+      if (subscriptionRef.current) {
+        try {
+          await derivApi.unsubscribeTicks(symbol as MarketSymbol);
+          console.log(`Unsubscribed from ${symbol}`);
+        } catch (err) {
+          console.error('Error unsubscribing:', err);
+        }
+        subscriptionRef.current = null;
+      }
+    };
 
     const load = async () => {
-      if (!derivApi.isConnected) { setIsLoading(false); return; }
+      if (!derivApi.isConnected) {
+        setIsLoading(false);
+        // Try to reconnect if not connected
+        if (reconnectAttempts.current < 3) {
+          reconnectAttempts.current++;
+          timeoutId = setTimeout(load, 2000);
+        }
+        return;
+      }
+      
+      reconnectAttempts.current = 0;
       setIsLoading(true);
+      
+      // Clean up previous subscription first
+      await cleanup();
+      
       try {
+        // Clear previous data
+        setPrices([]);
+        setTimes([]);
+        
+        // Fetch historical data
         const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 5000);
         if (!active) return;
         
@@ -331,27 +365,103 @@ export default function TradingChart() {
         setScrollOffset(0);
         setIsLoading(false);
 
-        if (!subscribedRef.current) {
-          subscribedRef.current = true;
-          await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
+        // Subscribe to new ticks
+        if (!subscribedRef.current || !subscriptionRef.current) {
+          subscriptionRef.current = await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
             if (!active || !data.tick) return;
+            
             const quote = data.tick.quote;
             const digit = getLastDigit(quote);
+            const epoch = data.tick.epoch;
+            
+            // Update tick history for pattern strategy
             addTick(symbol, digit);
-            setPrices(prev => [...prev, quote].slice(-5000));
-            setTimes(prev => [...prev, data.tick.epoch].slice(-5000));
+            
+            // Update prices and times with proper limit
+            setPrices(prev => {
+              const newPrices = [...prev, quote];
+              // Keep last 5000 ticks
+              return newPrices.slice(-5000);
+            });
+            
+            setTimes(prev => {
+              const newTimes = [...prev, epoch];
+              return newTimes.slice(-5000);
+            });
+            
+            // Visual feedback for price change
+            if (canvasRef.current) {
+              canvasRef.current.style.transition = 'background-color 0.1s';
+              canvasRef.current.style.backgroundColor = 'rgba(63, 185, 80, 0.05)';
+              setTimeout(() => {
+                if (canvasRef.current) {
+                  canvasRef.current.style.backgroundColor = '';
+                }
+              }, 100);
+            }
           });
+          subscribedRef.current = true;
+          console.log(`Subscribed to ${symbol} for real-time updates`);
+          toast.success(`Connected to ${symbol} market`, { duration: 2000 });
         }
       } catch (err) {
-        console.error(err);
+        console.error('Error loading market data:', err);
         setIsLoading(false);
+        toast.error(`Failed to load ${symbol} data`);
       }
     };
+    
     load();
+    
+    // Cleanup on symbol change or unmount
     return () => {
       active = false;
-      derivApi.unsubscribeTicks(symbol as MarketSymbol).catch(() => {});
+      if (timeoutId) clearTimeout(timeoutId);
+      cleanup();
+      subscribedRef.current = false;
     };
+  }, [symbol]);
+
+  // Add effect to handle connection status changes
+  useEffect(() => {
+    const checkConnection = setInterval(() => {
+      if (!derivApi.isConnected && !isLoading) {
+        console.log('Connection lost, attempting to reconnect...');
+        // Force refresh of data
+        setPrices([]);
+        setTimes([]);
+        // Trigger reload of current symbol
+        setSymbol(prev => prev);
+      }
+    }, 5000);
+
+    return () => clearInterval(checkConnection);
+  }, [isLoading]);
+
+  // Manual refresh function
+  const handleManualRefresh = useCallback(async () => {
+    if (!derivApi.isConnected) {
+      toast.error('Not connected to Deriv');
+      return;
+    }
+    
+    setIsLoading(true);
+    try {
+      const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 100);
+      setPrices(prev => {
+        const newPrices = [...prev, ...hist.history.prices];
+        return newPrices.slice(-5000);
+      });
+      setTimes(prev => {
+        const newTimes = [...prev, ...hist.history.times];
+        return newTimes.slice(-5000);
+      });
+      toast.success('Market data refreshed');
+    } catch (err) {
+      toast.error('Failed to refresh data');
+    } finally {
+      setIsLoading(false);
+    }
   }, [symbol]);
 
   /* ── Derived data ── */
@@ -890,7 +1000,7 @@ export default function TradingChart() {
   // Update chart symbol when bot symbol changes
   const handleBotSymbolChange = useCallback((newSymbol: string) => {
     setBotConfig(prev => ({ ...prev, botSymbol: newSymbol }));
-    setSymbol(newSymbol); // Auto update chart symbol
+    setSymbol(newSymbol);
   }, []);
 
   // Bot stats
@@ -911,6 +1021,16 @@ export default function TradingChart() {
           <p className="text-xs text-muted-foreground">{marketName} • {timeframe} • {tfPrices.length} ticks</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            onClick={handleManualRefresh}
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            disabled={isLoading}
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button
             onClick={() => setShowChart(!showChart)}
             variant="outline"
@@ -1563,4 +1683,4 @@ export default function TradingChart() {
       </div>
     </div>
   );
-   }
+}
