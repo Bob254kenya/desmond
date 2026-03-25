@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
   TrendingUp,
@@ -17,7 +18,6 @@ import {
   ArrowUp,
   ArrowDown,
   Gauge,
-  Shield,
   Signal,
   AlertCircle,
   CheckCircle2,
@@ -28,313 +28,55 @@ import {
   Flame,
   AlertTriangle,
   BarChart,
-  PieChart
+  Eye,
+  EyeOff,
+  TrendingUp as TrendIcon
 } from 'lucide-react';
 
-// Market configurations
-const VOLATILITY_MARKETS = [
-  // Volatility 10 1s to Jump 100
-  { symbol: '1HZ10V', name: 'Volatility 10 (1s)', group: 'vol1s', baseVol: 10 },
-  { symbol: '1HZ15V', name: 'Volatility 15 (1s)', group: 'vol1s', baseVol: 15 },
-  { symbol: '1HZ25V', name: 'Volatility 25 (1s)', group: 'vol1s', baseVol: 25 },
-  { symbol: '1HZ30V', name: 'Volatility 30 (1s)', group: 'vol1s', baseVol: 30 },
-  { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: 'vol1s', baseVol: 50 },
-  { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: 'vol1s', baseVol: 75 },
-  { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: 'vol1s', baseVol: 100 },
-  { symbol: 'R_10', name: 'Volatility 10', group: 'vol', baseVol: 10 },
-  { symbol: 'R_25', name: 'Volatility 25', group: 'vol', baseVol: 25 },
-  { symbol: 'R_50', name: 'Volatility 50', group: 'vol', baseVol: 50 },
-  { symbol: 'R_75', name: 'Volatility 75', group: 'vol', baseVol: 75 },
-  { symbol: 'R_100', name: 'Volatility 100', group: 'vol', baseVol: 100 },
-  { symbol: 'JD10', name: 'Jump 10', group: 'jump', baseVol: 10 },
-  { symbol: 'JD25', name: 'Jump 25', group: 'jump', baseVol: 25 },
-  { symbol: 'JD50', name: 'Jump 50', group: 'jump', baseVol: 50 },
-  { symbol: 'JD75', name: 'Jump 75', group: 'jump', baseVol: 75 },
-  { symbol: 'JD100', name: 'Jump 100', group: 'jump', baseVol: 100 },
+// Market configurations from your code
+const VOLATILITIES = {
+  vol: ["1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V", "R_10", "R_25", "R_50", "R_75", "R_100"],
+  jump: ["JD10", "JD25", "JD50", "JD75", "JD100"],
+  bull: ["RDBULL"],
+  bear: ["RDBEAR"],
+};
+
+// Full market list with metadata
+const ALL_MARKETS = [
+  ...VOLATILITIES.vol.map(s => ({ symbol: s, name: s, group: s.includes('1HZ') ? 'vol1s' : 'vol', baseVol: parseInt(s.match(/\d+/)?.[0] || '10') })),
+  ...VOLATILITIES.jump.map(s => ({ symbol: s, name: s, group: 'jump', baseVol: parseInt(s.match(/\d+/)?.[0] || '10') })),
+  ...VOLATILITIES.bull.map(s => ({ symbol: s, name: 'Bull Market', group: 'bull', baseVol: 50 })),
+  ...VOLATILITIES.bear.map(s => ({ symbol: s, name: 'Bear Market', group: 'bear', baseVol: 50 })),
 ];
 
-// Helper function to get last digit
-const getLastDigit = (price: number): number => {
-  const priceStr = price.toString();
-  const match = priceStr.match(/\d+(?:\.\d+)?/);
-  if (!match) return 0;
-  const numStr = match[0].replace('.', '');
-  return parseInt(numStr.slice(-1), 10);
-};
-
-// Analyze digit percentages with full distribution
-const analyzeDigits = (prices: number[]) => {
-  const digits = prices.map(p => getLastDigit(p));
-  const frequency: Record<number, number> = {};
-  for (let i = 0; i <= 9; i++) frequency[i] = 0;
-  digits.forEach(d => frequency[d]++);
-  const percentages: Record<number, number> = {};
-  const total = digits.length || 1;
-  for (let i = 0; i <= 9; i++) {
-    percentages[i] = (frequency[i] / total) * 100;
-  }
-  
-  // Sort digits by frequency
-  const sortedDigits = Object.entries(frequency)
-    .map(([digit, count]) => ({ digit: parseInt(digit), count, percentage: percentages[parseInt(digit)] }))
-    .sort((a, b) => b.count - a.count);
-  
-  return { 
-    frequency, 
-    percentages,
-    mostAppearing: sortedDigits[0]?.digit ?? 0,
-    mostAppearingPct: sortedDigits[0]?.percentage ?? 0,
-    secondMostAppearing: sortedDigits[1]?.digit ?? 0,
-    secondMostAppearingPct: sortedDigits[1]?.percentage ?? 0,
-    leastAppearing: sortedDigits[sortedDigits.length - 1]?.digit ?? 0,
-    leastAppearingPct: sortedDigits[sortedDigits.length - 1]?.percentage ?? 0,
-    allDigits: sortedDigits
-  };
-};
-
-// Calculate digit distribution percentages for ranges
-const getRangePercentages = (prices: number[]) => {
-  const digits = prices.map(p => getLastDigit(p));
-  const total = digits.length || 1;
-  const lowRange = digits.filter(d => d >= 0 && d <= 3).length;
-  const midRange = digits.filter(d => d >= 4 && d <= 5).length;
-  const highRange = digits.filter(d => d >= 6 && d <= 9).length;
-  const under5 = digits.filter(d => d < 5).length;
-  const over5 = digits.filter(d => d >= 5).length;
-  
-  return {
-    lowPct: (lowRange / total) * 100,
-    midPct: (midRange / total) * 100,
-    highPct: (highRange / total) * 100,
-    oddPct: (digits.filter(d => d % 2 === 1).length / total) * 100,
-    evenPct: (digits.filter(d => d % 2 === 0).length / total) * 100,
-    under5Pct: (under5 / total) * 100,
-    over5Pct: (over5 / total) * 100,
-  };
-};
-
 // Signal types
-type SignalType = 'over' | 'under' | 'odd' | 'even' | 'over_strong' | 'under_strong' | 'over_digit_based' | 'under_digit_based';
+type SignalType = 'over' | 'under' | 'odd' | 'even';
 type SignalStrength = 'strong' | 'moderate' | 'weak' | 'critical';
 
 interface Signal {
   id: string;
-  market: typeof VOLATILITY_MARKETS[0];
+  market: typeof ALL_MARKETS[0];
   type: SignalType;
   strength: SignalStrength;
   percentage: number;
+  threshold: number;
   timestamp: number;
   timeframe: string;
   conditionMet: string;
-  priority: number; // 1-6 for ordering
-  digitAnalysis?: {
-    mostAppearing: number;
-    secondMostAppearing: number;
-    leastAppearing: number;
-    mostAppearingPct: number;
-    secondMostAppearingPct: number;
-    leastAppearingPct: number;
-  };
+  priority: number;
+  recentDigits: number[];
+  patternLength: number;
 }
 
-interface SignalCardProps {
-  signal: Signal;
-  index: number;
+interface OverUnderSignal {
+  type: 'over' | 'under';
+  market: typeof ALL_MARKETS[0];
+  percentage: number;
+  threshold: number;
+  strength: SignalStrength;
+  recentDigits: number[];
+  patternConfidence: number;
 }
-
-// Signal Card Component with animations
-const SignalCard: React.FC<SignalCardProps> = ({ signal, index }) => {
-  const getSignalIcon = () => {
-    switch (signal.type) {
-      case 'over':
-      case 'over_strong':
-      case 'over_digit_based':
-        return <ArrowUp className="w-5 h-5" />;
-      case 'under':
-      case 'under_strong':
-      case 'under_digit_based':
-        return <ArrowDown className="w-5 h-5" />;
-      case 'odd':
-        return <Activity className="w-5 h-5" />;
-      case 'even':
-        return <Target className="w-5 h-5" />;
-      default:
-        return <Signal className="w-5 h-5" />;
-    }
-  };
-
-  const getSignalColor = () => {
-    switch (signal.type) {
-      case 'over':
-      case 'over_strong':
-      case 'over_digit_based':
-        return 'from-emerald-500 to-green-600';
-      case 'under':
-      case 'under_strong':
-      case 'under_digit_based':
-        return 'from-rose-500 to-red-600';
-      case 'odd':
-        return 'from-amber-500 to-orange-600';
-      case 'even':
-        return 'from-sky-500 to-blue-600';
-      default:
-        return 'from-purple-500 to-pink-600';
-    }
-  };
-
-  const getStrengthColor = () => {
-    switch (signal.strength) {
-      case 'critical':
-        return 'text-red-400 bg-red-400/10 border-red-400/30';
-      case 'strong':
-        return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30';
-      case 'moderate':
-        return 'text-amber-400 bg-amber-400/10 border-amber-400/30';
-      case 'weak':
-        return 'text-rose-400 bg-rose-400/10 border-rose-400/30';
-    }
-  };
-
-  const getStrengthText = () => {
-    switch (signal.strength) {
-      case 'critical':
-        return '🔥 Critical Signal';
-      case 'strong':
-        return '⚡ Strong Signal';
-      case 'moderate':
-        return '📊 Moderate Signal';
-      case 'weak':
-        return '⚠️ Weak Signal';
-    }
-  };
-
-  const getDisplayType = () => {
-    switch (signal.type) {
-      case 'over':
-      case 'over_strong':
-      case 'over_digit_based':
-        return 'OVER';
-      case 'under':
-      case 'under_strong':
-      case 'under_digit_based':
-        return 'UNDER';
-      case 'odd':
-        return 'ODD';
-      case 'even':
-        return 'EVEN';
-      default:
-        return signal.type.toUpperCase();
-    }
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20, scale: 0.95 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ delay: index * 0.1, duration: 0.4, type: 'spring', stiffness: 300 }}
-      whileHover={{ y: -4, scale: 1.02 }}
-      className="relative"
-    >
-      <Card className={`overflow-hidden border-border/50 bg-gradient-to-br from-card/80 to-card/40 backdrop-blur-sm hover:shadow-xl transition-all duration-300 ${
-        signal.strength === 'critical' ? 'ring-2 ring-red-500/50 shadow-lg shadow-red-500/20' : ''
-      }`}>
-        <CardContent className="p-4 relative">
-          <div className="flex items-start justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <motion.div
-                whileHover={{ rotate: 360, scale: 1.1 }}
-                transition={{ duration: 0.5 }}
-                className={`w-10 h-10 rounded-xl bg-gradient-to-br ${getSignalColor()} flex items-center justify-center text-white shadow-lg`}
-              >
-                {getSignalIcon()}
-              </motion.div>
-              <div>
-                <h3 className="font-bold text-sm flex items-center gap-2">
-                  {signal.market.name}
-                  {signal.strength === 'critical' && (
-                    <Flame className="w-4 h-4 text-red-400" />
-                  )}
-                </h3>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Clock className="w-3 h-3" />
-                  <span>{new Date(signal.timestamp).toLocaleTimeString()}</span>
-                  <Badge variant="outline" className="text-[10px]">{signal.timeframe}</Badge>
-                </div>
-              </div>
-            </div>
-            <Badge className={`${getStrengthColor()} border text-[10px] font-semibold`}>
-              {getStrengthText()}
-            </Badge>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground capitalize">
-                {getDisplayType()} Signal
-                {signal.type.includes('digit_based') && ' (Digit Analysis)'}
-              </span>
-              <span className="font-mono font-bold text-lg">{signal.percentage.toFixed(1)}%</span>
-            </div>
-            
-            <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${Math.min(100, signal.percentage)}%` }}
-                transition={{ duration: 0.8, delay: 0.2, ease: "easeOut" }}
-                className={`absolute inset-y-0 left-0 rounded-full bg-gradient-to-r ${getSignalColor()}`}
-              />
-            </div>
-
-            <div className="flex items-center gap-2 text-xs bg-muted/30 rounded-lg p-2">
-              {signal.strength === 'critical' ? (
-                <AlertTriangle className="w-3 h-3 text-red-400 flex-shrink-0" />
-              ) : (
-                <AlertCircle className="w-3 h-3 flex-shrink-0" />
-              )}
-              <span className="text-muted-foreground">{signal.conditionMet}</span>
-            </div>
-
-            {signal.digitAnalysis && (
-              <div className="grid grid-cols-3 gap-1 text-[10px] bg-muted/20 rounded-lg p-2">
-                <div className="text-center">
-                  <div className="text-muted-foreground">Most</div>
-                  <div className="font-mono font-bold text-emerald-400">{signal.digitAnalysis.mostAppearing}</div>
-                  <div className="text-[8px]">{signal.digitAnalysis.mostAppearingPct.toFixed(1)}%</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">2nd Most</div>
-                  <div className="font-mono font-bold text-amber-400">{signal.digitAnalysis.secondMostAppearing}</div>
-                  <div className="text-[8px]">{signal.digitAnalysis.secondMostAppearingPct.toFixed(1)}%</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-muted-foreground">Least</div>
-                  <div className="font-mono font-bold text-rose-400">{signal.digitAnalysis.leastAppearing}</div>
-                  <div className="text-[8px]">{signal.digitAnalysis.leastAppearingPct.toFixed(1)}%</div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex items-center gap-1 text-xs">
-                <Gauge className="w-3 h-3 text-muted-foreground" />
-                <span>Volatility: {signal.market.baseVol}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-muted-foreground">Priority: {signal.priority}/6</span>
-                <motion.div
-                  animate={{ scale: [1, 1.05, 1] }}
-                  transition={{ repeat: Infinity, duration: 2 }}
-                >
-                  <Signal className="w-4 h-4 text-primary" />
-                </motion.div>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </motion.div>
-  );
-};
 
 // Main Signal Page Component
 export default function SignalPage() {
@@ -344,439 +86,395 @@ export default function SignalPage() {
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
   const [autoScan, setAutoScan] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [contractType, setContractType] = useState<'risefall' | 'evenodd' | 'overunder'>('overunder');
+  const [patternLength, setPatternLength] = useState<number | 'all'>(3);
+  const [tickCount, setTickCount] = useState<number>(1000);
+  const [showPatterns, setShowPatterns] = useState(false);
+  const [selectedDigitThreshold, setSelectedDigitThreshold] = useState<Record<string, number>>({});
+  
+  // Market data storage
+  const ticksMap = useRef<Record<string, number[]>>({});
+  const wsConnections = useRef<Record<string, WebSocket>>({});
 
-  // Simulate market data (in production, this would come from Deriv API)
-  const generateMarketData = useCallback((market: typeof VOLATILITY_MARKETS[0]) => {
-    const basePrice = 100 + Math.random() * 50;
-    const volatilityFactor = market.baseVol / 50;
-    const prices: number[] = [];
-    // Create patterns that favor certain digits
-    for (let i = 0; i < 100; i++) {
-      const change = (Math.random() - 0.5) * volatilityFactor * 2;
-      let price = basePrice + change * i;
-      // Introduce digit bias for testing
-      if (Math.random() > 0.7) {
-        // Add bias to create patterns
-        const bias = Math.random();
-        if (bias > 0.6) price += 0.01 * market.baseVol;
-        else if (bias < 0.4) price -= 0.01 * market.baseVol;
-      }
-      prices.push(price);
-    }
-    return prices;
+  // Get last digit from price
+  const getLastDigit = (price: number): number => {
+    const priceStr = price.toString();
+    const match = priceStr.match(/\d+(?:\.\d+)?/);
+    if (!match) return 0;
+    const numStr = match[0].replace('.', '');
+    return parseInt(numStr.slice(-1), 10);
+  };
+
+  // Calculate percentages for a market
+  const calculatePercentages = useCallback((ticks: number[], threshold: number) => {
+    if (ticks.length === 0) return null;
+    
+    let evenCount = 0, oddCount = 0, overCount = 0, underCount = 0;
+    ticks.forEach(d => {
+      if (d % 2 === 0) evenCount++;
+      else oddCount++;
+      if (d > threshold) overCount++;
+      else if (d < threshold) underCount++;
+    });
+    const total = ticks.length;
+    
+    return {
+      evenPct: (evenCount / total) * 100,
+      oddPct: (oddCount / total) * 100,
+      overPct: (overCount / total) * 100,
+      underPct: (underCount / total) * 100,
+      total,
+    };
   }, []);
 
-  // Enhanced signal detection with digit-based over/under analysis
-  const checkMarketSignals = useCallback((market: typeof VOLATILITY_MARKETS[0], prices: number[]) => {
-    const signals: Omit<Signal, 'id' | 'timestamp' | 'priority' | 'digitAnalysis'>[] = [];
-    const { lowPct, highPct, oddPct, evenPct, under5Pct, over5Pct } = getRangePercentages(prices);
-    const digitAnalysis = analyzeDigits(prices);
+  // Analyze patterns for over/under signals
+  const analyzePatterns = useCallback((ticks: number[], threshold: number, patternLen: number) => {
+    if (ticks.length < patternLen + 10) return null;
     
-    // ========== OVER SIGNAL DETECTION (Digits 0-3) ==========
-    if (lowPct <= 15) {
-      let strength: SignalStrength;
-      let type: SignalType;
-      let percentage: number;
-      let conditionMet: string;
+    const patterns: Record<string, { wins: number; total: number; winDigits: number[] }> = {};
+    
+    for (let i = 0; i < ticks.length - patternLen; i++) {
+      const pattern = ticks.slice(i, i + patternLen).join('');
+      const nextDigit = ticks[i + patternLen];
+      const isOver = nextDigit > threshold;
       
-      if (lowPct < 8) {
-        strength = 'critical';
-        type = 'over_strong';
-        percentage = 100 - lowPct;
-        conditionMet = `CRITICAL: Digits 0-3 only ${lowPct.toFixed(1)}% → Extreme over bias! 🔥`;
-      } else if (lowPct < 12) {
-        strength = 'strong';
-        type = 'over_strong';
-        percentage = 100 - lowPct;
-        conditionMet = `STRONG: Digits 0-3 at ${lowPct.toFixed(1)}% (<12%) → Strong over bias`;
-      } else if (lowPct < 15) {
-        strength = 'moderate';
-        type = 'over';
-        percentage = 100 - lowPct;
-        conditionMet = `MODERATE: Digits 0-3 at ${lowPct.toFixed(1)}% (nearly <10%) → Over bias developing`;
-      } else {
-        strength = 'weak';
-        type = 'over';
-        percentage = 100 - lowPct;
-        conditionMet = `WEAK: Digits 0-3 at ${lowPct.toFixed(1)}% → Approaching over threshold`;
+      if (!patterns[pattern]) {
+        patterns[pattern] = { wins: 0, total: 0, winDigits: [] };
       }
-      
-      signals.push({
-        market,
-        type,
-        strength,
-        percentage,
-        timeframe: '1m',
-        conditionMet,
-      });
+      patterns[pattern].total++;
+      if (isOver) {
+        patterns[pattern].wins++;
+        patterns[pattern].winDigits.push(nextDigit);
+        if (patterns[pattern].winDigits.length > 13) patterns[pattern].winDigits.shift();
+      }
     }
     
-    // ========== UNDER SIGNAL DETECTION (Digits 6-9) ==========
-    if (highPct <= 15) {
-      let strength: SignalStrength;
-      let type: SignalType;
-      let percentage: number;
-      let conditionMet: string;
-      
-      if (highPct < 8) {
-        strength = 'critical';
-        type = 'under_strong';
-        percentage = 100 - highPct;
-        conditionMet = `CRITICAL: Digits 6-9 only ${highPct.toFixed(1)}% → Extreme under bias! 🔥`;
-      } else if (highPct < 12) {
-        strength = 'strong';
-        type = 'under_strong';
-        percentage = 100 - highPct;
-        conditionMet = `STRONG: Digits 6-9 at ${highPct.toFixed(1)}% (<12%) → Strong under bias`;
-      } else if (highPct < 15) {
-        strength = 'moderate';
-        type = 'under';
-        percentage = 100 - highPct;
-        conditionMet = `MODERATE: Digits 6-9 at ${highPct.toFixed(1)}% (nearly <10%) → Under bias developing`;
-      } else {
-        strength = 'weak';
-        type = 'under';
-        percentage = 100 - highPct;
-        conditionMet = `WEAK: Digits 6-9 at ${highPct.toFixed(1)}% → Approaching under threshold`;
-      }
-      
-      signals.push({
-        market,
-        type,
-        strength,
-        percentage,
-        timeframe: '1m',
-        conditionMet,
-      });
-    }
+    // Find patterns with highest win rate
+    const patternStats = Object.entries(patterns)
+      .map(([pattern, stats]) => ({
+        pattern,
+        winRate: (stats.wins / stats.total) * 100,
+        wins: stats.wins,
+        total: stats.total,
+        recentWins: stats.winDigits.slice(-5),
+      }))
+      .filter(p => p.total >= 5)
+      .sort((a, b) => b.winRate - a.winRate);
     
-    // ========== DIGIT-BASED OVER SIGNAL ==========
-    // Condition: Most appearing digit, second most appearing digit, and least appearing digit are all > 5 (over digits)
-    const mostDigit = digitAnalysis.mostAppearing;
-    const secondMostDigit = digitAnalysis.secondMostAppearing;
-    const leastDigit = digitAnalysis.leastAppearing;
-    
-    const allThreeDigitsAreOver = mostDigit >= 5 && secondMostDigit >= 5 && leastDigit >= 5;
-    const allThreeDigitsAreUnder = mostDigit < 5 && secondMostDigit < 5 && leastDigit < 5;
-    
-    if (allThreeDigitsAreOver) {
-      const avgPercentage = (digitAnalysis.mostAppearingPct + digitAnalysis.secondMostAppearingPct + digitAnalysis.leastAppearingPct) / 3;
-      let strength: SignalStrength;
-      let conditionMet: string;
-      
-      if (avgPercentage > 15) {
-        strength = 'critical';
-        conditionMet = `CRITICAL: Most (${mostDigit}), 2nd (${secondMostDigit}), Least (${leastDigit}) are ALL OVER digits (≥5)! Strong over confirmation! 🔥`;
-      } else if (avgPercentage > 12) {
-        strength = 'strong';
-        conditionMet = `STRONG: Most (${mostDigit}), 2nd (${secondMostDigit}), Least (${leastDigit}) are all over digits (≥5) → Over bias confirmed`;
-      } else if (avgPercentage > 10) {
-        strength = 'moderate';
-        conditionMet = `MODERATE: Digit analysis shows over bias - most (${mostDigit}), 2nd (${secondMostDigit}), least (${leastDigit}) all ≥5`;
-      } else {
-        strength = 'weak';
-        conditionMet = `WEAK: Digit pattern leaning over - most (${mostDigit}), 2nd (${secondMostDigit}), least (${leastDigit}) are over digits`;
-      }
-      
-      signals.push({
-        market,
-        type: 'over_digit_based',
-        strength,
-        percentage: avgPercentage,
-        timeframe: '1m',
-        conditionMet,
-      });
-    }
-    
-    // ========== DIGIT-BASED UNDER SIGNAL ==========
-    // Condition: Most appearing digit, second most appearing digit, and least appearing digit are all < 5 (under digits)
-    if (allThreeDigitsAreUnder) {
-      const avgPercentage = (digitAnalysis.mostAppearingPct + digitAnalysis.secondMostAppearingPct + digitAnalysis.leastAppearingPct) / 3;
-      let strength: SignalStrength;
-      let conditionMet: string;
-      
-      if (avgPercentage > 15) {
-        strength = 'critical';
-        conditionMet = `CRITICAL: Most (${mostDigit}), 2nd (${secondMostDigit}), Least (${leastDigit}) are ALL UNDER digits (<5)! Strong under confirmation! 🔥`;
-      } else if (avgPercentage > 12) {
-        strength = 'strong';
-        conditionMet = `STRONG: Most (${mostDigit}), 2nd (${secondMostDigit}), Least (${leastDigit}) are all under digits (<5) → Under bias confirmed`;
-      } else if (avgPercentage > 10) {
-        strength = 'moderate';
-        conditionMet = `MODERATE: Digit analysis shows under bias - most (${mostDigit}), 2nd (${secondMostDigit}), least (${leastDigit}) all <5`;
-      } else {
-        strength = 'weak';
-        conditionMet = `WEAK: Digit pattern leaning under - most (${mostDigit}), 2nd (${secondMostDigit}), least (${leastDigit}) are under digits`;
-      }
-      
-      signals.push({
-        market,
-        type: 'under_digit_based',
-        strength,
-        percentage: avgPercentage,
-        timeframe: '1m',
-        conditionMet,
-      });
-    }
-    
-    // ========== UNDER 5 SIGNAL (Condition: if under digit 5 under signal) ==========
-    if (under5Pct >= 55) {
-      let strength: SignalStrength;
-      let conditionMet: string;
-      
-      if (under5Pct >= 70) {
-        strength = 'critical';
-        conditionMet = `CRITICAL: Digits under 5 at ${under5Pct.toFixed(1)}% (70%+) → Extreme under 5 bias! 🔥`;
-      } else if (under5Pct >= 60) {
-        strength = 'strong';
-        conditionMet = `STRONG: Digits under 5 at ${under5Pct.toFixed(1)}% (60%+) → Strong under 5 bias`;
-      } else if (under5Pct >= 55) {
-        strength = 'moderate';
-        conditionMet = `MODERATE: Digits under 5 at ${under5Pct.toFixed(1)}% (55%+) → Under 5 bias confirmed`;
-      } else {
-        strength = 'weak';
-        conditionMet = `WEAK: Digits under 5 at ${under5Pct.toFixed(1)}% → Approaching under 5 threshold`;
-      }
-      
-      signals.push({
-        market,
-        type: 'under',
-        strength,
-        percentage: under5Pct,
-        timeframe: '1m',
-        conditionMet: `UNDER 5 SIGNAL: ${conditionMet}`,
-      });
-    }
-    
-    // ========== OVER 5 SIGNAL (Complementary signal) ==========
-    if (over5Pct >= 55) {
-      let strength: SignalStrength;
-      let conditionMet: string;
-      
-      if (over5Pct >= 70) {
-        strength = 'critical';
-        conditionMet = `CRITICAL: Digits over 5 at ${over5Pct.toFixed(1)}% (70%+) → Extreme over 5 bias! 🔥`;
-      } else if (over5Pct >= 60) {
-        strength = 'strong';
-        conditionMet = `STRONG: Digits over 5 at ${over5Pct.toFixed(1)}% (60%+) → Strong over 5 bias`;
-      } else if (over5Pct >= 55) {
-        strength = 'moderate';
-        conditionMet = `MODERATE: Digits over 5 at ${over5Pct.toFixed(1)}% (55%+) → Over 5 bias confirmed`;
-      } else {
-        strength = 'weak';
-        conditionMet = `WEAK: Digits over 5 at ${over5Pct.toFixed(1)}% → Approaching over 5 threshold`;
-      }
-      
-      signals.push({
-        market,
-        type: 'over',
-        strength,
-        percentage: over5Pct,
-        timeframe: '1m',
-        conditionMet: `OVER 5 SIGNAL: ${conditionMet}`,
-      });
-    }
-    
-    // ========== ODD/EVEN Signals ==========
-    if (oddPct >= 52) {
-      let strength: SignalStrength;
-      let conditionMet: string;
-      
-      if (oddPct >= 65) {
-        strength = 'critical';
-        conditionMet = `CRITICAL: Odd digits at ${oddPct.toFixed(1)}% (65%+) → Extreme odd bias! 🔥`;
-      } else if (oddPct >= 58) {
-        strength = 'strong';
-        conditionMet = `STRONG: Odd digits at ${oddPct.toFixed(1)}% (58%+) → Strong odd bias`;
-      } else if (oddPct >= 55) {
-        strength = 'moderate';
-        conditionMet = `MODERATE: Odd digits at ${oddPct.toFixed(1)}% (55%+) → Odd bias confirmed`;
-      } else {
-        strength = 'weak';
-        conditionMet = `WEAK: Odd digits at ${oddPct.toFixed(1)}% → Approaching odd threshold`;
-      }
-      
-      signals.push({
-        market,
-        type: 'odd',
-        strength,
-        percentage: oddPct,
-        timeframe: '1m',
-        conditionMet,
-      });
-    }
-    
-    if (evenPct >= 52) {
-      let strength: SignalStrength;
-      let conditionMet: string;
-      
-      if (evenPct >= 65) {
-        strength = 'critical';
-        conditionMet = `CRITICAL: Even digits at ${evenPct.toFixed(1)}% (65%+) → Extreme even bias! 🔥`;
-      } else if (evenPct >= 58) {
-        strength = 'strong';
-        conditionMet = `STRONG: Even digits at ${evenPct.toFixed(1)}% (58%+) → Strong even bias`;
-      } else if (evenPct >= 55) {
-        strength = 'moderate';
-        conditionMet = `MODERATE: Even digits at ${evenPct.toFixed(1)}% (55%+) → Even bias confirmed`;
-      } else {
-        strength = 'weak';
-        conditionMet = `WEAK: Even digits at ${evenPct.toFixed(1)}% → Approaching even threshold`;
-      }
-      
-      signals.push({
-        market,
-        type: 'even',
-        strength,
-        percentage: evenPct,
-        timeframe: '1m',
-        conditionMet,
-      });
-    }
-    
-    // Attach digit analysis to each signal
-    return signals.map(signal => ({
-      ...signal,
-      digitAnalysis: {
-        mostAppearing: digitAnalysis.mostAppearing,
-        secondMostAppearing: digitAnalysis.secondMostAppearing,
-        leastAppearing: digitAnalysis.leastAppearing,
-        mostAppearingPct: digitAnalysis.mostAppearingPct,
-        secondMostAppearingPct: digitAnalysis.secondMostAppearingPct,
-        leastAppearingPct: digitAnalysis.leastAppearingPct,
-      }
-    }));
+    return patternStats.slice(0, 5);
   }, []);
 
-  // Ensure at least 3 over/under signals and manage total signals up to 6
-  const prioritizeSignals = useCallback((allSignals: Omit<Signal, 'id' | 'timestamp' | 'priority'>[]) => {
-    // Separate over/under signals (all types that indicate OVER or UNDER)
-    const overUnderSignals = allSignals.filter(s => 
-      s.type === 'over' || s.type === 'under' || 
-      s.type === 'over_strong' || s.type === 'under_strong' ||
-      s.type === 'over_digit_based' || s.type === 'under_digit_based'
-    );
-    const oddEvenSignals = allSignals.filter(s => s.type === 'odd' || s.type === 'even');
+  // Check for over/under signals (ensure exactly 3 signals)
+  const checkOverUnderSignals = useCallback((
+    markets: typeof ALL_MARKETS[],
+    ticksData: Record<string, number[]>,
+    thresholds: Record<string, number>
+  ): OverUnderSignal[] => {
+    const overUnderSignals: OverUnderSignal[] = [];
     
-    // Sort by strength (critical > strong > moderate > weak)
+    for (const market of markets) {
+      const ticks = ticksData[market.symbol];
+      if (!ticks || ticks.length < 100) continue;
+      
+      const threshold = thresholds[market.symbol] || 5;
+      const percentages = calculatePercentages(ticks.slice(-tickCount), threshold);
+      if (!percentages) continue;
+      
+      // Check over signal (digits > threshold)
+      if (percentages.overPct >= 55) {
+        let strength: SignalStrength = 'weak';
+        if (percentages.overPct >= 75) strength = 'critical';
+        else if (percentages.overPct >= 65) strength = 'strong';
+        else if (percentages.overPct >= 55) strength = 'moderate';
+        
+        // Analyze patterns for confirmation
+        const patterns = analyzePatterns(ticks.slice(-500), threshold, 
+          typeof patternLength === 'number' ? patternLength : 3);
+        const patternConfidence = patterns && patterns[0]?.winRate || 50;
+        
+        overUnderSignals.push({
+          type: 'over',
+          market,
+          percentage: percentages.overPct,
+          threshold,
+          strength,
+          recentDigits: ticks.slice(-30),
+          patternConfidence,
+        });
+      }
+      
+      // Check under signal (digits < threshold)
+      if (percentages.underPct >= 55) {
+        let strength: SignalStrength = 'weak';
+        if (percentages.underPct >= 75) strength = 'critical';
+        else if (percentages.underPct >= 65) strength = 'strong';
+        else if (percentages.underPct >= 55) strength = 'moderate';
+        
+        const patterns = analyzePatterns(ticks.slice(-500), threshold,
+          typeof patternLength === 'number' ? patternLength : 3);
+        const patternConfidence = patterns && patterns[0]?.winRate || 50;
+        
+        overUnderSignals.push({
+          type: 'under',
+          market,
+          percentage: percentages.underPct,
+          threshold,
+          strength,
+          recentDigits: ticks.slice(-30),
+          patternConfidence,
+        });
+      }
+    }
+    
+    // Sort by strength and pattern confidence
     const strengthOrder = { critical: 4, strong: 3, moderate: 2, weak: 1 };
+    const sortedSignals = overUnderSignals.sort((a, b) => {
+      const strengthDiff = strengthOrder[b.strength] - strengthOrder[a.strength];
+      if (strengthDiff !== 0) return strengthDiff;
+      return b.patternConfidence - a.patternConfidence;
+    });
     
-    let selectedSignals: typeof allSignals = [];
+    // Return exactly 3 signals (or all if less than 3)
+    return sortedSignals.slice(0, 3);
+  }, [tickCount, patternLength, calculatePercentages, analyzePatterns]);
+
+  // Check for odd/even signals
+  const checkOddEvenSignals = useCallback((
+    markets: typeof ALL_MARKETS[],
+    ticksData: Record<string, number[]>
+  ): Omit<Signal, 'id' | 'timestamp' | 'priority' | 'recentDigits' | 'patternLength' | 'threshold'>[] => {
+    const signals: Omit<Signal, 'id' | 'timestamp' | 'priority' | 'recentDigits' | 'patternLength' | 'threshold'>[] = [];
     
-    // First, ensure we have at least 3 over/under signals
-    const sortedOverUnder = [...overUnderSignals].sort((a, b) => 
-      strengthOrder[b.strength] - strengthOrder[a.strength]
-    );
-    
-    // Take top 3 over/under signals (or all if less than 3)
-    const overUnderToTake = sortedOverUnder.slice(0, Math.max(3, sortedOverUnder.length));
-    selectedSignals.push(...overUnderToTake);
-    
-    // If we have less than 3 over/under signals, add more from remaining over/under
-    if (selectedSignals.length < 3 && sortedOverUnder.length > overUnderToTake.length) {
-      const additionalOverUnder = sortedOverUnder.slice(overUnderToTake.length, 3 - selectedSignals.length);
-      selectedSignals.push(...additionalOverUnder);
+    for (const market of markets) {
+      const ticks = ticksData[market.symbol];
+      if (!ticks || ticks.length < 100) continue;
+      
+      const percentages = calculatePercentages(ticks.slice(-tickCount), 5);
+      if (!percentages) continue;
+      
+      // Odd signal
+      if (percentages.oddPct >= 55) {
+        let strength: SignalStrength = 'weak';
+        let conditionMet = '';
+        
+        if (percentages.oddPct >= 75) {
+          strength = 'critical';
+          conditionMet = `CRITICAL: Odd digits at ${percentages.oddPct.toFixed(1)}% (75%+) → Extreme odd bias! 🔥`;
+        } else if (percentages.oddPct >= 65) {
+          strength = 'strong';
+          conditionMet = `STRONG: Odd digits at ${percentages.oddPct.toFixed(1)}% (65%+) → Strong odd bias`;
+        } else if (percentages.oddPct >= 55) {
+          strength = 'moderate';
+          conditionMet = `MODERATE: Odd digits at ${percentages.oddPct.toFixed(1)}% (55%+) → Odd bias confirmed`;
+        } else {
+          conditionMet = `WEAK: Odd digits at ${percentages.oddPct.toFixed(1)}% → Approaching odd threshold`;
+        }
+        
+        signals.push({
+          market,
+          type: 'odd',
+          strength,
+          percentage: percentages.oddPct,
+          timeframe: '1m',
+          conditionMet,
+        });
+      }
+      
+      // Even signal
+      if (percentages.evenPct >= 55) {
+        let strength: SignalStrength = 'weak';
+        let conditionMet = '';
+        
+        if (percentages.evenPct >= 75) {
+          strength = 'critical';
+          conditionMet = `CRITICAL: Even digits at ${percentages.evenPct.toFixed(1)}% (75%+) → Extreme even bias! 🔥`;
+        } else if (percentages.evenPct >= 65) {
+          strength = 'strong';
+          conditionMet = `STRONG: Even digits at ${percentages.evenPct.toFixed(1)}% (65%+) → Strong even bias`;
+        } else if (percentages.evenPct >= 55) {
+          strength = 'moderate';
+          conditionMet = `MODERATE: Even digits at ${percentages.evenPct.toFixed(1)}% (55%+) → Even bias confirmed`;
+        } else {
+          conditionMet = `WEAK: Even digits at ${percentages.evenPct.toFixed(1)}% → Approaching even threshold`;
+        }
+        
+        signals.push({
+          market,
+          type: 'even',
+          strength,
+          percentage: percentages.evenPct,
+          timeframe: '1m',
+          conditionMet,
+        });
+      }
     }
     
-    // Then fill remaining slots (up to 6 total) with odd/even signals
-    const remainingSlots = Math.max(0, 6 - selectedSignals.length);
-    const sortedOddEven = [...oddEvenSignals].sort((a, b) => 
-      strengthOrder[b.strength] - strengthOrder[a.strength]
-    );
-    const oddEvenToTake = sortedOddEven.slice(0, remainingSlots);
-    selectedSignals.push(...oddEvenToTake);
+    return signals;
+  }, [tickCount, calculatePercentages]);
+
+  // Generate final signals (exactly 3 over/under + up to 3 odd/even)
+  const generateSignals = useCallback(() => {
+    const marketsToScan = selectedGroup === 'all' 
+      ? ALL_MARKETS 
+      : ALL_MARKETS.filter(m => {
+          if (selectedGroup === 'vol') return VOLATILITIES.vol.includes(m.symbol);
+          if (selectedGroup === 'jump') return VOLATILITIES.jump.includes(m.symbol);
+          if (selectedGroup === 'bull') return VOLATILITIES.bull.includes(m.symbol);
+          if (selectedGroup === 'bear') return VOLATILITIES.bear.includes(m.symbol);
+          return false;
+        });
     
-    // If still less than 6 and we have more over/under, add them
-    if (selectedSignals.length < 6 && sortedOverUnder.length > overUnderToTake.length) {
-      const additionalOverUnder = sortedOverUnder.slice(overUnderToTake.length, 6 - selectedSignals.length);
-      selectedSignals.push(...additionalOverUnder);
-    }
+    // Get exactly 3 over/under signals
+    const overUnderSignals = checkOverUnderSignals(marketsToScan, ticksMap.current, selectedDigitThreshold);
     
-    // Add priority numbers (1-6 based on strength)
-    return selectedSignals.map((signal, idx) => ({
+    // Get odd/even signals for additional slots
+    const oddEvenSignals = checkOddEvenSignals(marketsToScan, ticksMap.current);
+    
+    // Combine: first 3 are over/under, then fill with odd/even up to 6 total
+    const combinedSignals: Omit<Signal, 'id' | 'timestamp' | 'priority'>[] = [];
+    
+    overUnderSignals.forEach(signal => {
+      combinedSignals.push({
+        market: signal.market,
+        type: signal.type,
+        strength: signal.strength,
+        percentage: signal.percentage,
+        threshold: signal.threshold,
+        timeframe: '1m',
+        conditionMet: `${signal.type.toUpperCase()} SIGNAL: ${signal.percentage.toFixed(1)}% of digits ${signal.type === 'over' ? '>' : '<'} ${signal.threshold}. Pattern confidence: ${signal.patternConfidence.toFixed(1)}%`,
+        recentDigits: signal.recentDigits,
+        patternLength: typeof patternLength === 'number' ? patternLength : 3,
+      });
+    });
+    
+    // Add odd/even signals up to 6 total
+    const remainingSlots = Math.max(0, 6 - combinedSignals.length);
+    const oddEvenToAdd = oddEvenSignals.slice(0, remainingSlots);
+    oddEvenToAdd.forEach(signal => {
+      combinedSignals.push({
+        ...signal,
+        threshold: 5,
+        recentDigits: ticksMap.current[signal.market.symbol]?.slice(-30) || [],
+        patternLength: 0,
+      });
+    });
+    
+    // Add priority numbers
+    return combinedSignals.map((signal, idx) => ({
       ...signal,
+      id: `${signal.market.symbol}-${Date.now()}-${idx}`,
+      timestamp: Date.now(),
       priority: idx + 1,
     }));
-  }, []);
+  }, [selectedGroup, checkOverUnderSignals, checkOddEvenSignals, selectedDigitThreshold, patternLength]);
 
-  // Scan all markets for signals
+  // Scan all markets
   const scanMarkets = useCallback(() => {
     setIsScanning(true);
     
-    // Simulate API delay
     setTimeout(() => {
-      const allSignals: Omit<Signal, 'id' | 'timestamp' | 'priority'>[] = [];
-      const marketsToScan = selectedGroup === 'all' 
-        ? VOLATILITY_MARKETS 
-        : VOLATILITY_MARKETS.filter(m => m.group === selectedGroup);
+      const signals = generateSignals();
+      setActiveSignals(signals);
       
-      marketsToScan.forEach(market => {
-        const prices = generateMarketData(market);
-        const signals = checkMarketSignals(market, prices);
-        allSignals.push(...signals);
-      });
-      
-      // Prioritize and limit signals
-      const prioritizedSignals = prioritizeSignals(allSignals);
-      
-      // Create full signal objects with IDs and timestamps
-      const finalSignals: Signal[] = prioritizedSignals.map((signal, idx) => ({
-        ...signal,
-        id: `${signal.market.symbol}-${Date.now()}-${idx}-${Math.random()}`,
-        timestamp: Date.now(),
-      }));
-      
-      setActiveSignals(finalSignals);
-      
-      // Add to historical (keep last 30)
+      // Add to historical
       setHistoricalSignals(prev => {
-        const combined = [...finalSignals, ...prev];
+        const combined = [...signals, ...prev];
         return combined.slice(0, 30);
       });
       
       setLastUpdate(new Date());
       setIsScanning(false);
       
-      // Toast notification for new signals
-      const overUnderCount = finalSignals.filter(s => 
-        s.type.includes('over') || s.type.includes('under')
-      ).length;
-      const digitBasedCount = finalSignals.filter(s => 
-        s.type === 'over_digit_based' || s.type === 'under_digit_based'
-      ).length;
-      const criticalCount = finalSignals.filter(s => s.strength === 'critical').length;
+      const overUnderCount = signals.filter(s => s.type === 'over' || s.type === 'under').length;
+      const criticalCount = signals.filter(s => s.strength === 'critical').length;
       
-      if (finalSignals.length > 0) {
+      if (signals.length > 0) {
         toast.success(
-          `📡 ${finalSignals.length} signal${finalSignals.length > 1 ? 's' : ''} detected! ` +
-          `(${overUnderCount} over/under, ${digitBasedCount} digit-based, ${criticalCount > 0 ? `${criticalCount} critical 🔥` : ''})`
+          `📡 ${signals.length} signal${signals.length > 1 ? 's' : ''} detected! ` +
+          `(${overUnderCount} over/under, ${criticalCount > 0 ? `${criticalCount} critical 🔥` : ''})`
         );
       } else {
         toast.info('No signals detected in this scan cycle');
       }
-    }, 800);
-  }, [selectedGroup, generateMarketData, checkMarketSignals, prioritizeSignals]);
+    }, 500);
+  }, [generateSignals]);
 
   // Auto-scan interval
   useEffect(() => {
     if (!autoScan) return;
     
     scanMarkets();
-    const interval = setInterval(scanMarkets, 30000); // Scan every 30 seconds
+    const interval = setInterval(scanMarkets, 30000);
     
     return () => clearInterval(interval);
   }, [autoScan, scanMarkets]);
 
-  // Get market groups for filter
-  const groups = useMemo(() => {
-    const uniqueGroups = new Set(VOLATILITY_MARKETS.map(m => m.group));
-    return Array.from(uniqueGroups).map(group => ({
-      value: group,
-      label: group === 'vol1s' ? 'Volatility 1s' : 
-             group === 'vol' ? 'Volatility' :
-             group === 'jump' ? 'Jump' : group
-    }));
-  }, []);
+  // WebSocket connection for each market
+  useEffect(() => {
+    const connectMarket = (symbol: string) => {
+      if (wsConnections.current[symbol]) return;
+      
+      const ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=1089`);
+      const ticks: number[] = [];
+      
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ ticks_history: symbol, count: tickCount, end: "latest", style: "ticks" }));
+      };
+      
+      ws.onmessage = (msg) => {
+        const data = JSON.parse(msg.data);
+        
+        if (data.history?.prices) {
+          data.history.prices.forEach((price: number) => {
+            const digit = getLastDigit(price);
+            if (!isNaN(digit)) ticks.push(digit);
+          });
+          ticksMap.current[symbol] = ticks;
+          ws.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
+        }
+        
+        if (data.tick?.quote) {
+          const digit = getLastDigit(data.tick.quote);
+          if (!isNaN(digit)) {
+            if (ticks.length >= 4000) ticks.shift();
+            ticks.push(digit);
+            ticksMap.current[symbol] = [...ticks];
+          }
+        }
+      };
+      
+      ws.onerror = () => console.error(`WebSocket error for ${symbol}`);
+      ws.onclose = () => {
+        delete wsConnections.current[symbol];
+        setTimeout(() => connectMarket(symbol), 5000);
+      };
+      
+      wsConnections.current[symbol] = ws;
+    };
+    
+    // Connect to all markets
+    const allSymbols = selectedGroup === 'all' 
+      ? ALL_MARKETS.map(m => m.symbol)
+      : ALL_MARKETS.filter(m => {
+          if (selectedGroup === 'vol') return VOLATILITIES.vol.includes(m.symbol);
+          if (selectedGroup === 'jump') return VOLATILITIES.jump.includes(m.symbol);
+          if (selectedGroup === 'bull') return VOLATILITIES.bull.includes(m.symbol);
+          if (selectedGroup === 'bear') return VOLATILITIES.bear.includes(m.symbol);
+          return false;
+        }).map(m => m.symbol);
+    
+    allSymbols.forEach(connectMarket);
+    
+    return () => {
+      Object.values(wsConnections.current).forEach(ws => ws.close());
+      wsConnections.current = {};
+    };
+  }, [selectedGroup, tickCount]);
+
+  // Update thresholds for individual markets
+  const updateThreshold = (symbol: string, value: number) => {
+    setSelectedDigitThreshold(prev => ({ ...prev, [symbol]: value }));
+  };
 
   const getSignalStats = useMemo(() => {
     const total = activeSignals.length;
@@ -784,21 +482,156 @@ export default function SignalPage() {
     const strong = activeSignals.filter(s => s.strength === 'strong').length;
     const moderate = activeSignals.filter(s => s.strength === 'moderate').length;
     const weak = activeSignals.filter(s => s.strength === 'weak').length;
-    const overUnder = activeSignals.filter(s => 
-      s.type.includes('over') || s.type.includes('under')
-    ).length;
-    const digitBased = activeSignals.filter(s => 
-      s.type === 'over_digit_based' || s.type === 'under_digit_based'
-    ).length;
-    return { total, critical, strong, moderate, weak, overUnder, digitBased };
+    const overUnder = activeSignals.filter(s => s.type === 'over' || s.type === 'under').length;
+    return { total, critical, strong, moderate, weak, overUnder };
   }, [activeSignals]);
+
+  // Get market groups for filter
+  const groups = [
+    { value: 'all', label: 'All Markets' },
+    { value: 'vol', label: 'Volatility' },
+    { value: 'jump', label: 'Jump' },
+    { value: 'bull', label: 'Bull' },
+    { value: 'bear', label: 'Bear' },
+  ];
+
+  // Signal Card Component
+  const SignalCard: React.FC<{ signal: Signal; index: number }> = ({ signal, index }) => {
+    const getSignalIcon = () => {
+      if (signal.type === 'over') return <ArrowUp className="w-5 h-5" />;
+      if (signal.type === 'under') return <ArrowDown className="w-5 h-5" />;
+      if (signal.type === 'odd') return <Activity className="w-5 h-5" />;
+      return <Target className="w-5 h-5" />;
+    };
+
+    const getSignalColor = () => {
+      if (signal.type === 'over') return 'from-emerald-500 to-green-600';
+      if (signal.type === 'under') return 'from-rose-500 to-red-600';
+      if (signal.type === 'odd') return 'from-amber-500 to-orange-600';
+      return 'from-sky-500 to-blue-600';
+    };
+
+    const getStrengthColor = () => {
+      switch (signal.strength) {
+        case 'critical': return 'text-red-400 bg-red-400/10 border-red-400/30';
+        case 'strong': return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30';
+        case 'moderate': return 'text-amber-400 bg-amber-400/10 border-amber-400/30';
+        default: return 'text-rose-400 bg-rose-400/10 border-rose-400/30';
+      }
+    };
+
+    const getStrengthText = () => {
+      switch (signal.strength) {
+        case 'critical': return '🔥 Critical';
+        case 'strong': return '⚡ Strong';
+        case 'moderate': return '📊 Moderate';
+        default: return '⚠️ Weak';
+      }
+    };
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ delay: index * 0.1, duration: 0.4 }}
+        whileHover={{ y: -4, scale: 1.02 }}
+      >
+        <Card className={`overflow-hidden border-border/50 bg-gradient-to-br from-card/80 to-card/40 backdrop-blur-sm hover:shadow-xl transition-all duration-300 ${
+          signal.strength === 'critical' ? 'ring-2 ring-red-500/50 shadow-lg shadow-red-500/20' : ''
+        }`}>
+          <CardContent className="p-4">
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <motion.div
+                  whileHover={{ rotate: 360, scale: 1.1 }}
+                  className={`w-10 h-10 rounded-xl bg-gradient-to-br ${getSignalColor()} flex items-center justify-center text-white shadow-lg`}
+                >
+                  {getSignalIcon()}
+                </motion.div>
+                <div>
+                  <h3 className="font-bold text-sm flex items-center gap-2">
+                    {signal.market.name}
+                    {signal.strength === 'critical' && <Flame className="w-4 h-4 text-red-400" />}
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Clock className="w-3 h-3" />
+                    <span>{new Date(signal.timestamp).toLocaleTimeString()}</span>
+                    <Badge variant="outline" className="text-[10px]">{signal.timeframe}</Badge>
+                  </div>
+                </div>
+              </div>
+              <Badge className={`${getStrengthColor()} border text-[10px] font-semibold`}>
+                {getStrengthText()}
+              </Badge>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground capitalize">
+                  {signal.type.toUpperCase()} Signal
+                  {signal.type === 'over' || signal.type === 'under' ? ` (Threshold: ${signal.threshold})` : ''}
+                </span>
+                <span className="font-mono font-bold text-lg">{signal.percentage.toFixed(1)}%</span>
+              </div>
+              
+              <div className="relative h-2 bg-muted rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(100, signal.percentage)}%` }}
+                  transition={{ duration: 0.8 }}
+                  className={`absolute inset-y-0 left-0 rounded-full bg-gradient-to-r ${getSignalColor()}`}
+                />
+              </div>
+
+              <div className="flex items-center gap-2 text-xs bg-muted/30 rounded-lg p-2">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                <span className="text-muted-foreground">{signal.conditionMet}</span>
+              </div>
+
+              {/* Recent digits display */}
+              {'recentDigits' in signal && signal.recentDigits && (
+                <div className="flex flex-wrap gap-1 justify-center">
+                  {signal.recentDigits.slice(-15).map((d, i) => {
+                    const isOver = d > signal.threshold;
+                    const isUnder = d < signal.threshold;
+                    return (
+                      <span
+                        key={i}
+                        className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-mono font-bold ${
+                          isOver ? 'bg-emerald-500/20 text-emerald-400' :
+                          isUnder ? 'bg-rose-500/20 text-rose-400' :
+                          'bg-muted text-muted-foreground'
+                        }`}
+                      >
+                        {d}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center gap-1 text-xs">
+                  <Gauge className="w-3 h-3 text-muted-foreground" />
+                  <span>Volatility: {signal.market.baseVol}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-muted-foreground">Priority: {signal.priority}/6</span>
+                  <Signal className="w-4 h-4 text-primary" />
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background/95 to-background/90">
-      {/* Header Section */}
+      {/* Header */}
       <div className="relative overflow-hidden border-b border-border/50 bg-card/30 backdrop-blur-sm">
-        <div className="absolute inset-0 bg-grid-white/5 [mask-image:radial-gradient(ellipse_at_top,white,transparent)]" />
-        <div className="container mx-auto px-4 py-8 relative">
+        <div className="container mx-auto px-4 py-6">
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -813,7 +646,7 @@ export default function SignalPage() {
                   Volatility Signal Scanner
                 </h1>
                 <p className="text-sm text-muted-foreground">
-                  Enhanced over/under detection | Digit-based analysis | Min 3 over/under signals
+                  Exactly 3 over/under signals | Real-time digit analysis | Pattern detection
                 </p>
               </div>
             </div>
@@ -840,101 +673,148 @@ export default function SignalPage() {
               </Button>
             </div>
           </motion.div>
-          
+
+          {/* Settings Panel */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6"
+          >
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Contract Type</label>
+              <Select value={contractType} onValueChange={(v: any) => setContractType(v)}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="overunder">Over/Under</SelectItem>
+                  <SelectItem value="evenodd">Even/Odd</SelectItem>
+                  <SelectItem value="risefall">Rise/Fall</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Pattern Length</label>
+              <Select value={patternLength === 'all' ? 'all' : String(patternLength)} onValueChange={(v) => setPatternLength(v === 'all' ? 'all' : parseInt(v))}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Lengths</SelectItem>
+                  <SelectItem value="1">1 Digit</SelectItem>
+                  <SelectItem value="2">2 Digits</SelectItem>
+                  <SelectItem value="3">3 Digits</SelectItem>
+                  <SelectItem value="4">4 Digits</SelectItem>
+                  <SelectItem value="5">5 Digits</SelectItem>
+                  <SelectItem value="6">6 Digits</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Tick Count</label>
+              <Input
+                type="number"
+                value={tickCount}
+                onChange={(e) => setTickCount(parseInt(e.target.value) || 1000)}
+                className="h-9 text-sm"
+                min={100}
+                max={5000}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Show Patterns</label>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowPatterns(!showPatterns)}
+                className="w-full h-9 gap-2"
+              >
+                {showPatterns ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                {showPatterns ? 'Hide' : 'Show'} Patterns
+              </Button>
+            </div>
+          </motion.div>
+
           {/* Stats Cards */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
-            className="grid grid-cols-2 md:grid-cols-7 gap-4 mt-8"
+            className="grid grid-cols-2 md:grid-cols-6 gap-4 mt-6"
           >
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-muted-foreground mb-2">
+            <div className="bg-card/50 rounded-xl border border-border/50 p-3">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
                 <Signal className="w-4 h-4" />
-                <span className="text-sm">Active Signals</span>
+                <span className="text-xs">Active Signals</span>
               </div>
-              <div className="text-3xl font-bold">{getSignalStats.total}</div>
-              <div className="text-xs text-muted-foreground">Max 6 signals</div>
+              <div className="text-2xl font-bold">{getSignalStats.total}</div>
+              <div className="text-[10px] text-muted-foreground">Max 6 signals</div>
             </div>
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-red-400 mb-2">
+            <div className="bg-card/50 rounded-xl border border-border/50 p-3">
+              <div className="flex items-center gap-2 text-red-400 mb-1">
                 <Flame className="w-4 h-4" />
-                <span className="text-sm">Critical</span>
+                <span className="text-xs">Critical</span>
               </div>
-              <div className="text-3xl font-bold text-red-400">{getSignalStats.critical}</div>
+              <div className="text-2xl font-bold text-red-400">{getSignalStats.critical}</div>
             </div>
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-emerald-400 mb-2">
+            <div className="bg-card/50 rounded-xl border border-border/50 p-3">
+              <div className="flex items-center gap-2 text-emerald-400 mb-1">
                 <TrendingUp className="w-4 h-4" />
-                <span className="text-sm">Strong</span>
+                <span className="text-xs">Strong</span>
               </div>
-              <div className="text-3xl font-bold text-emerald-400">{getSignalStats.strong}</div>
+              <div className="text-2xl font-bold text-emerald-400">{getSignalStats.strong}</div>
             </div>
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-amber-400 mb-2">
+            <div className="bg-card/50 rounded-xl border border-border/50 p-3">
+              <div className="flex items-center gap-2 text-amber-400 mb-1">
                 <Activity className="w-4 h-4" />
-                <span className="text-sm">Moderate</span>
+                <span className="text-xs">Moderate</span>
               </div>
-              <div className="text-3xl font-bold text-amber-400">{getSignalStats.moderate}</div>
+              <div className="text-2xl font-bold text-amber-400">{getSignalStats.moderate}</div>
             </div>
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-primary mb-2">
+            <div className="bg-card/50 rounded-xl border border-border/50 p-3">
+              <div className="flex items-center gap-2 text-primary mb-1">
                 <ArrowUp className="w-4 h-4" />
                 <ArrowDown className="w-4 h-4 -ml-1" />
-                <span className="text-sm">Over/Under</span>
+                <span className="text-xs">Over/Under</span>
               </div>
-              <div className="text-3xl font-bold">{getSignalStats.overUnder}</div>
-              <div className="text-xs text-muted-foreground">Min 3 guaranteed</div>
+              <div className="text-2xl font-bold">{getSignalStats.overUnder}</div>
+              <div className="text-[10px] text-muted-foreground">Exactly 3 guaranteed</div>
             </div>
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-purple-400 mb-2">
-                <BarChart className="w-4 h-4" />
-                <span className="text-sm">Digit-Based</span>
-              </div>
-              <div className="text-3xl font-bold text-purple-400">{getSignalStats.digitBased}</div>
-            </div>
-            <div className="bg-card/50 rounded-xl border border-border/50 p-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-muted-foreground mb-2">
+            <div className="bg-card/50 rounded-xl border border-border/50 p-3">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
                 <Clock className="w-4 h-4" />
-                <span className="text-sm">Last Scan</span>
+                <span className="text-xs">Last Scan</span>
               </div>
               <div className="text-sm font-mono">{lastUpdate.toLocaleTimeString()}</div>
             </div>
           </motion.div>
         </div>
       </div>
-      
+
       {/* Filter Section */}
       <div className="container mx-auto px-4 py-6">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className="gap-1">
               <BarChart3 className="w-3 h-3" />
-              Markets: {selectedGroup === 'all' ? VOLATILITY_MARKETS.length : VOLATILITY_MARKETS.filter(m => m.group === selectedGroup).length}
+              Markets: {selectedGroup === 'all' ? ALL_MARKETS.length : 
+                selectedGroup === 'vol' ? VOLATILITIES.vol.length :
+                selectedGroup === 'jump' ? VOLATILITIES.jump.length :
+                selectedGroup === 'bull' ? VOLATILITIES.bull.length :
+                VOLATILITIES.bear.length}
             </Badge>
             <Badge variant="outline" className="gap-1 bg-emerald-500/10 border-emerald-500/30">
               <ArrowUp className="w-3 h-3 text-emerald-400" />
-              Over: 0-3 ≤15% | Digit-based ≥5
+              Over: > threshold (≥55%)
             </Badge>
             <Badge variant="outline" className="gap-1 bg-rose-500/10 border-rose-500/30">
               <ArrowDown className="w-3 h-3 text-rose-400" />
-              Under: 6-9 ≤15% | Digit-based <5
-            </Badge>
-            <Badge variant="outline" className="gap-1 bg-purple-500/10 border-purple-500/30">
-              <PieChart className="w-3 h-3 text-purple-400" />
-              Min 3 over/under signals guaranteed
+              Under: < threshold (≥55%)
             </Badge>
           </div>
           
           <div className="flex gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant={selectedGroup === 'all' ? 'default' : 'outline'}
-              onClick={() => setSelectedGroup('all')}
-              className="text-xs"
-            >
-              All Markets
-            </Button>
             {groups.map(group => (
               <Button
                 key={group.value}
@@ -948,6 +828,29 @@ export default function SignalPage() {
             ))}
           </div>
         </div>
+
+        {/* Threshold Settings for Each Market */}
+        <div className="mb-6 p-4 bg-card/30 rounded-xl border border-border/50">
+          <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+            <Target className="w-4 h-4 text-primary" />
+            Digit Threshold Settings (Over/Under detection)
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+            {ALL_MARKETS.slice(0, 12).map(market => (
+              <div key={market.symbol} className="flex items-center gap-2">
+                <span className="text-[10px] font-mono truncate max-w-[60px]">{market.symbol}</span>
+                <Input
+                  type="number"
+                  min="0"
+                  max="9"
+                  value={selectedDigitThreshold[market.symbol] ?? 5}
+                  onChange={(e) => updateThreshold(market.symbol, parseInt(e.target.value) || 5)}
+                  className="h-7 w-14 text-xs text-center"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
         
         {/* Active Signals Grid */}
         <div className="mb-8">
@@ -956,14 +859,11 @@ export default function SignalPage() {
               <Zap className="w-5 h-5 text-primary" />
               Active Signals
               <Badge variant="secondary" className="ml-2">
-                {activeSignals.length}/6 signals | {activeSignals.filter(s => s.type.includes('over') || s.type.includes('under')).length} over/under
+                {activeSignals.length}/6 signals | {activeSignals.filter(s => s.type === 'over' || s.type === 'under').length} over/under
               </Badge>
             </h2>
             {isScanning && (
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-              >
+              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1 }}>
                 <RefreshCw className="w-4 h-4 text-primary" />
               </motion.div>
             )}
@@ -977,7 +877,7 @@ export default function SignalPage() {
             >
               <Signal className="w-12 h-12 text-muted-foreground mx-auto mb-3 opacity-50" />
               <p className="text-muted-foreground">No active signals at the moment</p>
-              <p className="text-xs text-muted-foreground mt-1">Scanning markets for digit pattern anomalies...</p>
+              <p className="text-xs text-muted-foreground mt-1">Scanning markets for over/under patterns...</p>
             </motion.div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -995,7 +895,7 @@ export default function SignalPage() {
           <div>
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <Clock className="w-5 h-5 text-muted-foreground" />
-              Recent Signals (Last 30)
+              Recent Signals
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {historicalSignals.slice(0, 9).map((signal, idx) => (
@@ -1011,16 +911,14 @@ export default function SignalPage() {
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs ${
-                        signal.type === 'over' || signal.type === 'over_strong' || signal.type === 'over_digit_based' ? 'bg-emerald-500/20 text-emerald-400' :
-                        signal.type === 'under' || signal.type === 'under_strong' || signal.type === 'under_digit_based' ? 'bg-rose-500/20 text-rose-400' :
+                        signal.type === 'over' ? 'bg-emerald-500/20 text-emerald-400' :
+                        signal.type === 'under' ? 'bg-rose-500/20 text-rose-400' :
                         signal.type === 'odd' ? 'bg-amber-500/20 text-amber-400' :
                         'bg-sky-500/20 text-sky-400'
                       }`}>
-                        {signal.type === 'over' || signal.type === 'over_strong' || signal.type === 'over_digit_based' ? '↑' : 
-                         signal.type === 'under' || signal.type === 'under_strong' || signal.type === 'under_digit_based' ? '↓' : 
-                         signal.type === 'odd' ? 'O' : 'E'}
+                        {signal.type === 'over' ? '↑' : signal.type === 'under' ? '↓' : signal.type === 'odd' ? 'O' : 'E'}
                       </div>
-                      <span className="font-mono text-xs font-medium truncate max-w-[120px]">{signal.market.name}</span>
+                      <span className="font-mono text-xs font-medium truncate max-w-[100px]">{signal.market.name}</span>
                     </div>
                     <Badge className={`text-[8px] ${
                       signal.strength === 'critical' ? 'bg-red-500/20 text-red-400' :
@@ -1033,21 +931,12 @@ export default function SignalPage() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs capitalize text-muted-foreground">
-                      {signal.type === 'over_digit_based' ? 'OVER (digit)' : 
-                       signal.type === 'under_digit_based' ? 'UNDER (digit)' :
-                       signal.type === 'over_strong' ? 'OVER+STRONG' :
-                       signal.type === 'under_strong' ? 'UNDER+STRONG' :
-                       signal.type?.toUpperCase() || 'SIGNAL'} • {signal.percentage.toFixed(0)}%
+                      {signal.type.toUpperCase()} • {signal.percentage.toFixed(0)}%
                     </span>
                     <span className="text-[10px] text-muted-foreground">
                       {new Date(signal.timestamp).toLocaleTimeString()}
                     </span>
                   </div>
-                  {signal.digitAnalysis && (
-                    <div className="flex gap-2 mt-1 text-[8px] text-muted-foreground">
-                      <span>📊 {signal.digitAnalysis.mostAppearing},{signal.digitAnalysis.secondMostAppearing},{signal.digitAnalysis.leastAppearing}</span>
-                    </div>
-                  )}
                 </motion.div>
               ))}
             </div>
@@ -1058,82 +947,58 @@ export default function SignalPage() {
         <div className="mt-8 p-4 bg-card/30 rounded-xl border border-border/50">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-primary" />
-            Enhanced Signal Conditions (1m Timeframe)
+            Signal Conditions
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <div className="flex items-start gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5" />
                 <div>
-                  <span className="font-medium">OVER Signal (Digits 0-3):</span>
-                  <div className="text-muted-foreground text-xs mt-1">
-                    <div>• &lt;8% → 🔥 CRITICAL over signal</div>
-                    <div>• 8-12% → ⚡ STRONG over signal</div>
-                    <div>• 12-15% → 📊 MODERATE over (nearly meant)</div>
+                  <span className="font-medium">OVER Signal:</span>
+                  <div className="text-muted-foreground text-xs">
+                    <div>• Digits above threshold ≥ 55%</div>
+                    <div>• Pattern analysis for confirmation</div>
+                    <div>• Exactly 3 over/under signals guaranteed</div>
                   </div>
                 </div>
               </div>
               <div className="flex items-start gap-2">
                 <XCircle className="w-4 h-4 text-rose-400 mt-0.5" />
                 <div>
-                  <span className="font-medium">UNDER Signal (Digits 6-9):</span>
-                  <div className="text-muted-foreground text-xs mt-1">
-                    <div>• &lt;8% → 🔥 CRITICAL under signal</div>
-                    <div>• 8-12% → ⚡ STRONG under signal</div>
-                    <div>• 12-15% → 📊 MODERATE under (nearly meant)</div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-start gap-2">
-                <BarChart className="w-4 h-4 text-purple-400 mt-0.5" />
-                <div>
-                  <span className="font-medium">Digit-Based OVER Signal:</span>
-                  <div className="text-muted-foreground text-xs mt-1">
-                    <div>• Most, 2nd Most & Least digits ALL ≥5 → Over bias confirmed</div>
-                    <div>• Higher average percentage = stronger signal</div>
+                  <span className="font-medium">UNDER Signal:</span>
+                  <div className="text-muted-foreground text-xs">
+                    <div>• Digits below threshold ≥ 55%</div>
+                    <div>• Pattern analysis for confirmation</div>
+                    <div>• Sorted by strength and pattern confidence</div>
                   </div>
                 </div>
               </div>
             </div>
             <div className="space-y-2">
               <div className="flex items-start gap-2">
-                <BarChart className="w-4 h-4 text-purple-400 mt-0.5" />
-                <div>
-                  <span className="font-medium">Digit-Based UNDER Signal:</span>
-                  <div className="text-muted-foreground text-xs mt-1">
-                    <div>• Most, 2nd Most & Least digits ALL &lt;5 → Under bias confirmed</div>
-                    <div>• Higher average percentage = stronger signal</div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-start gap-2">
                 <Activity className="w-4 h-4 text-amber-400 mt-0.5" />
                 <div>
                   <span className="font-medium">ODD/EVEN Signals:</span>
-                  <div className="text-muted-foreground text-xs mt-1">
-                    <div>• ≥65% → 🔥 CRITICAL bias</div>
-                    <div>• 58-65% → ⚡ STRONG bias</div>
-                    <div>• 55-58% → 📊 MODERATE bias</div>
-                    <div>• 52-55% → ⚠️ WEAK approaching</div>
+                  <div className="text-muted-foreground text-xs">
+                    <div>• Odd/Even digits ≥ 55%</div>
+                    <div>• Fills remaining slots up to 6 total</div>
                   </div>
                 </div>
               </div>
               <div className="flex items-start gap-2">
-                <Target className="w-4 h-4 text-primary mt-0.5" />
+                <BarChart className="w-4 h-4 text-primary mt-0.5" />
                 <div>
-                  <span className="font-medium">Under 5 / Over 5 Signals:</span>
-                  <div className="text-muted-foreground text-xs mt-1">
-                    <div>• ≥55% threshold for under/over 5 bias detection</div>
+                  <span className="font-medium">Pattern Detection:</span>
+                  <div className="text-muted-foreground text-xs">
+                    <div>• Analyzes {patternLength === 'all' ? '1-6' : patternLength}-digit patterns</div>
+                    <div>• Win rate analysis for signal confirmation</div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-          <div className="mt-4 pt-3 border-t border-border/50 flex items-center justify-between text-xs text-muted-foreground flex-wrap gap-2">
-            <span>🎯 Minimum 3 over/under signals guaranteed per scan</span>
-            <span>📊 Maximum 6 signals total per scan</span>
-            <span>🔢 Digit analysis based on most, 2nd most & least appearing digits</span>
-            <span>🔄 Auto-scans every 30 seconds</span>
+          <div className="mt-3 pt-3 border-t border-border/50 text-xs text-muted-foreground text-center">
+            📊 Exactly 3 over/under signals per scan | Up to 6 total signals | Auto-scans every 30 seconds
           </div>
         </div>
       </div>
