@@ -1085,9 +1085,10 @@ export default function ProScannerBot() {
                   ) : (
                     <>
                       <div className="grid grid-cols-3 gap-1 mt-0.5">
-                        <label className="text-[8px] text-muted-foreground text-center">Condition</label>
+                        <label className="text-[8px] text-muted-foreground text-center">If the last </label>
+                        <label className="text-[8px] text-muted-foreground text-center">Ticks Are </label>
                         <label className="text-[8px] text-muted-foreground text-center">Digit</label>
-                        <label className="text-[8px] text-muted-foreground text-center">Ticks</label>
+                        
                       </div>
                       <div className="grid grid-cols-3 gap-1">
                         <Select value={m2DigitCondition} onValueChange={setM2DigitCondition} disabled={isRunning}>
