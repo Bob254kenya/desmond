@@ -6,7 +6,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 const socials = [
   {
     name: 'WhatsApp',
-    url: 'https://wa.me/0757261120',
+    url: 'https://wa.me/0746501090',
     hoverClass: 'hover:text-[hsl(142,70%,49%)] hover:drop-shadow-[0_0_6px_hsl(142,70%,49%,0.4)]',
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
@@ -16,7 +16,7 @@ const socials = [
   },
   {
     name: 'TikTok',
-    url: 'https://www.tiktok.com/@ceoramz?_r=1&_t=ZS-94SPdGqZ8dR',
+    url: 'https://www.tiktok.com/@lavaboy480',
     hoverClass: 'hover:text-foreground hover:drop-shadow-[0_0_6px_hsl(var(--foreground)/0.4)]',
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
@@ -24,16 +24,7 @@ const socials = [
       </svg>
     ),
   },
-  {
-    name: 'YouTube',
-    url: 'https://www.youtube.com/@ceoramz',
-    hoverClass: 'hover:text-[hsl(0,100%,50%)] hover:drop-shadow-[0_0_6px_hsl(0,100%,50%,0.4)]',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
-        <path d="M23.5 6.19a3.02 3.02 0 00-2.12-2.14C19.54 3.5 12 3.5 12 3.5s-7.54 0-9.38.55A3.02 3.02 0 00.5 6.19 31.64 31.64 0 000 12a31.64 31.64 0 00.5 5.81 3.02 3.02 0 002.12 2.14c1.84.55 9.38.55 9.38.55s7.54 0 9.38-.55a3.02 3.02 0 002.12-2.14A31.64 31.64 0 0024 12a31.64 31.64 0 00-.5-5.81zM9.55 15.57V8.43L15.82 12l-6.27 3.57z" />
-      </svg>
-    ),
-  },
+  
   {
     name: 'Telegram',
     url: 'https://t.me/+YDUwvuuVDYg5NjE0',
@@ -45,8 +36,8 @@ const socials = [
     ),
   },
   {
-    name: 'Instagram',
-    url: 'https://www.instagram.com/ramztrader.site?igsh=aDY1aGFiMGpobHJi',
+    name: 'facebook',
+    url: 'https://www.facebook.com/tivah.toxin',
     hoverClass: 'hover:text-[hsl(330,70%,55%)] hover:drop-shadow-[0_0_6px_hsl(330,70%,55%,0.4)]',
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
