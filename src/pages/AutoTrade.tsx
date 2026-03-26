@@ -15,11 +15,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, BarChart3, ArrowUp, ArrowDown, Minus,
   Target, ShieldAlert, Gauge, Volume2, VolumeX, Clock, Zap, Trophy, Play, Pause, StopCircle, Eye, EyeOff, RefreshCw,
+  Plus, X, LineChart
 } from 'lucide-react';
 
 /* ── Markets ── */
 const ALL_MARKETS = [
-  // Vol 1s
   { symbol: '1HZ10V', name: 'Volatility 10 (1s)', group: 'vol1s' },
   { symbol: '1HZ15V', name: 'Volatility 15 (1s)', group: 'vol1s' },
   { symbol: '1HZ25V', name: 'Volatility 25 (1s)', group: 'vol1s' },
@@ -27,24 +27,19 @@ const ALL_MARKETS = [
   { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: 'vol1s' },
   { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: 'vol1s' },
   { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: 'vol1s' },
-  // Vol
   { symbol: 'R_10', name: 'Volatility 10', group: 'vol' },
   { symbol: 'R_25', name: 'Volatility 25', group: 'vol' },
   { symbol: 'R_50', name: 'Volatility 50', group: 'vol' },
   { symbol: 'R_75', name: 'Volatility 75', group: 'vol' },
   { symbol: 'R_100', name: 'Volatility 100', group: 'vol' },
-  // Jump
   { symbol: 'JD10', name: 'Jump 10', group: 'jump' },
   { symbol: 'JD25', name: 'Jump 25', group: 'jump' },
   { symbol: 'JD50', name: 'Jump 50', group: 'jump' },
   { symbol: 'JD75', name: 'Jump 75', group: 'jump' },
   { symbol: 'JD100', name: 'Jump 100', group: 'jump' },
-  // Bear/Bull
   { symbol: 'RDBEAR', name: 'Bear Market', group: 'bear' },
   { symbol: 'RDBULL', name: 'Bull Market', group: 'bull' },
-  // Step
   { symbol: 'stpRNG', name: 'Step Index', group: 'step' },
-  // Range Break
   { symbol: 'RBRK100', name: 'Range Break 100', group: 'range' },
   { symbol: 'RBRK200', name: 'Range Break 200', group: 'range' },
 ];
@@ -61,9 +56,13 @@ const GROUPS = [
 ];
 
 const TIMEFRAMES = ['1m','3m','5m','15m','30m','1h','4h','12h','1d'];
-const TF_TICKS: Record<string,number> = {
-  '1m':1000,'3m':2000,'5m':3000,'15m':4000,'30m':4500,'1h':5000,'4h':5000,'12h':5000,'1d':5000,
+const CANDLE_CONFIG = {
+  minCandles: 1000,
+  maxCandles: 5000,
+  defaultCandles: 1000,
 };
+
+const TICK_RANGES = [50, 100, 200, 300, 500, 1000];
 
 const CONTRACT_TYPES = [
   { value: 'CALL', label: 'Rise' },
@@ -76,9 +75,67 @@ const CONTRACT_TYPES = [
   { value: 'DIGITUNDER', label: 'Digits Under' },
 ];
 
-/* ── Candle builder ── */
+type IndicatorType = 'RSI' | 'BB' | 'MA' | 'MACD';
+interface Indicator {
+  id: string;
+  type: IndicatorType;
+  enabled: boolean;
+}
+
 interface Candle {
   open: number; high: number; low: number; close: number; time: number;
+}
+
+interface TradeRecord {
+  id: string;
+  time: number;
+  type: string;
+  stake: number;
+  profit: number;
+  status: 'won' | 'lost' | 'open';
+  symbol: string;
+  resultDigit?: number;
+}
+
+interface DigitStats {
+  frequency: Record<number, number>;
+  percentages: Record<number, number>;
+  mostCommon: number;
+  leastCommon: number;
+  totalTicks: number;
+  evenPercentage: number;
+  oddPercentage: number;
+  overPercentage: number;
+  underPercentage: number;
+  last26Digits: number[];
+}
+
+// Independent tick storage for digit analysis
+const globalTickHistory: { [symbol: string]: number[] } = {};
+const tickCallbacks: { [symbol: string]: (() => void)[] } = [];
+
+function getTickHistory(symbol: string): number[] {
+  return globalTickHistory[symbol] || [];
+}
+
+function addTick(symbol: string, digit: number) {
+  if (!globalTickHistory[symbol]) globalTickHistory[symbol] = [];
+  globalTickHistory[symbol].push(digit);
+  // Keep up to 2000 ticks for analysis
+  if (globalTickHistory[symbol].length > 2000) globalTickHistory[symbol].shift();
+  
+  // Notify all callbacks for this symbol
+  if (tickCallbacks[symbol]) {
+    tickCallbacks[symbol].forEach(cb => cb());
+  }
+}
+
+function subscribeToTicks(symbol: string, callback: () => void) {
+  if (!tickCallbacks[symbol]) tickCallbacks[symbol] = [];
+  tickCallbacks[symbol].push(callback);
+  return () => {
+    tickCallbacks[symbol] = tickCallbacks[symbol].filter(cb => cb !== callback);
+  };
 }
 
 function buildCandles(prices: number[], times: number[], tf: string): Candle[] {
@@ -108,18 +165,37 @@ function buildCandles(prices: number[], times: number[], tf: string): Candle[] {
   return candles;
 }
 
-/* ── EMA helper ── */
-function calcEMA(prices: number[], period: number): number {
-  if (prices.length < period) return prices[prices.length - 1] || 0;
+function calcEMA(prices: number[], period: number): number[] {
+  const emaValues: number[] = [];
+  if (prices.length === 0) return emaValues;
+  
   const k = 2 / (period + 1);
-  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < prices.length; i++) {
-    ema = prices[i] * k + ema * (1 - k);
+  let ema = prices[0];
+  
+  for (let i = 0; i < prices.length; i++) {
+    if (i === 0) {
+      ema = prices[i];
+    } else {
+      ema = prices[i] * k + ema * (1 - k);
+    }
+    emaValues.push(ema);
   }
-  return ema;
+  return emaValues;
 }
 
-/* ── Per-candle indicator series ── */
+function calcSMA(prices: number[], period: number): number[] {
+  const smaValues: number[] = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) {
+      smaValues.push(prices[i]);
+    } else {
+      const sum = prices.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
+      smaValues.push(sum / period);
+    }
+  }
+  return smaValues;
+}
+
 function calcEMASeries(prices: number[], period: number): (number | null)[] {
   const result: (number | null)[] = [];
   if (prices.length < period) return prices.map(() => null);
@@ -183,7 +259,27 @@ function calcRSISeries(prices: number[], period: number = 14): (number | null)[]
   return result;
 }
 
-/* ── Map candle index back to price-series index for indicators ── */
+function calcMACDSeries(prices: number[]) {
+  const ema12 = calcEMA(prices, 12);
+  const ema26 = calcEMA(prices, 26);
+  const macdLine: number[] = [];
+  const signalLine: number[] = [];
+  
+  for (let i = 0; i < prices.length; i++) {
+    const macd = ema12[i] - ema26[i];
+    macdLine.push(macd);
+    
+    if (i < 9) {
+      signalLine.push(macd);
+    } else {
+      const signal = macdLine.slice(i - 8, i + 1).reduce((a, b) => a + b, 0) / 9;
+      signalLine.push(signal);
+    }
+  }
+  
+  return { macd: macdLine, signal: signalLine };
+}
+
 function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string): number[] {
   const seconds: Record<string, number> = {
     '1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400,'12h':43200,'1d':86400,
@@ -203,7 +299,6 @@ function mapCandlesToPriceIndices(prices: number[], times: number[], tf: string)
   return indices;
 }
 
-/* ── Support/Resistance ── */
 function calcSR(prices: number[]) {
   if (prices.length < 10) return { support: 0, resistance: 0 };
   const sorted = [...prices].sort((a, b) => a - b);
@@ -212,37 +307,64 @@ function calcSR(prices: number[]) {
   return { support: sorted[p5], resistance: sorted[Math.min(p95, sorted.length - 1)] };
 }
 
-/* ── MACD proper ── */
 function calcMACDFull(prices: number[]) {
   const ema12 = calcEMA(prices, 12);
   const ema26 = calcEMA(prices, 26);
-  const macd = ema12 - ema26;
+  const macd = (ema12[ema12.length - 1] || 0) - (ema26[ema26.length - 1] || 0);
   const signal = macd * 0.8;
   return { macd, signal, histogram: macd - signal };
 }
 
-interface TradeRecord {
-  id: string;
-  time: number;
-  type: string;
-  stake: number;
-  profit: number;
-  status: 'won' | 'lost' | 'open';
-  symbol: string;
-  resultDigit?: number;
-}
-
-// Tick storage for pattern/digit strategy
-const tickHistoryRef: { [symbol: string]: number[] } = {};
-
-function getTickHistory(symbol: string): number[] {
-  return tickHistoryRef[symbol] || [];
-}
-
-function addTick(symbol: string, digit: number) {
-  if (!tickHistoryRef[symbol]) tickHistoryRef[symbol] = [];
-  tickHistoryRef[symbol].push(digit);
-  if (tickHistoryRef[symbol].length > 200) tickHistoryRef[symbol].shift();
+function calculateDigitStats(symbol: string, tickRange: number): DigitStats {
+  const ticks = getTickHistory(symbol);
+  const recentTicks = ticks.slice(-tickRange);
+  
+  const frequency: Record<number, number> = {};
+  for (let i = 0; i <= 9; i++) frequency[i] = 0;
+  
+  for (const digit of recentTicks) {
+    frequency[digit] = (frequency[digit] || 0) + 1;
+  }
+  
+  const percentages: Record<number, number> = {};
+  for (let i = 0; i <= 9; i++) {
+    percentages[i] = (frequency[i] / recentTicks.length) * 100;
+  }
+  
+  let mostCommon = 0;
+  let leastCommon = 0;
+  let maxFreq = 0;
+  let minFreq = Infinity;
+  
+  for (let i = 0; i <= 9; i++) {
+    if (frequency[i] > maxFreq) {
+      maxFreq = frequency[i];
+      mostCommon = i;
+    }
+    if (frequency[i] < minFreq) {
+      minFreq = frequency[i];
+      leastCommon = i;
+    }
+  }
+  
+  const evenCount = recentTicks.filter(d => d % 2 === 0).length;
+  const oddCount = recentTicks.length - evenCount;
+  const overCount = recentTicks.filter(d => d > 4).length;
+  const underCount = recentTicks.length - overCount;
+  const last26Digits = ticks.slice(-26);
+  
+  return {
+    frequency,
+    percentages,
+    mostCommon,
+    leastCommon,
+    totalTicks: recentTicks.length,
+    evenPercentage: recentTicks.length > 0 ? (evenCount / recentTicks.length * 100) : 50,
+    oddPercentage: recentTicks.length > 0 ? (oddCount / recentTicks.length * 100) : 50,
+    overPercentage: recentTicks.length > 0 ? (overCount / recentTicks.length * 100) : 50,
+    underPercentage: recentTicks.length > 0 ? (underCount / recentTicks.length * 100) : 50,
+    last26Digits,
+  };
 }
 
 export default function TradingChart() {
@@ -254,10 +376,30 @@ export default function TradingChart() {
   const [prices, setPrices] = useState<number[]>([]);
   const [times, setTimes] = useState<number[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [candleCount, setCandleCount] = useState(CANDLE_CONFIG.defaultCandles);
+  const [tickRange, setTickRange] = useState(100);
   const subscribedRef = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const subscriptionRef = useRef<any>(null);
   const reconnectAttempts = useRef(0);
+
+  // Indicators state
+  const [indicators, setIndicators] = useState<Indicator[]>([]);
+  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
+
+  // Digit stats state - will update in real-time
+  const [digitStats, setDigitStats] = useState<DigitStats>({
+    frequency: {},
+    percentages: {},
+    mostCommon: 0,
+    leastCommon: 0,
+    totalTicks: 0,
+    evenPercentage: 50,
+    oddPercentage: 50,
+    overPercentage: 50,
+    underPercentage: 50,
+    last26Digits: [],
+  });
 
   // Zoom & pan state
   const [candleWidth, setCandleWidth] = useState(7);
@@ -312,12 +454,51 @@ export default function TradingChart() {
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
 
-  /* ── FIXED: Load history + subscribe with proper cleanup and real-time updates ── */
+  // Function to update digit stats (called on tick range change and every new tick)
+  const updateDigitStats = useCallback(() => {
+    const stats = calculateDigitStats(symbol, tickRange);
+    setDigitStats(stats);
+  }, [symbol, tickRange]);
+
+  // Subscribe to real-time tick updates for digit analysis
+  useEffect(() => {
+    // Initial calculation
+    updateDigitStats();
+    
+    // Subscribe to tick updates
+    const unsubscribe = subscribeToTicks(symbol, () => {
+      updateDigitStats();
+    });
+    
+    return unsubscribe;
+  }, [symbol, tickRange, updateDigitStats]);
+
+  const addIndicator = useCallback((type: IndicatorType) => {
+    const newIndicator: Indicator = {
+      id: `${type}-${Date.now()}`,
+      type,
+      enabled: true,
+    };
+    setIndicators(prev => [...prev, newIndicator]);
+    toast.success(`${type} indicator added`);
+  }, []);
+
+  const removeIndicator = useCallback((id: string) => {
+    setIndicators(prev => prev.filter(ind => ind.id !== id));
+    toast.info('Indicator removed');
+  }, []);
+
+  const toggleIndicator = useCallback((id: string) => {
+    setIndicators(prev => prev.map(ind =>
+      ind.id === id ? { ...ind, enabled: !ind.enabled } : ind
+    ));
+  }, []);
+
+  // Load history with configurable candle count
   useEffect(() => {
     let active = true;
     let timeoutId: NodeJS.Timeout;
     
-    // Cleanup function for subscription
     const cleanup = async () => {
       if (subscriptionRef.current) {
         try {
@@ -333,7 +514,6 @@ export default function TradingChart() {
     const load = async () => {
       if (!derivApi.isConnected) {
         setIsLoading(false);
-        // Try to reconnect if not connected
         if (reconnectAttempts.current < 3) {
           reconnectAttempts.current++;
           timeoutId = setTimeout(load, 2000);
@@ -344,28 +524,28 @@ export default function TradingChart() {
       reconnectAttempts.current = 0;
       setIsLoading(true);
       
-      // Clean up previous subscription first
       await cleanup();
       
       try {
-        // Clear previous data
         setPrices([]);
         setTimes([]);
         
-        // Fetch historical data
-        const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 5000);
+        const ticksToLoad = Math.min(candleCount, CANDLE_CONFIG.maxCandles);
+        const hist = await derivApi.getTickHistory(symbol as MarketSymbol, ticksToLoad);
         if (!active) return;
         
-        // Initialize tick history with digits from historical data
+        // Store ALL ticks for independent digit analysis
         const historicalDigits = (hist.history.prices || []).map(p => getLastDigit(p));
-        tickHistoryRef[symbol] = historicalDigits.slice(-200);
+        globalTickHistory[symbol] = historicalDigits;
         
         setPrices(hist.history.prices || []);
         setTimes(hist.history.times || []);
         setScrollOffset(0);
         setIsLoading(false);
+        
+        // Update digit stats after loading historical data
+        updateDigitStats();
 
-        // Subscribe to new ticks
         if (!subscribedRef.current || !subscriptionRef.current) {
           subscriptionRef.current = await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
             if (!active || !data.tick) return;
@@ -374,23 +554,21 @@ export default function TradingChart() {
             const digit = getLastDigit(quote);
             const epoch = data.tick.epoch;
             
-            // Update tick history for pattern strategy
+            // Update independent tick history for digit analysis (triggers callback)
             addTick(symbol, digit);
             
-            // Update prices and times with proper limit
+            // Update prices and times for candles
             setPrices(prev => {
               const newPrices = [...prev, quote];
-              // Keep last 5000 ticks
-              return newPrices.slice(-5000);
+              return newPrices.slice(-CANDLE_CONFIG.maxCandles);
             });
             
             setTimes(prev => {
               const newTimes = [...prev, epoch];
-              return newTimes.slice(-5000);
+              return newTimes.slice(-CANDLE_CONFIG.maxCandles);
             });
             
-            // Visual feedback for price change
-            if (canvasRef.current) {
+            if (canvasRef.current && showChart) {
               canvasRef.current.style.transition = 'background-color 0.1s';
               canvasRef.current.style.backgroundColor = 'rgba(63, 185, 80, 0.05)';
               setTimeout(() => {
@@ -413,24 +591,20 @@ export default function TradingChart() {
     
     load();
     
-    // Cleanup on symbol change or unmount
     return () => {
       active = false;
       if (timeoutId) clearTimeout(timeoutId);
       cleanup();
       subscribedRef.current = false;
     };
-  }, [symbol]);
+  }, [symbol, candleCount, updateDigitStats]);
 
-  // Add effect to handle connection status changes
   useEffect(() => {
     const checkConnection = setInterval(() => {
       if (!derivApi.isConnected && !isLoading) {
         console.log('Connection lost, attempting to reconnect...');
-        // Force refresh of data
         setPrices([]);
         setTimes([]);
-        // Trigger reload of current symbol
         setSymbol(prev => prev);
       }
     }, 5000);
@@ -438,7 +612,6 @@ export default function TradingChart() {
     return () => clearInterval(checkConnection);
   }, [isLoading]);
 
-  // Manual refresh function
   const handleManualRefresh = useCallback(async () => {
     if (!derivApi.isConnected) {
       toast.error('Not connected to Deriv');
@@ -450,11 +623,11 @@ export default function TradingChart() {
       const hist = await derivApi.getTickHistory(symbol as MarketSymbol, 100);
       setPrices(prev => {
         const newPrices = [...prev, ...hist.history.prices];
-        return newPrices.slice(-5000);
+        return newPrices.slice(-CANDLE_CONFIG.maxCandles);
       });
       setTimes(prev => {
         const newTimes = [...prev, ...hist.history.times];
-        return newTimes.slice(-5000);
+        return newTimes.slice(-CANDLE_CONFIG.maxCandles);
       });
       toast.success('Market data refreshed');
     } catch (err) {
@@ -464,59 +637,50 @@ export default function TradingChart() {
     }
   }, [symbol]);
 
-  /* ── Derived data ── */
-  const tfTicks = TF_TICKS[timeframe] || 60;
-  const tfPrices = useMemo(() => prices.slice(-tfTicks), [prices, tfTicks]);
-  const tfTimes = useMemo(() => times.slice(-tfTicks), [times, tfTicks]);
-  const candles = useMemo(() => buildCandles(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
+  /* ── Derived data for candles only ── */
+  const candles = useMemo(() => buildCandles(prices, times, timeframe), [prices, times, timeframe]);
   const currentPrice = prices[prices.length - 1] || 0;
   const lastDigit = getLastDigit(currentPrice);
-  const digits = useMemo(() => tfPrices.map(getLastDigit), [tfPrices]);
-  const last26 = useMemo(() => {
-    const tickHistory = getTickHistory(symbol);
-    return tickHistory.slice(-26);
-  }, [symbol, prices]);
-  const { frequency, percentages, mostCommon, leastCommon } = useMemo(() => analyzeDigits(tfPrices), [tfPrices]);
+  
+  // Indicators calculations (based on candles/price data)
+  const bb = useMemo(() => calculateBollingerBands(prices, 20), [prices]);
+  const ema50 = useMemo(() => calcEMA(prices, 50), [prices]);
+  const sma20 = useMemo(() => calcSMA(prices, 20), [prices]);
+  const { support, resistance } = useMemo(() => calcSR(prices), [prices]);
+  const rsi = useMemo(() => calculateRSI(prices, 14), [prices]);
+  const macd = useMemo(() => calcMACDFull(prices), [prices]);
 
-  // Indicators
-  const bb = useMemo(() => calculateBollingerBands(tfPrices, 20), [tfPrices]);
-  const ema50 = useMemo(() => calcEMA(tfPrices, 50), [tfPrices]);
-  const { support, resistance } = useMemo(() => calcSR(tfPrices), [tfPrices]);
-  const rsi = useMemo(() => calculateRSI(tfPrices, 14), [tfPrices]);
-  const macd = useMemo(() => calcMACDFull(tfPrices), [tfPrices]);
+  // Series for chart rendering
+  const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(prices, times, timeframe), [prices, times, timeframe]);
+  const emaSeries = useMemo(() => calcEMASeries(prices, 50), [prices]);
+  const smaSeries = useMemo(() => calcSMASeries(prices, 20), [prices]);
+  const bbSeries = useMemo(() => calcBBSeries(prices, 20, 2), [prices]);
+  const rsiSeries = useMemo(() => calcRSISeries(prices, 14), [prices]);
+  const macdSeries = useMemo(() => calcMACDSeries(prices), [prices]);
 
-  // Digit stats
-  const evenCount = useMemo(() => digits.filter(d => d % 2 === 0).length, [digits]);
-  const oddCount = digits.length - evenCount;
-  const evenPct = digits.length > 0 ? (evenCount / digits.length * 100) : 50;
-  const oddPct = 100 - evenPct;
-  const overCount = useMemo(() => digits.filter(d => d > 4).length, [digits]);
-  const underCount = digits.length - overCount;
-  const overPct = digits.length > 0 ? (overCount / digits.length * 100) : 50;
-  const underPct = 100 - overPct;
-
-  // BB position
+  // Use digit stats from real-time updates
+  const { frequency, percentages, mostCommon, leastCommon, totalTicks, evenPercentage, oddPercentage, overPercentage, underPercentage, last26Digits } = digitStats;
+  
   const bbRange = bb.upper - bb.lower || 1;
   const bbPosition = ((currentPrice - bb.lower) / bbRange * 100);
 
-  // Signals
   const riseSignal = useMemo(() => {
     const conf = rsi < 30 ? 85 : rsi > 70 ? 25 : 50 + (50 - rsi);
     return { direction: rsi < 45 ? 'Rise' : 'Fall', confidence: Math.min(95, Math.max(10, Math.round(conf))) };
   }, [rsi]);
 
   const eoSignal = useMemo(() => {
-    const conf = Math.abs(evenPct - 50) * 2 + 50;
-    return { direction: evenPct > 50 ? 'Even' : 'Odd', confidence: Math.min(90, Math.round(conf)) };
-  }, [evenPct]);
+    const conf = Math.abs(evenPercentage - 50) * 2 + 50;
+    return { direction: evenPercentage > 50 ? 'Even' : 'Odd', confidence: Math.min(90, Math.round(conf)) };
+  }, [evenPercentage]);
 
   const ouSignal = useMemo(() => {
-    const conf = Math.abs(overPct - 50) * 2 + 50;
-    return { direction: overPct > 50 ? 'Over' : 'Under', confidence: Math.min(90, Math.round(conf)) };
-  }, [overPct]);
+    const conf = Math.abs(overPercentage - 50) * 2 + 50;
+    return { direction: overPercentage > 50 ? 'Over' : 'Under', confidence: Math.min(90, Math.round(conf)) };
+  }, [overPercentage]);
 
   const matchSignal = useMemo(() => {
-    const bestPct = Math.max(...percentages);
+    const bestPct = Math.max(...Object.values(percentages));
     return { digit: mostCommon, confidence: Math.min(90, Math.round(bestPct * 3)) };
   }, [percentages, mostCommon]);
 
@@ -563,13 +727,6 @@ export default function TradingChart() {
       return checkDigitCondition();
     }
   }, [strategyEnabled, strategyMode, checkPatternMatch, checkDigitCondition]);
-
-  /* ── Canvas Chart ── */
-  const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(tfPrices, tfTimes, timeframe), [tfPrices, tfTimes, timeframe]);
-  const emaSeries = useMemo(() => calcEMASeries(tfPrices, 50), [tfPrices]);
-  const smaSeries = useMemo(() => calcSMASeries(tfPrices, 20), [tfPrices]);
-  const bbSeries = useMemo(() => calcBBSeries(tfPrices, 20, 2), [tfPrices]);
-  const rsiSeries = useMemo(() => calcRSISeries(tfPrices, 14), [tfPrices]);
 
   // Canvas mouse handlers for zoom & pan
   useEffect(() => {
@@ -636,6 +793,7 @@ export default function TradingChart() {
     };
   }, [candles.length, scrollOffset, candleWidth, showChart]);
 
+  // Chart rendering with indicators
   useEffect(() => {
     if (!showChart) return;
     
@@ -651,8 +809,9 @@ export default function TradingChart() {
     ctx.scale(dpr, dpr);
     const W = rect.width;
     const totalH = rect.height;
-    const rsiH = 80;
-    const H = totalH - rsiH - 8;
+    const rsiH = indicators.find(i => i.enabled && i.type === 'RSI') ? 80 : 0;
+    const macdH = indicators.find(i => i.enabled && i.type === 'MACD') ? 80 : 0;
+    const H = totalH - rsiH - macdH - 8;
     const priceAxisW = 70;
     const chartW = W - priceAxisW;
 
@@ -673,11 +832,21 @@ export default function TradingChart() {
     for (let i = 0; i < visibleCandles.length; i++) {
       const idx = visibleEndIndices[i];
       if (idx === undefined) continue;
-      const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
-      const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
-      if (u !== null) allPrices.push(u);
-      if (l !== null) allPrices.push(l);
+      
+      if (indicators.find(i => i.enabled && i.type === 'BB')) {
+        const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
+        const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
+        if (u !== null) allPrices.push(u);
+        if (l !== null) allPrices.push(l);
+      }
+      if (indicators.find(i => i.enabled && i.type === 'MA')) {
+        const e = idx < emaSeries.length ? emaSeries[idx] : null;
+        const s = idx < smaSeries.length ? smaSeries[idx] : null;
+        if (e !== null) allPrices.push(e);
+        if (s !== null) allPrices.push(s);
+      }
     }
+    
     const rawMin = Math.min(...allPrices);
     const rawMax = Math.max(...allPrices);
     const priceRange = rawMax - rawMin;
@@ -728,33 +897,39 @@ export default function TradingChart() {
       ctx.setLineDash([]);
     };
 
-    ctx.fillStyle = 'rgba(188, 140, 255, 0.06)';
-    const bbUpperPoints: {x: number, y: number}[] = [];
-    const bbLowerPoints: {x: number, y: number}[] = [];
-    for (let i = 0; i < visibleCandles.length; i++) {
-      const idx = visibleEndIndices[i];
-      if (idx === undefined) continue;
-      const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
-      const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
-      if (u === null || l === null) continue;
-      const x = offsetX + i * totalCandleW + candleWidth / 2;
-      bbUpperPoints.push({ x, y: toY(u) });
-      bbLowerPoints.push({ x, y: toY(l) });
-    }
-    if (bbUpperPoints.length > 1) {
-      ctx.beginPath();
-      ctx.moveTo(bbUpperPoints[0].x, bbUpperPoints[0].y);
-      bbUpperPoints.forEach(p => ctx.lineTo(p.x, p.y));
-      for (let i = bbLowerPoints.length - 1; i >= 0; i--) ctx.lineTo(bbLowerPoints[i].x, bbLowerPoints[i].y);
-      ctx.closePath();
-      ctx.fill();
+    // Draw Bollinger Bands if enabled
+    if (indicators.find(i => i.enabled && i.type === 'BB')) {
+      ctx.fillStyle = 'rgba(188, 140, 255, 0.06)';
+      const bbUpperPoints: {x: number, y: number}[] = [];
+      const bbLowerPoints: {x: number, y: number}[] = [];
+      for (let i = 0; i < visibleCandles.length; i++) {
+        const idx = visibleEndIndices[i];
+        if (idx === undefined) continue;
+        const u = idx < bbSeries.upper.length ? bbSeries.upper[idx] : null;
+        const l = idx < bbSeries.lower.length ? bbSeries.lower[idx] : null;
+        if (u === null || l === null) continue;
+        const x = offsetX + i * totalCandleW + candleWidth / 2;
+        bbUpperPoints.push({ x, y: toY(u) });
+        bbLowerPoints.push({ x, y: toY(l) });
+      }
+      if (bbUpperPoints.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(bbUpperPoints[0].x, bbUpperPoints[0].y);
+        bbUpperPoints.forEach(p => ctx.lineTo(p.x, p.y));
+        for (let i = bbLowerPoints.length - 1; i >= 0; i--) ctx.lineTo(bbLowerPoints[i].x, bbLowerPoints[i].y);
+        ctx.closePath();
+        ctx.fill();
+      }
+      drawLine(bbSeries.upper, '#BC8CFF', 1.2, [5, 3]);
+      drawLine(bbSeries.middle, '#BC8CFF', 1.5);
+      drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3]);
     }
 
-    drawLine(bbSeries.upper, '#BC8CFF', 1.2, [5, 3]);
-    drawLine(bbSeries.middle, '#BC8CFF', 1.5);
-    drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3]);
-    drawLine(emaSeries, '#2F81F7', 1.5);
-    drawLine(smaSeries, '#E6B422', 1.5);
+    // Draw Moving Averages if enabled
+    if (indicators.find(i => i.enabled && i.type === 'MA')) {
+      drawLine(emaSeries, '#2F81F7', 1.5);
+      drawLine(smaSeries, '#E6B422', 1.5);
+    }
 
     ctx.setLineDash([6, 4]);
     ctx.strokeStyle = '#3FB950';
@@ -777,11 +952,12 @@ export default function TradingChart() {
     ctx.fillStyle = '#0D1117';
     ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
 
+    // Draw candles - BLUE for bullish, RED for bearish
     for (let i = 0; i < visibleCandles.length; i++) {
       const c = visibleCandles[i];
       const x = offsetX + i * totalCandleW;
-      const isGreen = c.close >= c.open;
-      const color = isGreen ? '#3FB950' : '#F85149';
+      const isBullish = c.close >= c.open;
+      const color = isBullish ? '#3B82F6' : '#EF4444';
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
@@ -811,12 +987,18 @@ export default function TradingChart() {
 
     ctx.font = '10px JetBrains Mono, monospace';
     const legends = [
-      { label: 'BB(20,2)', color: '#BC8CFF' },
-      { label: 'SMA 20', color: '#E6B422' },
-      { label: 'EMA 50', color: '#2F81F7' },
       { label: 'Support', color: '#3FB950' },
       { label: 'Resistance', color: '#F85149' },
     ];
+    
+    if (indicators.find(i => i.enabled && i.type === 'BB')) {
+      legends.push({ label: 'BB(20,2)', color: '#BC8CFF' });
+    }
+    if (indicators.find(i => i.enabled && i.type === 'MA')) {
+      legends.push({ label: 'EMA 50', color: '#2F81F7' });
+      legends.push({ label: 'SMA 20', color: '#E6B422' });
+    }
+    
     let lx = 8;
     legends.forEach(l => {
       ctx.fillStyle = l.color;
@@ -829,64 +1011,150 @@ export default function TradingChart() {
     ctx.font = '9px JetBrains Mono, monospace';
     ctx.fillText(`${visibleCandles.length} candles | Scroll: wheel | Zoom: Ctrl+wheel | Drag to pan`, 8, H - 6);
 
-    const rsiTop = H + 8;
-    ctx.fillStyle = '#161B22';
-    ctx.fillRect(0, rsiTop, W, rsiH);
-    ctx.strokeStyle = '#21262D';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
+    let currentYOffset = H + 8;
+    
+    // Draw RSI panel if enabled
+    if (indicators.find(i => i.enabled && i.type === 'RSI')) {
+      const rsiTop = currentYOffset;
+      ctx.fillStyle = '#161B22';
+      ctx.fillRect(0, rsiTop, W, rsiH);
+      ctx.strokeStyle = '#21262D';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(0, rsiTop); ctx.lineTo(W, rsiTop); ctx.stroke();
 
-    const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8);
-    ctx.font = '8px JetBrains Mono, monospace';
-    [30, 50, 70].forEach(level => {
-      const y = rsiToY(level);
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050');
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#484F58';
-      ctx.fillText(String(level), chartW + 4, y + 3);
-    });
+      const rsiToY = (v: number) => rsiTop + 4 + ((100 - v) / 100) * (rsiH - 8);
+      ctx.font = '8px JetBrains Mono, monospace';
+      [30, 50, 70].forEach(level => {
+        const y = rsiToY(level);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = level === 50 ? '#484F58' : (level === 70 ? '#F8514950' : '#3FB95050');
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#484F58';
+        ctx.fillText(String(level), chartW + 4, y + 3);
+      });
 
-    ctx.fillStyle = '#8B949E';
-    ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillText('RSI(14)', 4, rsiTop + 12);
+      ctx.fillStyle = '#8B949E';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.fillText('RSI(14)', 4, rsiTop + 12);
 
-    ctx.strokeStyle = '#D29922';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    let rsiStarted = false;
-    for (let i = 0; i < visibleCandles.length; i++) {
-      const idx = visibleEndIndices[i];
-      if (idx === undefined) continue;
-      const v = idx < rsiSeries.length ? rsiSeries[idx] : null;
-      if (v === null) continue;
-      const x = offsetX + i * totalCandleW + candleWidth / 2;
-      const y = rsiToY(v);
-      if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; }
-      else ctx.lineTo(x, y);
+      ctx.strokeStyle = '#D29922';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let rsiStarted = false;
+      for (let i = 0; i < visibleCandles.length; i++) {
+        const idx = visibleEndIndices[i];
+        if (idx === undefined) continue;
+        const v = idx < rsiSeries.length ? rsiSeries[idx] : null;
+        if (v === null) continue;
+        const x = offsetX + i * totalCandleW + candleWidth / 2;
+        const y = rsiToY(v);
+        if (!rsiStarted) { ctx.moveTo(x, y); rsiStarted = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      const lastRsi = rsi;
+      const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922';
+      ctx.fillStyle = rsiColor;
+      ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14);
+      ctx.fillStyle = '#0D1117';
+      ctx.font = 'bold 9px JetBrains Mono, monospace';
+      ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
+
+      ctx.fillStyle = 'rgba(248, 81, 73, 0.04)';
+      ctx.fillRect(0, rsiTop, chartW, rsiToY(70) - rsiTop);
+      ctx.fillStyle = 'rgba(63, 185, 80, 0.04)';
+      ctx.fillRect(0, rsiToY(30), chartW, rsiTop + rsiH - rsiToY(30));
+      
+      currentYOffset += rsiH;
     }
-    ctx.stroke();
+    
+    // Draw MACD panel if enabled
+    if (indicators.find(i => i.enabled && i.type === 'MACD')) {
+      const macdTop = currentYOffset;
+      ctx.fillStyle = '#161B22';
+      ctx.fillRect(0, macdTop, W, macdH);
+      ctx.strokeStyle = '#21262D';
+      ctx.beginPath(); ctx.moveTo(0, macdTop); ctx.lineTo(W, macdTop); ctx.stroke();
+      
+      const macdValues = macdSeries.macd;
+      const signalValues = macdSeries.signal;
+      
+      if (macdValues.length > 0) {
+        const allMacd = [...macdValues, ...signalValues];
+        const maxMacd = Math.max(...allMacd, 0.001);
+        const minMacd = Math.min(...allMacd, -0.001);
+        const macdRange = maxMacd - minMacd;
+        
+        const macdToY = (v: number) => macdTop + 4 + ((maxMacd - v) / macdRange) * (macdH - 8);
+        
+        // Draw zero line
+        const zeroY = macdToY(0);
+        ctx.strokeStyle = '#484F58';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(chartW, zeroY); ctx.stroke();
+        ctx.setLineDash([]);
+        
+        // Draw MACD line
+        ctx.beginPath();
+        ctx.strokeStyle = '#2F81F7';
+        ctx.lineWidth = 1.5;
+        let macdStarted = false;
+        for (let i = 0; i < visibleCandles.length; i++) {
+          const idx = visibleEndIndices[i];
+          if (idx === undefined) continue;
+          const v = idx < macdValues.length ? macdValues[idx] : null;
+          if (v === null) continue;
+          const x = offsetX + i * totalCandleW + candleWidth / 2;
+          const y = macdToY(v);
+          if (!macdStarted) { ctx.moveTo(x, y); macdStarted = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        
+        // Draw Signal line
+        ctx.beginPath();
+        ctx.strokeStyle = '#E6B422';
+        ctx.lineWidth = 1.5;
+        let signalStarted = false;
+        for (let i = 0; i < visibleCandles.length; i++) {
+          const idx = visibleEndIndices[i];
+          if (idx === undefined) continue;
+          const v = idx < signalValues.length ? signalValues[idx] : null;
+          if (v === null) continue;
+          const x = offsetX + i * totalCandleW + candleWidth / 2;
+          const y = macdToY(v);
+          if (!signalStarted) { ctx.moveTo(x, y); signalStarted = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        
+        ctx.fillStyle = '#8B949E';
+        ctx.font = '9px JetBrains Mono, monospace';
+        ctx.fillText('MACD', 4, macdTop + 12);
+        
+        const lastMacd = macdValues[macdValues.length - 1] || 0;
+        const lastSignal = signalValues[signalValues.length - 1] || 0;
+        ctx.fillStyle = '#2F81F7';
+        ctx.fillRect(chartW, macdToY(lastMacd) - 7, priceAxisW / 2, 14);
+        ctx.fillStyle = '#0D1117';
+        ctx.font = 'bold 8px JetBrains Mono, monospace';
+        ctx.fillText(lastMacd.toFixed(4), chartW + 2, macdToY(lastMacd) + 3);
+        
+        ctx.fillStyle = '#E6B422';
+        ctx.fillRect(chartW + priceAxisW / 2, macdToY(lastSignal) - 7, priceAxisW / 2, 14);
+        ctx.fillStyle = '#0D1117';
+        ctx.fillText(lastSignal.toFixed(4), chartW + priceAxisW / 2 + 2, macdToY(lastSignal) + 3);
+      }
+    }
 
-    const lastRsi = rsi;
-    const rsiColor = lastRsi > 70 ? '#F85149' : lastRsi < 30 ? '#3FB950' : '#D29922';
-    ctx.fillStyle = rsiColor;
-    ctx.fillRect(chartW, rsiToY(lastRsi) - 7, priceAxisW, 14);
-    ctx.fillStyle = '#0D1117';
-    ctx.font = 'bold 9px JetBrains Mono, monospace';
-    ctx.fillText(lastRsi.toFixed(1), chartW + 2, rsiToY(lastRsi) + 3);
-
-    ctx.fillStyle = 'rgba(248, 81, 73, 0.04)';
-    ctx.fillRect(0, rsiTop, chartW, rsiToY(70) - rsiTop);
-    ctx.fillStyle = 'rgba(63, 185, 80, 0.04)';
-    ctx.fillRect(0, rsiToY(30), chartW, rsiTop + rsiH - rsiToY(30));
-
-  }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, smaSeries, bbSeries, rsiSeries, rsi, candleWidth, scrollOffset, showChart]);
+  }, [candles, bb, ema50, support, resistance, currentPrice, candleEndIndices, emaSeries, smaSeries, bbSeries, rsiSeries, rsi, candleWidth, scrollOffset, showChart, indicators, macdSeries]);
 
   const filteredMarkets = groupFilter === 'all' ? ALL_MARKETS : ALL_MARKETS.filter(m => m.group === groupFilter);
   const marketName = ALL_MARKETS.find(m => m.symbol === symbol)?.name || symbol;
 
-  // Voice AI announcements
   const speak = useCallback((text: string) => {
     if (!voiceEnabled || !window.speechSynthesis) return;
     if (lastSpokenSignal.current === text) return;
@@ -899,7 +1167,6 @@ export default function TradingChart() {
     window.speechSynthesis.speak(utterance);
   }, [voiceEnabled]);
 
-  // Trade execution
   const handleBuy = async (side: 'buy' | 'sell') => {
     if (!isAuthorized) { toast.error('Please login to your Deriv account first'); return; }
     if (isTrading) return;
@@ -921,7 +1188,6 @@ export default function TradingChart() {
     finally { setIsTrading(false); }
   };
 
-  // ═══ AUTO BOT LOGIC with Strategy ═══
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
     setBotRunning(true); setBotPaused(false);
@@ -946,7 +1212,6 @@ export default function TradingChart() {
         break;
       }
 
-      // Check strategy condition before each trade
       if (strategyEnabled) {
         let conditionMet = false;
         while (botRunningRef.current && !conditionMet) {
@@ -997,13 +1262,11 @@ export default function TradingChart() {
   const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
   const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
 
-  // Update chart symbol when bot symbol changes
   const handleBotSymbolChange = useCallback((newSymbol: string) => {
     setBotConfig(prev => ({ ...prev, botSymbol: newSymbol }));
     setSymbol(newSymbol);
   }, []);
 
-  // Bot stats
   const totalTrades = tradeHistory.filter(t => t.status !== 'open').length;
   const wins = tradeHistory.filter(t => t.status === 'won').length;
   const losses = tradeHistory.filter(t => t.status === 'lost').length;
@@ -1011,14 +1274,14 @@ export default function TradingChart() {
   const winRate = totalTrades > 0 ? (wins / totalTrades * 100) : 0;
 
   return (
-    <div className="space-y-4 max-w-[1920px] mx-auto">
+    <div className="space-y-4 max-w-[1920px] mx-auto p-4">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-primary" /> Trading Chart
           </h1>
-          <p className="text-xs text-muted-foreground">{marketName} • {timeframe} • {tfPrices.length} ticks</p>
+          <p className="text-xs text-muted-foreground">{marketName} • {timeframe} • {candles.length} candles</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -1068,21 +1331,36 @@ export default function TradingChart() {
         </div>
       </div>
 
-      {/* Timeframe */}
-      <div className="flex flex-wrap gap-1">
-        {TIMEFRAMES.map(tf => (
-          <Button key={tf} size="sm" variant={timeframe === tf ? 'default' : 'outline'}
-            className={`h-7 text-xs px-3 ${timeframe === tf ? 'bg-primary text-primary-foreground' : ''}`}
-            onClick={() => setTimeframe(tf)}>
-            {tf}
-          </Button>
-        ))}
+      {/* Timeframe and Candle Count */}
+      <div className="flex flex-wrap gap-2 justify-between items-center">
+        <div className="flex flex-wrap gap-1">
+          {TIMEFRAMES.map(tf => (
+            <Button key={tf} size="sm" variant={timeframe === tf ? 'default' : 'outline'}
+              className={`h-7 text-xs px-3 ${timeframe === tf ? 'bg-primary text-primary-foreground' : ''}`}
+              onClick={() => setTimeframe(tf)}>
+              {tf}
+            </Button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] text-muted-foreground">Candles (1000-5000):</label>
+          <Select value={String(candleCount)} onValueChange={v => setCandleCount(Math.min(Math.max(parseInt(v), CANDLE_CONFIG.minCandles), CANDLE_CONFIG.maxCandles))}>
+            <SelectTrigger className="h-7 text-xs w-24">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[1000, 2000, 3000, 4000, 5000].map(c => (
+                <SelectItem key={c} value={String(c)}>{c}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-        {/* ═══ LEFT: Chart + Info ═══ */}
+        {/* LEFT: Chart + Info */}
         <div className="xl:col-span-8 space-y-3">
-          {/* Candlestick Chart - Hideable */}
+          {/* Candlestick Chart */}
           <AnimatePresence mode="wait">
             {showChart && (
               <motion.div
@@ -1098,6 +1376,70 @@ export default function TradingChart() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Indicators Panel */}
+          <div className="bg-card border border-border rounded-xl p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <LineChart className="w-3.5 h-3.5 text-primary" /> Indicators
+              </h3>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 text-[10px] gap-1"
+                onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
+              >
+                <Plus className="w-3 h-3" />
+                Add Indicator
+              </Button>
+            </div>
+            
+            {showIndicatorPanel && (
+              <div className="flex flex-wrap gap-2 p-2 bg-muted/30 rounded-lg">
+                {['RSI', 'BB', 'MA', 'MACD'].map(type => (
+                  <Button
+                    key={type}
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[9px]"
+                    onClick={() => addIndicator(type as IndicatorType)}
+                    disabled={indicators.some(i => i.type === type)}
+                  >
+                    + {type}
+                  </Button>
+                ))}
+              </div>
+            )}
+            
+            {indicators.length > 0 ? (
+              <div className="space-y-1.5">
+                {indicators.map(indicator => (
+                  <div key={indicator.id} className="flex items-center justify-between p-1.5 bg-muted/20 rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={indicator.enabled}
+                        onCheckedChange={() => toggleIndicator(indicator.id)}
+                        className="scale-75"
+                      />
+                      <span className="text-[10px] font-mono">{indicator.type}</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-5 w-5 p-0 text-muted-foreground hover:text-loss"
+                      onClick={() => removeIndicator(indicator.id)}
+                    >
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-4 text-muted-foreground text-xs">
+                No indicators added. Click "Add Indicator" to add RSI, BB, MA, or MACD.
+              </div>
+            )}
+          </div>
 
           {/* Price Info Panel */}
           <div className="grid grid-cols-3 md:grid-cols-7 gap-2">
@@ -1117,30 +1459,48 @@ export default function TradingChart() {
             ))}
           </div>
 
-          {/* Digit Analysis */}
+          {/* Digit Analysis - Real-Time Updates */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-3">
-            <h3 className="text-xs font-semibold text-foreground">Digit Analysis</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-foreground">Digit Analysis (Real-Time)</h3>
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] text-muted-foreground">Tick Range:</label>
+                <Select value={String(tickRange)} onValueChange={v => setTickRange(parseInt(v))}>
+                  <SelectTrigger className="h-7 text-xs w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TICK_RANGES.map(r => (
+                      <SelectItem key={r} value={String(r)}>{r}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Badge variant="outline" className="text-[9px] animate-pulse">
+                  Live: {totalTicks} ticks
+                </Badge>
+              </div>
+            </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2">
                 <div className="text-[9px] text-[#D29922]">Odd</div>
-                <div className="font-mono text-sm font-bold text-[#D29922]">{oddPct.toFixed(1)}%</div>
-                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${oddPct}%` }} /></div>
+                <div className="font-mono text-sm font-bold text-[#D29922]">{oddPercentage.toFixed(1)}%</div>
+                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${oddPercentage}%` }} /></div>
               </div>
               <div className="bg-[#3FB950]/10 border border-[#3FB950]/30 rounded-lg p-2">
                 <div className="text-[9px] text-[#3FB950]">Even</div>
-                <div className="font-mono text-sm font-bold text-[#3FB950]">{evenPct.toFixed(1)}%</div>
-                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#3FB950] rounded-full" style={{ width: `${evenPct}%` }} /></div>
+                <div className="font-mono text-sm font-bold text-[#3FB950]">{evenPercentage.toFixed(1)}%</div>
+                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#3FB950] rounded-full" style={{ width: `${evenPercentage}%` }} /></div>
               </div>
               <div className="bg-primary/10 border border-primary/30 rounded-lg p-2">
                 <div className="text-[9px] text-primary">Over 4 (5-9)</div>
-                <div className="font-mono text-sm font-bold text-primary">{overPct.toFixed(1)}%</div>
-                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-primary rounded-full" style={{ width: `${overPct}%` }} /></div>
+                <div className="font-mono text-sm font-bold text-primary">{overPercentage.toFixed(1)}%</div>
+                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-primary rounded-full" style={{ width: `${overPercentage}%` }} /></div>
               </div>
               <div className="bg-[#D29922]/10 border border-[#D29922]/30 rounded-lg p-2">
                 <div className="text-[9px] text-[#D29922]">Under 5 (0-4)</div>
-                <div className="font-mono text-sm font-bold text-[#D29922]">{underPct.toFixed(1)}%</div>
-                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${underPct}%` }} /></div>
+                <div className="font-mono text-sm font-bold text-[#D29922]">{underPercentage.toFixed(1)}%</div>
+                <div className="h-1.5 bg-muted rounded-full mt-1"><div className="h-full bg-[#D29922] rounded-full" style={{ width: `${underPercentage}%` }} /></div>
               </div>
             </div>
 
@@ -1167,17 +1527,22 @@ export default function TradingChart() {
                       <div className={`h-full rounded-full ${isHot ? 'bg-loss' : isWarm ? 'bg-warning' : 'bg-primary'}`} style={{ width: `${Math.min(100, pct * 5)}%` }} />
                     </div>
                     {isBestMatch && (
-                      <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match Digit</Badge>
+                      <Badge className="absolute -top-1 -right-1 text-[7px] px-1 bg-profit text-profit-foreground">Match</Badge>
                     )}
                     {isBestDiffer && (
-                      <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Differ</Badge>
+                      <Badge className="absolute -top-1 -left-1 text-[7px] px-1 bg-loss text-loss-foreground">Diff</Badge>
                     )}
                   </button>
                 );
               })}
             </div>
+            
+            <div className="text-center text-[8px] text-muted-foreground animate-pulse">
+              🔄 Updating in real-time with each new tick
+            </div>
           </div>
 
+        
           {/* Strategic Recommendations */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <div className="bg-card border border-profit/30 rounded-lg p-2">
@@ -1192,22 +1557,22 @@ export default function TradingChart() {
             </div>
             <div className="bg-card border border-[#D29922]/30 rounded-lg p-2">
               <div className="text-[9px] text-muted-foreground">Even/Odd</div>
-              <div className={`font-mono text-lg font-bold ${evenPct > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>
-                {evenPct > 50 ? 'EVEN' : 'ODD'}
+              <div className={`font-mono text-lg font-bold ${evenPercentage > 50 ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>
+                {evenPercentage > 50 ? 'EVEN' : 'ODD'}
               </div>
-              <div className="text-[8px] text-muted-foreground">{Math.max(evenPct, oddPct).toFixed(1)}%</div>
+              <div className="text-[8px] text-muted-foreground">{Math.max(evenPercentage, oddPercentage).toFixed(1)}%</div>
             </div>
             <div className="bg-card border border-primary/30 rounded-lg p-2">
               <div className="text-[9px] text-muted-foreground">Over/Under</div>
-              <div className={`font-mono text-lg font-bold ${overPct > 50 ? 'text-primary' : 'text-[#D29922]'}`}>
-                {overPct > 50 ? 'OVER' : 'UNDER'}
+              <div className={`font-mono text-lg font-bold ${overPercentage > 50 ? 'text-primary' : 'text-[#D29922]'}`}>
+                {overPercentage > 50 ? 'OVER' : 'UNDER'}
               </div>
-              <div className="text-[8px] text-muted-foreground">{Math.max(overPct, underPct).toFixed(1)}%</div>
+              <div className="text-[8px] text-muted-foreground">{Math.max(overPercentage, underPercentage).toFixed(1)}%</div>
             </div>
           </div>
         </div>
 
-        {/* ═══ RIGHT: Signals + Trade + Tech ═══ */}
+        {/* RIGHT: Signals + Trade + Tech */}
         <div className="xl:col-span-4 space-y-3">
           {/* Voice AI Toggle */}
           <div className="bg-card border border-primary/30 rounded-xl p-3">
@@ -1235,13 +1600,12 @@ export default function TradingChart() {
               </Button>
             </div>
             {voiceEnabled && (
-              <p className="text-[9px] text-muted-foreground mt-1">🔊 AI will announce trade results</p>
+              <p className="text-[9px] text-muted-foreground mt-1">🔊 Ramzfx AI will announce trade results</p>
             )}
           </div>
 
           {/* Trading Signals */}
           <div className="grid grid-cols-2 gap-2">
-            {/* Rise/Fall */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 {riseSignal.direction === 'Rise' ? <TrendingUp className="w-3.5 h-3.5 text-profit" /> : <TrendingDown className="w-3.5 h-3.5 text-loss" />}
@@ -1255,10 +1619,8 @@ export default function TradingChart() {
                 <div className={`h-full rounded-full ${riseSignal.direction === 'Rise' ? 'bg-profit' : 'bg-loss'}`}
                   style={{ width: `${riseSignal.confidence}%` }} />
               </div>
-              <div className="text-[8px] text-right text-muted-foreground mt-0.5">{riseSignal.confidence}%</div>
             </div>
 
-            {/* Even/Odd */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <Activity className="w-3.5 h-3.5 text-primary" />
@@ -1267,15 +1629,13 @@ export default function TradingChart() {
               <div className={`font-mono text-sm font-bold ${eoSignal.direction === 'Even' ? 'text-[#3FB950]' : 'text-[#D29922]'}`}>
                 {eoSignal.direction}
               </div>
-              <div className="text-[8px] text-muted-foreground mb-1">{evenPct.toFixed(1)}% even</div>
+              <div className="text-[8px] text-muted-foreground mb-1">{evenPercentage.toFixed(1)}% even</div>
               <div className="h-1.5 bg-muted rounded-full">
                 <div className={`h-full rounded-full ${eoSignal.direction === 'Even' ? 'bg-[#3FB950]' : 'bg-[#D29922]'}`}
                   style={{ width: `${eoSignal.confidence}%` }} />
               </div>
-              <div className="text-[8px] text-right text-muted-foreground mt-0.5">{eoSignal.confidence}%</div>
             </div>
 
-            {/* Over/Under */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <ArrowUp className="w-3.5 h-3.5 text-primary" />
@@ -1284,61 +1644,31 @@ export default function TradingChart() {
               <div className={`font-mono text-sm font-bold ${ouSignal.direction === 'Over' ? 'text-primary' : 'text-[#D29922]'}`}>
                 {ouSignal.direction}
               </div>
-              <div className="text-[8px] text-muted-foreground mb-1">{overPct.toFixed(1)}% over</div>
+              <div className="text-[8px] text-muted-foreground mb-1">{overPercentage.toFixed(1)}% over</div>
               <div className="h-1.5 bg-muted rounded-full">
                 <div className={`h-full rounded-full ${ouSignal.direction === 'Over' ? 'bg-primary' : 'bg-[#D29922]'}`}
                   style={{ width: `${ouSignal.confidence}%` }} />
               </div>
-              <div className="text-[8px] text-right text-muted-foreground mt-0.5">{ouSignal.confidence}%</div>
             </div>
 
-            {/* Match */}
             <div className="bg-card border border-border rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <Target className="w-3.5 h-3.5 text-profit" />
                 <span className="text-[10px] font-semibold">Best Match</span>
               </div>
               <div className="font-mono text-sm font-bold text-profit">Digit {matchSignal.digit}</div>
-              <div className="text-[8px] text-muted-foreground mb-1">{percentages[mostCommon]?.toFixed(1)}% freq</div>
+              <div className="text-[8px] text-muted-foreground mb-1">{percentages[mostCommon]?.toFixed(1)}%</div>
               <div className="h-1.5 bg-muted rounded-full">
                 <div className="h-full bg-profit rounded-full" style={{ width: `${matchSignal.confidence}%` }} />
               </div>
-              <div className="text-[8px] text-right text-muted-foreground mt-0.5">{matchSignal.confidence}%</div>
             </div>
           </div>
 
-          {/* Last 26 Digits */}
-          <div className="bg-card border border-border rounded-xl p-3">
-            <h3 className="text-xs font-semibold text-foreground mb-2">Last 26 Digits</h3>
-            <div className="flex gap-1 flex-wrap justify-center">
-              {last26.map((d, i) => {
-                const isLast = i === last26.length - 1;
-                const isEven = d % 2 === 0;
-                return (
-                  <motion.div
-                    key={i}
-                    initial={isLast ? { scale: 0.8 } : {}}
-                    animate={isLast ? { scale: [1, 1.1, 1] } : {}}
-                    transition={isLast ? { duration: 1, repeat: Infinity } : {}}
-                    className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${
-                      isLast ? 'w-9 h-11 text-sm ring-2 ring-primary' : ''
-                    } ${isEven
-                      ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
-                      : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
-                    }`}
-                  >
-                    {d}
-                  </motion.div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ═══ AUTO BOT PANEL with Strategy ═══ */}
+          {/* AUTO BOT PANEL */}
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Zap className="w-3.5 h-3.5 text-primary" /> Dessyfx Speed Bot 
+                <Zap className="w-3.5 h-3.5 text-primary" /> Ramzfx Speed Bot
               </h3>
               <div className="flex items-center gap-2">
                 <Button
@@ -1359,7 +1689,6 @@ export default function TradingChart() {
               </div>
             </div>
 
-            {/* Market Selector for Bot */}
             <div>
               <label className="text-[9px] text-muted-foreground">Market</label>
               <Select value={botConfig.botSymbol} onValueChange={handleBotSymbolChange} disabled={botRunning}>
@@ -1374,7 +1703,6 @@ export default function TradingChart() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[8px] text-muted-foreground mt-0.5">Chart auto-syncs with selected market</p>
             </div>
 
             <Select value={botConfig.contractType} onValueChange={v => setBotConfig(p => ({ ...p, contractType: v }))} disabled={botRunning}>
@@ -1532,7 +1860,6 @@ export default function TradingChart() {
               </div>
             </div>
 
-            {/* Bot live stats */}
             {botRunning && (
               <div className="grid grid-cols-3 gap-1 text-center">
                 <div className="bg-muted/30 rounded p-1">
@@ -1552,7 +1879,6 @@ export default function TradingChart() {
               </div>
             )}
 
-            {/* Start/Pause/Stop buttons */}
             <div className="flex gap-2">
               {!botRunning ? (
                 <Button onClick={startBot} disabled={!isAuthorized} className="flex-1 h-10 text-xs font-bold bg-profit hover:bg-profit/90 text-profit-foreground">
@@ -1570,6 +1896,47 @@ export default function TradingChart() {
               )}
             </div>
           </div>
+            {/* Last 26 Digits - Real-Time Updates */}
+          <div className="bg-card border border-border rounded-xl p-3">
+            <h3 className="text-xs font-semibold text-foreground mb-2 flex items-center justify-between">
+              <span>Last 26 Digits (Real-Time)</span>
+              <Badge variant="outline" className="text-[8px] animate-pulse">
+                Auto Updates
+              </Badge>
+            </h3>
+            <div className="flex gap-1 flex-wrap justify-center">
+              {last26Digits.length > 0 ? (
+                last26Digits.map((d, i) => {
+                  const isLast = i === last26Digits.length - 1;
+                  const isEven = d % 2 === 0;
+                  return (
+                    <motion.div
+                      key={i}
+                      initial={isLast ? { scale: 0.8 } : {}}
+                      animate={isLast ? { scale: [1, 1.2, 1] } : {}}
+                      transition={isLast ? { duration: 0.5 } : {}}
+                      className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${
+                        isLast ? 'w-9 h-11 text-sm ring-2 ring-primary bg-primary/20' : ''
+                      } ${isEven
+                        ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
+                        : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
+                      }`}
+                    >
+                      {d}
+                    </motion.div>
+                  );
+                })
+              ) : (
+                <div className="text-center text-xs text-muted-foreground py-4">
+                  Waiting for tick data...
+                </div>
+              )}
+            </div>
+            <div className="text-center text-[8px] text-muted-foreground mt-2">
+              Latest digit highlighted • Updates every tick
+            </div>
+          </div>
+
 
           {/* Bot Progress */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
@@ -1616,7 +1983,6 @@ export default function TradingChart() {
               </div>
             )}
 
-            {/* Trade History */}
             {tradeHistory.length > 0 && (
               <div className="max-h-40 overflow-auto space-y-1">
                 {tradeHistory.slice(0, 10).map(t => (
@@ -1666,8 +2032,8 @@ export default function TradingChart() {
               </div>
               <div className="flex items-center justify-between text-[10px]">
                 <span className="text-muted-foreground">EMA 50</span>
-                <span className={`font-mono font-bold ${currentPrice > ema50 ? 'text-profit' : 'text-loss'}`}>
-                  {currentPrice > ema50 ? '📈 Above' : '📉 Below'} ({ema50.toFixed(2)})
+                <span className={`font-mono font-bold ${currentPrice > (ema50[ema50.length - 1] || 0) ? 'text-profit' : 'text-loss'}`}>
+                  {currentPrice > (ema50[ema50.length - 1] || 0) ? '📈 Above' : '📉 Below'} ({(ema50[ema50.length - 1] || 0).toFixed(2)})
                 </span>
               </div>
               <div className="flex items-center justify-between text-[10px]">
