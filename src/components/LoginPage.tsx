@@ -36,7 +36,7 @@ export default function LoginPage() {
             </div>
             <div className="text-left">
               <h1 className="text-3xl font-bold text-foreground leading-tight">
-                Ceoramz<span className="text-primary">Traders</span>
+                Dessy<span className="text-primary">Fx</span>
               </h1>
               <p className="text-xs text-muted-foreground -mt-0.5">Dessyfx.site</p>
             </div>
