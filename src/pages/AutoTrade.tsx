@@ -95,6 +95,7 @@ interface TradeRecord {
   status: 'won' | 'lost' | 'open';
   symbol: string;
   resultDigit?: number;
+  outcomeSymbol?: string;
 }
 
 interface DigitStats {
@@ -108,23 +109,32 @@ interface DigitStats {
   overPercentage: number;
   underPercentage: number;
   last26Digits: number[];
+  tickPrices: number[];
 }
 
 // Independent tick storage for digit analysis
 const globalTickHistory: { [symbol: string]: number[] } = {};
+const globalTickPrices: { [symbol: string]: number[] } = {};
 const tickCallbacks: { [symbol: string]: (() => void)[] } = [];
 
 function getTickHistory(symbol: string): number[] {
   return globalTickHistory[symbol] || [];
 }
 
-function addTick(symbol: string, digit: number) {
+function getTickPrices(symbol: string): number[] {
+  return globalTickPrices[symbol] || [];
+}
+
+function addTick(symbol: string, digit: number, price: number) {
   if (!globalTickHistory[symbol]) globalTickHistory[symbol] = [];
-  globalTickHistory[symbol].push(digit);
-  // Keep up to 2000 ticks for analysis
-  if (globalTickHistory[symbol].length > 2000) globalTickHistory[symbol].shift();
+  if (!globalTickPrices[symbol]) globalTickPrices[symbol] = [];
   
-  // Notify all callbacks for this symbol
+  globalTickHistory[symbol].push(digit);
+  globalTickPrices[symbol].push(price);
+  
+  if (globalTickHistory[symbol].length > 2000) globalTickHistory[symbol].shift();
+  if (globalTickPrices[symbol].length > 2000) globalTickPrices[symbol].shift();
+  
   if (tickCallbacks[symbol]) {
     tickCallbacks[symbol].forEach(cb => cb());
   }
@@ -317,6 +327,7 @@ function calcMACDFull(prices: number[]) {
 
 function calculateDigitStats(symbol: string, tickRange: number): DigitStats {
   const ticks = getTickHistory(symbol);
+  const tickPricesData = getTickPrices(symbol);
   const recentTicks = ticks.slice(-tickRange);
   
   const frequency: Record<number, number> = {};
@@ -352,6 +363,7 @@ function calculateDigitStats(symbol: string, tickRange: number): DigitStats {
   const overCount = recentTicks.filter(d => d > 4).length;
   const underCount = recentTicks.length - overCount;
   const last26Digits = ticks.slice(-26);
+  const last26Prices = tickPricesData.slice(-26);
   
   return {
     frequency,
@@ -364,6 +376,7 @@ function calculateDigitStats(symbol: string, tickRange: number): DigitStats {
     overPercentage: recentTicks.length > 0 ? (overCount / recentTicks.length * 100) : 50,
     underPercentage: recentTicks.length > 0 ? (underCount / recentTicks.length * 100) : 50,
     last26Digits,
+    tickPrices: last26Prices,
   };
 }
 
@@ -383,11 +396,9 @@ export default function TradingChart() {
   const subscriptionRef = useRef<any>(null);
   const reconnectAttempts = useRef(0);
 
-  // Indicators state
   const [indicators, setIndicators] = useState<Indicator[]>([]);
   const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
 
-  // Digit stats state - will update in real-time
   const [digitStats, setDigitStats] = useState<DigitStats>({
     frequency: {},
     percentages: {},
@@ -399,9 +410,9 @@ export default function TradingChart() {
     overPercentage: 50,
     underPercentage: 50,
     last26Digits: [],
+    tickPrices: [],
   });
 
-  // Zoom & pan state
   const [candleWidth, setCandleWidth] = useState(7);
   const [scrollOffset, setScrollOffset] = useState(0);
   const isDragging = useRef(false);
@@ -411,21 +422,14 @@ export default function TradingChart() {
   const priceAxisStartY = useRef(0);
   const priceAxisStartWidth = useRef(7);
 
-  // Trade panel
-  const [contractType, setContractType] = useState('CALL');
-  const [prediction, setPrediction] = useState('5');
-  const [duration, setDuration] = useState('1');
-  const [durationUnit, setDurationUnit] = useState('t');
-  const [tradeStake, setTradeStake] = useState('1.00');
-  const [selectedDigit, setSelectedDigit] = useState<number | null>(null);
-  const [isTrading, setIsTrading] = useState(false);
+  // Contract type for display
+  const [selectedContractType, setSelectedContractType] = useState('CALL');
+  const [selectedPrediction, setSelectedPrediction] = useState('5');
 
-  // Bot progress
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const lastSpokenSignal = useRef('');
 
-  // Strategy State
   const [strategyEnabled, setStrategyEnabled] = useState(false);
   const [strategyMode, setStrategyMode] = useState<'pattern' | 'digit'>('pattern');
   const [patternInput, setPatternInput] = useState('');
@@ -433,7 +437,6 @@ export default function TradingChart() {
   const [digitCompare, setDigitCompare] = useState('5');
   const [digitWindow, setDigitWindow] = useState('3');
 
-  // Auto Bot state
   const [botRunning, setBotRunning] = useState(false);
   const [botPaused, setBotPaused] = useState(false);
   const botRunningRef = useRef(false);
@@ -454,18 +457,80 @@ export default function TradingChart() {
   const [botStats, setBotStats] = useState({ trades: 0, wins: 0, losses: 0, pnl: 0, currentStake: 0, consecutiveLosses: 0 });
   const [turboMode, setTurboMode] = useState(false);
 
-  // Function to update digit stats (called on tick range change and every new tick)
+  const [displaySymbols, setDisplaySymbols] = useState<string[]>([]);
+
+  // Helper function to get symbol based on contract type, digit, and price movement
+  const getDigitSymbol = useCallback((digit: number, price: number, prevPrice: number | null, type: string, barrier: string): string => {
+    const barrierNum = parseInt(barrier);
+    
+    switch (type) {
+      case 'CALL':
+      case 'PUT':
+        if (prevPrice === null) return '?';
+        if (price > prevPrice) return 'R';
+        if (price < prevPrice) return 'F';
+        return 'C';
+        
+      case 'DIGITOVER':
+        // For Over: if digit > barrier -> O (Over), if digit == barrier -> S (Same), if digit < barrier -> U (Under)
+        if (digit > barrierNum) return 'O';
+        if (digit === barrierNum) return 'S';
+        return 'U';
+        
+      case 'DIGITUNDER':
+        // For Under: if digit < barrier -> U (Under), if digit == barrier -> S (Same), if digit > barrier -> O (Over)
+        if (digit < barrierNum) return 'U';
+        if (digit === barrierNum) return 'S';
+        return 'O';
+        
+      case 'DIGITEVEN':
+        return digit % 2 === 0 ? 'E' : 'O';
+        
+      case 'DIGITODD':
+        return digit % 2 !== 0 ? 'O' : 'E';
+        
+      case 'DIGITMATCH':
+        return digit === barrierNum ? 'S' : 'D';
+        
+      case 'DIGITDIFF':
+        return digit !== barrierNum ? 'D' : 'S';
+        
+      default:
+        return digit.toString();
+    }
+  }, []);
+
+  // Update display symbols
+  const updateDisplaySymbols = useCallback(() => {
+    const tickPricesData = digitStats.tickPrices;
+    const symbols = digitStats.last26Digits.map((digit, index) => {
+      const currentPrice = tickPricesData[index];
+      const prevPrice = index > 0 ? tickPricesData[index - 1] : null;
+      return getDigitSymbol(digit, currentPrice, prevPrice, selectedContractType, selectedPrediction);
+    });
+    setDisplaySymbols(symbols);
+  }, [digitStats.last26Digits, digitStats.tickPrices, selectedContractType, selectedPrediction, getDigitSymbol]);
+
+  // Update when contract type changes
+  useEffect(() => {
+    updateDisplaySymbols();
+  }, [selectedContractType, selectedPrediction, updateDisplaySymbols]);
+
+  // Update when tick data changes
+  useEffect(() => {
+    updateDisplaySymbols();
+  }, [digitStats.last26Digits, digitStats.tickPrices, updateDisplaySymbols]);
+
+  // Function to update digit stats
   const updateDigitStats = useCallback(() => {
     const stats = calculateDigitStats(symbol, tickRange);
     setDigitStats(stats);
   }, [symbol, tickRange]);
 
-  // Subscribe to real-time tick updates for digit analysis
+  // Subscribe to real-time tick updates
   useEffect(() => {
-    // Initial calculation
     updateDigitStats();
     
-    // Subscribe to tick updates
     const unsubscribe = subscribeToTicks(symbol, () => {
       updateDigitStats();
     });
@@ -494,7 +559,7 @@ export default function TradingChart() {
     ));
   }, []);
 
-  // Load history with configurable candle count
+  // Load history
   useEffect(() => {
     let active = true;
     let timeoutId: NodeJS.Timeout;
@@ -534,16 +599,16 @@ export default function TradingChart() {
         const hist = await derivApi.getTickHistory(symbol as MarketSymbol, ticksToLoad);
         if (!active) return;
         
-        // Store ALL ticks for independent digit analysis
         const historicalDigits = (hist.history.prices || []).map(p => getLastDigit(p));
+        const historicalPrices = hist.history.prices || [];
         globalTickHistory[symbol] = historicalDigits;
+        globalTickPrices[symbol] = historicalPrices;
         
         setPrices(hist.history.prices || []);
         setTimes(hist.history.times || []);
         setScrollOffset(0);
         setIsLoading(false);
         
-        // Update digit stats after loading historical data
         updateDigitStats();
 
         if (!subscribedRef.current || !subscriptionRef.current) {
@@ -554,10 +619,8 @@ export default function TradingChart() {
             const digit = getLastDigit(quote);
             const epoch = data.tick.epoch;
             
-            // Update independent tick history for digit analysis (triggers callback)
-            addTick(symbol, digit);
+            addTick(symbol, digit, quote);
             
-            // Update prices and times for candles
             setPrices(prev => {
               const newPrices = [...prev, quote];
               return newPrices.slice(-CANDLE_CONFIG.maxCandles);
@@ -597,7 +660,7 @@ export default function TradingChart() {
       cleanup();
       subscribedRef.current = false;
     };
-  }, [symbol, candleCount, updateDigitStats]);
+  }, [symbol, candleCount, updateDigitStats, showChart]);
 
   useEffect(() => {
     const checkConnection = setInterval(() => {
@@ -637,12 +700,10 @@ export default function TradingChart() {
     }
   }, [symbol]);
 
-  /* ── Derived data for candles only ── */
   const candles = useMemo(() => buildCandles(prices, times, timeframe), [prices, times, timeframe]);
   const currentPrice = prices[prices.length - 1] || 0;
   const lastDigit = getLastDigit(currentPrice);
   
-  // Indicators calculations (based on candles/price data)
   const bb = useMemo(() => calculateBollingerBands(prices, 20), [prices]);
   const ema50 = useMemo(() => calcEMA(prices, 50), [prices]);
   const sma20 = useMemo(() => calcSMA(prices, 20), [prices]);
@@ -650,7 +711,6 @@ export default function TradingChart() {
   const rsi = useMemo(() => calculateRSI(prices, 14), [prices]);
   const macd = useMemo(() => calcMACDFull(prices), [prices]);
 
-  // Series for chart rendering
   const candleEndIndices = useMemo(() => mapCandlesToPriceIndices(prices, times, timeframe), [prices, times, timeframe]);
   const emaSeries = useMemo(() => calcEMASeries(prices, 50), [prices]);
   const smaSeries = useMemo(() => calcSMASeries(prices, 20), [prices]);
@@ -658,8 +718,7 @@ export default function TradingChart() {
   const rsiSeries = useMemo(() => calcRSISeries(prices, 14), [prices]);
   const macdSeries = useMemo(() => calcMACDSeries(prices), [prices]);
 
-  // Use digit stats from real-time updates
-  const { frequency, percentages, mostCommon, leastCommon, totalTicks, evenPercentage, oddPercentage, overPercentage, underPercentage, last26Digits } = digitStats;
+  const { frequency, percentages, mostCommon, leastCommon, totalTicks, evenPercentage, oddPercentage, overPercentage, underPercentage } = digitStats;
   
   const bbRange = bb.upper - bb.lower || 1;
   const bbPosition = ((currentPrice - bb.lower) / bbRange * 100);
@@ -684,7 +743,6 @@ export default function TradingChart() {
     return { digit: mostCommon, confidence: Math.min(90, Math.round(bestPct * 3)) };
   }, [percentages, mostCommon]);
 
-  // Strategy Helpers
   const cleanPattern = patternInput.toUpperCase().replace(/[^EO]/g, '');
   const patternValid = cleanPattern.length >= 2;
 
@@ -728,7 +786,92 @@ export default function TradingChart() {
     }
   }, [strategyEnabled, strategyMode, checkPatternMatch, checkDigitCondition]);
 
-  // Canvas mouse handlers for zoom & pan
+  // Helper function to get outcome symbol for trade
+  const getOutcomeSymbol = useCallback((trade: TradeRecord): string => {
+    if (trade.status === 'open') return '';
+    
+    const digit = trade.resultDigit;
+    if (digit === undefined) return '';
+    
+    const barrier = botConfig.prediction;
+    const barrierNum = parseInt(barrier);
+    
+    switch (trade.type) {
+      case 'CALL':
+        return trade.status === 'won' ? 'R' : 'F';
+      case 'PUT':
+        return trade.status === 'won' ? 'F' : 'R';
+      case 'DIGITOVER':
+        if (trade.status === 'won') {
+          if (digit > barrierNum) return 'O';
+          if (digit === barrierNum) return 'S';
+          return 'U';
+        } else {
+          if (digit <= barrierNum) return digit === barrierNum ? 'S' : 'U';
+          return 'O';
+        }
+      case 'DIGITUNDER':
+        if (trade.status === 'won') {
+          if (digit < barrierNum) return 'U';
+          if (digit === barrierNum) return 'S';
+          return 'O';
+        } else {
+          if (digit >= barrierNum) return digit === barrierNum ? 'S' : 'O';
+          return 'U';
+        }
+      case 'DIGITEVEN':
+        if (trade.status === 'won') {
+          return digit % 2 === 0 ? 'E' : 'O';
+        } else {
+          return digit % 2 !== 0 ? 'O' : 'E';
+        }
+      case 'DIGITODD':
+        if (trade.status === 'won') {
+          return digit % 2 !== 0 ? 'O' : 'E';
+        } else {
+          return digit % 2 === 0 ? 'E' : 'O';
+        }
+      case 'DIGITMATCH':
+        if (trade.status === 'won') {
+          return digit === barrierNum ? 'S' : 'D';
+        } else {
+          return digit !== barrierNum ? 'D' : 'S';
+        }
+      case 'DIGITDIFF':
+        if (trade.status === 'won') {
+          return digit !== barrierNum ? 'D' : 'S';
+        } else {
+          return digit === barrierNum ? 'S' : 'D';
+        }
+      default:
+        return '';
+    }
+  }, [botConfig.prediction]);
+
+  const getLegendText = () => {
+    switch (selectedContractType) {
+      case 'CALL':
+        return { symbol1: 'R', meaning1: 'Rise (price up)', symbol2: 'F', meaning2: 'Fall (price down)', symbol3: 'C', meaning3: 'Constant (price same)' };
+      case 'PUT':
+        return { symbol1: 'F', meaning1: 'Fall (price down)', symbol2: 'R', meaning2: 'Rise (price up)', symbol3: 'C', meaning3: 'Constant (price same)' };
+      case 'DIGITOVER':
+        return { symbol1: 'O', meaning1: `Over > ${selectedPrediction}`, symbol2: 'S', meaning2: `Same = ${selectedPrediction}`, symbol3: 'U', meaning3: `Under < ${selectedPrediction}` };
+      case 'DIGITUNDER':
+        return { symbol1: 'U', meaning1: `Under < ${selectedPrediction}`, symbol2: 'S', meaning2: `Same = ${selectedPrediction}`, symbol3: 'O', meaning3: `Over > ${selectedPrediction}` };
+      case 'DIGITEVEN':
+        return { symbol1: 'E', meaning1: 'Even', symbol2: 'O', meaning2: 'Odd', symbol3: '', meaning3: '' };
+      case 'DIGITODD':
+        return { symbol1: 'O', meaning1: 'Odd', symbol2: 'E', meaning2: 'Even', symbol3: '', meaning3: '' };
+      case 'DIGITMATCH':
+        return { symbol1: 'S', meaning1: `Same = ${selectedPrediction}`, symbol2: 'D', meaning2: `Different ≠ ${selectedPrediction}`, symbol3: '', meaning3: '' };
+      case 'DIGITDIFF':
+        return { symbol1: 'D', meaning1: `Different ≠ ${selectedPrediction}`, symbol2: 'S', meaning2: `Same = ${selectedPrediction}`, symbol3: '', meaning3: '' };
+      default:
+        return { symbol1: '', meaning1: '', symbol2: '', meaning2: '', symbol3: '', meaning3: '' };
+    }
+  };
+
+  // Canvas handlers
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !showChart) return;
@@ -793,7 +936,7 @@ export default function TradingChart() {
     };
   }, [candles.length, scrollOffset, candleWidth, showChart]);
 
-  // Chart rendering with indicators
+  // Chart rendering
   useEffect(() => {
     if (!showChart) return;
     
@@ -897,7 +1040,6 @@ export default function TradingChart() {
       ctx.setLineDash([]);
     };
 
-    // Draw Bollinger Bands if enabled
     if (indicators.find(i => i.enabled && i.type === 'BB')) {
       ctx.fillStyle = 'rgba(188, 140, 255, 0.06)';
       const bbUpperPoints: {x: number, y: number}[] = [];
@@ -925,7 +1067,6 @@ export default function TradingChart() {
       drawLine(bbSeries.lower, '#BC8CFF', 1.2, [5, 3]);
     }
 
-    // Draw Moving Averages if enabled
     if (indicators.find(i => i.enabled && i.type === 'MA')) {
       drawLine(emaSeries, '#2F81F7', 1.5);
       drawLine(smaSeries, '#E6B422', 1.5);
@@ -952,7 +1093,6 @@ export default function TradingChart() {
     ctx.fillStyle = '#0D1117';
     ctx.fillText(`R ${resistance.toFixed(4)}`, chartW + 2, resY + 3);
 
-    // Draw candles - BLUE for bullish, RED for bearish
     for (let i = 0; i < visibleCandles.length; i++) {
       const c = visibleCandles[i];
       const x = offsetX + i * totalCandleW;
@@ -1013,7 +1153,6 @@ export default function TradingChart() {
 
     let currentYOffset = H + 8;
     
-    // Draw RSI panel if enabled
     if (indicators.find(i => i.enabled && i.type === 'RSI')) {
       const rsiTop = currentYOffset;
       ctx.fillStyle = '#161B22';
@@ -1070,7 +1209,6 @@ export default function TradingChart() {
       currentYOffset += rsiH;
     }
     
-    // Draw MACD panel if enabled
     if (indicators.find(i => i.enabled && i.type === 'MACD')) {
       const macdTop = currentYOffset;
       ctx.fillStyle = '#161B22';
@@ -1089,7 +1227,6 @@ export default function TradingChart() {
         
         const macdToY = (v: number) => macdTop + 4 + ((maxMacd - v) / macdRange) * (macdH - 8);
         
-        // Draw zero line
         const zeroY = macdToY(0);
         ctx.strokeStyle = '#484F58';
         ctx.lineWidth = 1;
@@ -1097,7 +1234,6 @@ export default function TradingChart() {
         ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(chartW, zeroY); ctx.stroke();
         ctx.setLineDash([]);
         
-        // Draw MACD line
         ctx.beginPath();
         ctx.strokeStyle = '#2F81F7';
         ctx.lineWidth = 1.5;
@@ -1114,7 +1250,6 @@ export default function TradingChart() {
         }
         ctx.stroke();
         
-        // Draw Signal line
         ctx.beginPath();
         ctx.strokeStyle = '#E6B422';
         ctx.lineWidth = 1.5;
@@ -1166,27 +1301,6 @@ export default function TradingChart() {
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   }, [voiceEnabled]);
-
-  const handleBuy = async (side: 'buy' | 'sell') => {
-    if (!isAuthorized) { toast.error('Please login to your Deriv account first'); return; }
-    if (isTrading) return;
-    setIsTrading(true);
-    const ct = side === 'buy' ? contractType : (contractType === 'CALL' ? 'PUT' : contractType === 'PUT' ? 'CALL' : contractType);
-    const params: any = { contract_type: ct, symbol, duration: parseInt(duration), duration_unit: durationUnit, basis: 'stake', amount: parseFloat(tradeStake) };
-    if (['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(ct)) params.barrier = prediction;
-    try {
-      toast.info(`⏳ Placing ${ct} trade... $${tradeStake}`);
-      const { contractId } = await derivApi.buyContract(params);
-      const newTrade: TradeRecord = { id: contractId, time: Date.now(), type: ct, stake: parseFloat(tradeStake), profit: 0, status: 'open', symbol };
-      setTradeHistory(prev => [newTrade, ...prev].slice(0, 50));
-      const result = await derivApi.waitForContractResult(contractId);
-      const resultDigit = getLastDigit(result.price || currentPrice);
-      setTradeHistory(prev => prev.map(t => t.id === contractId ? { ...t, profit: result.profit, status: result.status, resultDigit } : t));
-      if (result.status === 'won') { toast.success(`✅ WON +$${result.profit.toFixed(2)} | Digit: ${resultDigit}`); if (voiceEnabled) speak(`Trade won. Profit ${result.profit.toFixed(2)} dollars`); }
-      else { toast.error(`❌ LOST -$${Math.abs(result.profit).toFixed(2)} | Digit: ${resultDigit}`); if (voiceEnabled) speak(`Trade lost. Loss ${Math.abs(result.profit).toFixed(2)} dollars`); }
-    } catch (err: any) { toast.error(`Trade failed: ${err.message}`); }
-    finally { setIsTrading(false); }
-  };
 
   const startBot = useCallback(async () => {
     if (!isAuthorized) { toast.error('Login to Deriv first'); return; }
@@ -1259,8 +1373,16 @@ export default function TradingChart() {
     setBotStats(prev => ({ ...prev, trades, wins, losses, pnl }));
   }, [isAuthorized, botConfig, voiceEnabled, speak, strategyEnabled, checkStrategyCondition]);
 
-  const stopBot = useCallback(() => { botRunningRef.current = false; setBotRunning(false); toast.info('🛑 Bot stopped'); }, []);
-  const togglePauseBot = useCallback(() => { botPausedRef.current = !botPausedRef.current; setBotPaused(botPausedRef.current); }, []);
+  const stopBot = useCallback(() => { 
+    botRunningRef.current = false; 
+    setBotRunning(false);
+    toast.info('🛑 Bot stopped'); 
+  }, []);
+  
+  const togglePauseBot = useCallback(() => { 
+    botPausedRef.current = !botPausedRef.current; 
+    setBotPaused(botPausedRef.current); 
+  }, []);
 
   const handleBotSymbolChange = useCallback((newSymbol: string) => {
     setBotConfig(prev => ({ ...prev, botSymbol: newSymbol }));
@@ -1272,6 +1394,8 @@ export default function TradingChart() {
   const losses = tradeHistory.filter(t => t.status === 'lost').length;
   const totalProfit = tradeHistory.reduce((s, t) => s + t.profit, 0);
   const winRate = totalTrades > 0 ? (wins / totalTrades * 100) : 0;
+
+  const legend = getLegendText();
 
   return (
     <div className="space-y-4 max-w-[1920px] mx-auto p-4">
@@ -1462,7 +1586,7 @@ export default function TradingChart() {
           {/* Digit Analysis - Real-Time Updates */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-foreground">Digit Analysis (Real-Time)</h3>
+              <h3 className="text-xs font-semibold text-foreground">Ramzfx Digit Analysis (Real-Time)</h3>
               <div className="flex items-center gap-2">
                 <label className="text-[9px] text-muted-foreground">Tick Range:</label>
                 <Select value={String(tickRange)} onValueChange={v => setTickRange(parseInt(v))}>
@@ -1514,9 +1638,9 @@ export default function TradingChart() {
                 const isBestDiffer = d === leastCommon;
                 return (
                   <button key={d}
-                    onClick={() => { setSelectedDigit(d); setPrediction(String(d)); }}
+                    onClick={() => { setSelectedPrediction(String(d)); }}
                     className={`relative rounded-lg p-2 text-center transition-all border cursor-pointer hover:ring-2 hover:ring-primary ${
-                      selectedDigit === d ? 'ring-2 ring-primary' : ''
+                      selectedPrediction === String(d) ? 'ring-2 ring-primary' : ''
                     } ${isHot ? 'bg-loss/10 border-loss/40 text-loss' :
                       isWarm ? 'bg-warning/10 border-warning/40 text-warning' :
                       'bg-card border-border text-primary'}`}
@@ -1542,7 +1666,6 @@ export default function TradingChart() {
             </div>
           </div>
 
-        
           {/* Strategic Recommendations */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <div className="bg-card border border-profit/30 rounded-lg p-2">
@@ -1572,7 +1695,7 @@ export default function TradingChart() {
           </div>
         </div>
 
-        {/* RIGHT: Signals + Trade + Tech */}
+        {/* RIGHT: Signals + Bot + Last 26 Digits */}
         <div className="xl:col-span-4 space-y-3">
           {/* Voice AI Toggle */}
           <div className="bg-card border border-primary/30 rounded-xl p-3">
@@ -1600,7 +1723,7 @@ export default function TradingChart() {
               </Button>
             </div>
             {voiceEnabled && (
-              <p className="text-[9px] text-muted-foreground mt-1">🔊 Ramzfx AI will announce trade results</p>
+              <p className="text-[9px] text-muted-foreground mt-1">🔊 Dessyfx AI will announce trade results</p>
             )}
           </div>
 
@@ -1668,7 +1791,7 @@ export default function TradingChart() {
           <div className={`bg-card border rounded-xl p-3 space-y-2 ${botRunning ? 'border-profit glow-profit' : 'border-border'}`}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Zap className="w-3.5 h-3.5 text-primary" /> Ramzfx Speed Bot
+                <Zap className="w-3.5 h-3.5 text-primary" /> Dessyfx Speed Bot
               </h3>
               <div className="flex items-center gap-2">
                 <Button
@@ -1896,33 +2019,170 @@ export default function TradingChart() {
               )}
             </div>
           </div>
-            {/* Last 26 Digits - Real-Time Updates */}
+
+          {/* Last 26 Digits - Filtration Chamber */}
           <div className="bg-card border border-border rounded-xl p-3">
             <h3 className="text-xs font-semibold text-foreground mb-2 flex items-center justify-between">
-              <span>Last 26 Digits (Real-Time)</span>
-              <Badge variant="outline" className="text-[8px] animate-pulse">
-                Auto Updates
-              </Badge>
+              <span>Filtration Chamber 🚆</span>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-[8px] animate-pulse">
+                  🟢 LIVE
+                </Badge>
+                <Badge className="text-[8px] bg-primary/20 text-primary">
+                  {selectedContractType === 'CALL' ? 'Rise' : 
+                   selectedContractType === 'PUT' ? 'Fall' :
+                   selectedContractType === 'DIGITOVER' ? `Over ${selectedPrediction}` :
+                   selectedContractType === 'DIGITUNDER' ? `Under ${selectedPrediction}` :
+                   selectedContractType === 'DIGITEVEN' ? 'Even' :
+                   selectedContractType === 'DIGITODD' ? 'Odd' :
+                   selectedContractType === 'DIGITMATCH' ? `Match ${selectedPrediction}` :
+                   selectedContractType === 'DIGITDIFF' ? `Diff ${selectedPrediction}` : selectedContractType}
+                </Badge>
+              </div>
             </h3>
+            
+            {/* Legend */}
+            <div className="flex flex-wrap gap-3 mb-3 text-[8px] justify-center">
+              {legend.symbol1 && (
+                <div className="flex items-center gap-1">
+                  <div className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold ${
+                    legend.symbol1 === 'R' ? 'bg-profit/20 text-profit' :
+                    legend.symbol1 === 'F' ? 'bg-loss/20 text-loss' :
+                    legend.symbol1 === 'O' ? 'bg-loss/20 text-loss' :
+                    legend.symbol1 === 'U' ? 'bg-profit/20 text-profit' :
+                    legend.symbol1 === 'S' ? 'bg-primary/20 text-primary' :
+                    legend.symbol1 === 'E' ? 'bg-[#3FB950]/20 text-[#3FB950]' :
+                    'bg-muted/20 text-foreground'
+                  }`}>
+                    {legend.symbol1}
+                  </div>
+                  <span className="text-muted-foreground">{legend.meaning1}</span>
+                </div>
+              )}
+              {legend.symbol2 && (
+                <div className="flex items-center gap-1">
+                  <div className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold ${
+                    legend.symbol2 === 'R' ? 'bg-profit/20 text-profit' :
+                    legend.symbol2 === 'F' ? 'bg-loss/20 text-loss' :
+                    legend.symbol2 === 'O' ? 'bg-loss/20 text-loss' :
+                    legend.symbol2 === 'U' ? 'bg-profit/20 text-profit' :
+                    legend.symbol2 === 'S' ? 'bg-primary/20 text-primary' :
+                    legend.symbol2 === 'E' ? 'bg-[#3FB950]/20 text-[#3FB950]' :
+                    'bg-muted/20 text-foreground'
+                  }`}>
+                    {legend.symbol2}
+                  </div>
+                  <span className="text-muted-foreground">{legend.meaning2}</span>
+                </div>
+              )}
+              {legend.symbol3 && (
+                <div className="flex items-center gap-1">
+                  <div className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold ${
+                    legend.symbol3 === 'R' ? 'bg-profit/20 text-profit' :
+                    legend.symbol3 === 'F' ? 'bg-loss/20 text-loss' :
+                    legend.symbol3 === 'O' ? 'bg-loss/20 text-loss' :
+                    legend.symbol3 === 'U' ? 'bg-profit/20 text-profit' :
+                    legend.symbol3 === 'S' ? 'bg-primary/20 text-primary' :
+                    legend.symbol3 === 'E' ? 'bg-[#3FB950]/20 text-[#3FB950]' :
+                    'bg-muted/20 text-foreground'
+                  }`}>
+                    {legend.symbol3}
+                  </div>
+                  <span className="text-muted-foreground">{legend.meaning3}</span>
+                </div>
+              )}
+            </div>
+            
+            {/* Analysis Mode Selector */}
+            <div className="mb-3 pt-1 border-t border-border">
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] text-muted-foreground whitespace-nowrap">Mode:</label>
+                <Select value={selectedContractType} onValueChange={(value) => {
+                  setSelectedContractType(value);
+                  setTimeout(() => updateDisplaySymbols(), 0);
+                }}>
+                  <SelectTrigger className="h-6 text-[10px] flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CONTRACT_TYPES.map(c => (
+                      <SelectItem key={c.value} value={c.value} className="text-[10px]">
+                        {c.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              {['DIGITMATCH', 'DIGITDIFF', 'DIGITOVER', 'DIGITUNDER'].includes(selectedContractType) && (
+                <div className="flex items-center gap-2 mt-2">
+                  <label className="text-[9px] text-muted-foreground whitespace-nowrap">Digit:</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="9"
+                    value={selectedPrediction}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '' || (parseInt(val) >= 0 && parseInt(val) <= 9)) {
+                        setSelectedPrediction(val);
+                        setTimeout(() => updateDisplaySymbols(), 0);
+                      }
+                    }}
+                    className="h-6 text-[10px] w-12 text-center"
+                  />
+                </div>
+              )}
+            </div>
+            
             <div className="flex gap-1 flex-wrap justify-center">
-              {last26Digits.length > 0 ? (
-                last26Digits.map((d, i) => {
-                  const isLast = i === last26Digits.length - 1;
-                  const isEven = d % 2 === 0;
+              {displaySymbols.length > 0 ? (
+                displaySymbols.map((symbol, i) => {
+                  const isLast = i === displaySymbols.length - 1;
+                  
+                  let bgColor = '';
+                  let textColor = '';
+                  
+                  // Color mapping based on symbol meaning
+                  if (symbol === 'R' || symbol === 'U') {
+                    bgColor = 'bg-profit/20';
+                    textColor = 'text-profit';
+                  } else if (symbol === 'F' || symbol === 'O') {
+                    bgColor = 'bg-loss/20';
+                    textColor = 'text-loss';
+                  } else if (symbol === 'E') {
+                    bgColor = 'bg-[#3FB950]/20';
+                    textColor = 'text-[#3FB950]';
+                  } else if (symbol === 'S') {
+                    bgColor = 'bg-primary/20';
+                    textColor = 'text-primary';
+                  } else if (symbol === 'D') {
+                    bgColor = 'bg-[#D29922]/20';
+                    textColor = 'text-[#D29922]';
+                  } else {
+                    bgColor = 'bg-muted/20';
+                    textColor = 'text-foreground';
+                  }
+                  
                   return (
                     <motion.div
                       key={i}
                       initial={isLast ? { scale: 0.8 } : {}}
                       animate={isLast ? { scale: [1, 1.2, 1] } : {}}
                       transition={isLast ? { duration: 0.5 } : {}}
-                      className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-xs border-2 transition-all ${
-                        isLast ? 'w-9 h-11 text-sm ring-2 ring-primary bg-primary/20' : ''
-                      } ${isEven
-                        ? 'border-[#3FB950] text-[#3FB950] bg-[#3FB950]/10'
-                        : 'border-[#D29922] text-[#D29922] bg-[#D29922]/10'
+                      className={`w-7 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-sm border-2 transition-all ${
+                        isLast ? 'w-9 h-11 text-base ring-2 ring-primary' : ''
+                      } ${bgColor} ${textColor} ${
+                        isLast ? 'border-primary' : 
+                        symbol === 'R' || symbol === 'U' ? 'border-profit/30' :
+                        symbol === 'F' || symbol === 'O' ? 'border-loss/30' :
+                        symbol === 'E' ? 'border-[#3FB950]/30' :
+                        symbol === 'S' ? 'border-primary/30' :
+                        symbol === 'D' ? 'border-[#D29922]/30' :
+                        'border-border'
                       }`}
                     >
-                      {d}
+                      {symbol}
                     </motion.div>
                   );
                 })
@@ -1933,16 +2193,15 @@ export default function TradingChart() {
               )}
             </div>
             <div className="text-center text-[8px] text-muted-foreground mt-2">
-              Latest digit highlighted • Updates every tick
+              🔄 Updates with every tick • Latest digit highlighted
             </div>
           </div>
-
 
           {/* Bot Progress */}
           <div className="bg-card border border-border rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-foreground flex items-center gap-1">
-                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Progress
+                <Trophy className="w-3.5 h-3.5 text-primary" /> Trade Results 
               </h3>
               {tradeHistory.length > 0 && (
                 <Button variant="ghost" size="sm" className="h-6 text-[9px] text-muted-foreground hover:text-loss"
@@ -1985,29 +2244,47 @@ export default function TradingChart() {
 
             {tradeHistory.length > 0 && (
               <div className="max-h-40 overflow-auto space-y-1">
-                {tradeHistory.slice(0, 10).map(t => (
-                  <div key={t.id} className={`flex items-center justify-between text-[9px] p-1.5 rounded-lg border ${
-                    t.status === 'open' ? 'border-primary/30 bg-primary/5' :
-                    t.status === 'won' ? 'border-profit/30 bg-profit/5' :
-                    'border-loss/30 bg-loss/5'
-                  }`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`font-bold ${t.status === 'won' ? 'text-profit' : t.status === 'lost' ? 'text-loss' : 'text-primary'}`}>
-                        {t.status === 'open' ? '⏳' : t.status === 'won' ? '✅' : '❌'}
+                {tradeHistory.slice(0, 10).map(t => {
+                  const outcomeSymbol = getOutcomeSymbol(t);
+                  const outcomeColor = t.status === 'won' ? 'text-profit' : 'text-loss';
+                  
+                  // Determine badge color based on outcome symbol
+                  let badgeColor = '';
+                  if (outcomeSymbol === 'R' || outcomeSymbol === 'U') badgeColor = 'border-profit text-profit';
+                  else if (outcomeSymbol === 'F' || outcomeSymbol === 'O') badgeColor = 'border-loss text-loss';
+                  else if (outcomeSymbol === 'S') badgeColor = 'border-primary text-primary';
+                  else if (outcomeSymbol === 'D') badgeColor = 'border-[#D29922] text-[#D29922]';
+                  else if (outcomeSymbol === 'E') badgeColor = 'border-[#3FB950] text-[#3FB950]';
+                  
+                  return (
+                    <div key={t.id} className={`flex items-center justify-between text-[9px] p-1.5 rounded-lg border ${
+                      t.status === 'open' ? 'border-primary/30 bg-primary/5' :
+                      t.status === 'won' ? 'border-profit/30 bg-profit/5' :
+                      'border-loss/30 bg-loss/5'
+                    }`}>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`font-bold ${t.status === 'won' ? 'text-profit' : t.status === 'lost' ? 'text-loss' : 'text-primary'}`}>
+                          {t.status === 'open' ? '⏳' : t.status === 'won' ? '✅' : '❌'}
+                        </span>
+                        <span className="font-mono text-muted-foreground">{t.type}</span>
+                        <span className="text-muted-foreground">${t.stake.toFixed(2)}</span>
+                        {t.resultDigit !== undefined && (
+                          <Badge variant="outline" className={`text-[8px] px-1 ${t.status === 'won' ? 'border-profit text-profit' : 'border-loss text-loss'}`}>
+                            {t.resultDigit}
+                          </Badge>
+                        )}
+                        {outcomeSymbol && t.status !== 'open' && (
+                          <Badge variant="outline" className={`text-[8px] px-1 font-mono ${badgeColor}`}>
+                            {outcomeSymbol}
+                          </Badge>
+                        )}
+                      </div>
+                      <span className={`font-mono font-bold ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                        {t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}
                       </span>
-                      <span className="font-mono text-muted-foreground">{t.type}</span>
-                      <span className="text-muted-foreground">${t.stake.toFixed(2)}</span>
-                      {t.resultDigit !== undefined && (
-                        <Badge variant="outline" className={`text-[8px] px-1 ${t.status === 'won' ? 'border-profit text-profit' : 'border-loss text-loss'}`}>
-                          {t.resultDigit}
-                        </Badge>
-                      )}
                     </div>
-                    <span className={`font-mono font-bold ${t.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                      {t.status === 'open' ? '...' : `${t.profit >= 0 ? '+' : ''}$${t.profit.toFixed(2)}`}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
